@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>nothing</title>
+
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden}
+  </style>
+
+  <!-- Import‑map so bare specifiers like "three" resolve to CDN URLs -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three":               "https://cdn.jsdelivr.net/npm/three@0.165/build/three.module.js",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.165/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <!-- The canvas will be inserted here by three.js -->
+
+  <!-- Load the JS module that does all the work -->
+  <script type="module" src="main.js"></script>
+</body>
+</html>
