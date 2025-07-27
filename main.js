@@ -1,5 +1,6 @@
 import * as THREE        from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { DragControls }  from 'three/examples/jsm/controls/DragControls.js';
 import URDFLoader from 'urdf-loader';
 
 /* ---- scene boilerplate ---- */
@@ -17,7 +18,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 
 /* basic lighting */
 const dirLight = new THREE.DirectionalLight(0xffffff, 10);
-dirLight.position.set(1, 2, 3);   // .position is a Vector3; .set() returns that Vector3
+dirLight.position.set(1, 2, 3);
 scene.add(dirLight);
 
 scene.add(new THREE.AmbientLight(0xffffff, 1));
@@ -25,10 +26,10 @@ scene.add(new THREE.AmbientLight(0xffffff, 1));
 const manager = new THREE.LoadingManager();
 const loader = new URDFLoader( manager );
 loader.packages = {
-    trossen_arm_description: '/trossen_arm_description/'            // The equivalent of a (list of) ROS package(s):// directory
+    trossen_arm_description: '/trossen_arm_description/'
 };
 loader.load(
-  '/wxai_base.urdf',                    // The path to the URDF within the package OR absolute
+  '/wxai_base.urdf',
   robot => {
 
     scene.add( robot );
