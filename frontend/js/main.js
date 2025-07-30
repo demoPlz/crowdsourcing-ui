@@ -36,9 +36,7 @@ scene.add(axesHelper);
 
 async function getInitialJointPositions() {
   try {
-    // ---- THIS IS THE FIX ----
     const response = await fetch('http://127.0.0.1:9000/api/get-current-pose');
-    // -------------------------
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -74,11 +72,9 @@ loader.load(
 
     console.log('Applying initial positions to the 3D model...');
 
-      // --- FIX 2: Loop through the fetched positions and apply them ---
       for (const jointName in initialPositions) {
         robot.setJointValue(jointName, initialPositions[jointName]);
       }
-      // -----------------------------------------------------------------
 
       console.log("Initial robot pose has been set.");
     });
