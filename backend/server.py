@@ -22,6 +22,7 @@ def make_joint_positions() -> dict[str, float]:
         "joint_3": deg(  61.0),
         "joint_4": deg(   0.0),
         "joint_5": deg(   0.0),
+        "left_carriage_joint": 0.020, # 0 = fully closed, 0.044 m = fully open
     }
 
 
