@@ -33,6 +33,22 @@ import {
 
 import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
 
+async function getInitialJointPositions() {
+  try {
+    const response = await fetch('http://127.0.0.1:9000/api/get-state');
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    const jointPositions = data.joint_positions ?? {};
+    console.log("Successfully fetched initial joint positions:", jointPositions);
+    return jointPositions;
+  } catch (error) {
+    console.error("Could not fetch initial joint positions:", error);
+    return {};
+  }
+}
+
 /* ---------- scene ---------- */
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf5f5f5);
@@ -43,7 +59,7 @@ dir.position.set(2, 4, 2);
 scene.add(dir);
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(1.5, 1.5, 1.5);
+camera.position.set(1.5, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
@@ -61,7 +77,7 @@ loader.packages = {                 // map package:// paths → server paths
 
 loader.load(
   'assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf',
-  robot => {
+  async robot => {
 
     scene.add(robot);
 
@@ -70,37 +86,47 @@ loader.load(
 
     ikRoot.clearDoF()
 
+    const initialJointPositions = await getInitialJointPositions();
+    for (const [name, val] of Object.entries(initialJointPositions)) {
+      robot.setJointValue(name, val);
+    }
+
+    setIKFromUrdf(ikRoot, robot);
+    ikRoot.updateMatrixWorld(true);
+
     /* --- locate the end-effector link inside IK tree --- */
     let ee = null;
+    
     ikRoot.traverse(child => {                        // Frame.traverse
-      if (child.name === 'ee_gripper_link') { ee = child; return true; }
+      if ( child.name === 'ee_gripper_link' ) { ee = child; return true; }
     });
 
     /* --- create a translation-only Goal --- */
     const goal = new Goal();
-    goal.setDoF(DOF.X, DOF.Y, DOF.Z, DOF.EX, DOF.EY, DOF.EZ);                 // ignore rotation
-    ee.getWorldPosition(goal.position);               // start at current pose
-    goal.makeClosure(ee);                             // link goal ↔ ee link
+    goal.setDoF(DOF.X, DOF.Y, DOF.Z, DOF.EX, DOF.EY, DOF.EZ);
 
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.02, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xffd000 })
-    );
-    marker.position.copy(goal.position);
-    scene.add(marker);
+    goal.makeClosure( ee );                          // link goal ↔ ee
 
-    const startPos = new THREE.Vector3();
+    /* ---- sample the **visual** EE pose after matrices are fresh */
+    const startPos  = new THREE.Vector3();
     const startQuat = new THREE.Quaternion();
 
-    ee.getWorldPosition(startPos);           // THREE fills 'start'
-    ee.getWorldQuaternion(startQuat);
+    robot.updateMatrixWorld( true );                 // propagate world mats
+    const eeVis = robot.getObjectByName( 'ee_gripper_link' );
+    eeVis.getWorldPosition   ( startPos  );
+    eeVis.getWorldQuaternion ( startQuat );
 
-    goal.setPosition(startPos.x, startPos.y, startPos.z);
-    goal.setWorldQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
-    
-    marker.position.copy(startPos);
-    marker.quaternion.copy(startQuat);
-    scene.add(marker);
+    goal.setPosition   ( startPos.x, startPos.y, startPos.z );
+    goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
+
+    /* ---- red sphere exactly at that pose ---------------------- */
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry( 0.02, 16, 16 ),
+      new THREE.MeshStandardMaterial( { color: 0xff0000 } )
+    );
+    marker.position.copy    ( startPos  );
+    marker.quaternion.copy  ( startQuat );
+    scene.add( marker );
 
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
@@ -125,12 +151,12 @@ loader.load(
     }
 
     const gui = new GUI();
-    gui.add(params, 'x', -0.30, 0.30).onChange(updateGoal);
-    gui.add(params, 'y',  -0.6, 0.60).onChange(updateGoal);
-    gui.add(params, 'z', -0.30, 0.30).onChange(updateGoal);
-    gui.add(params, 'roll',  -Math.PI, Math.PI).onChange(updateGoal);
-    gui.add(params, 'pitch', -Math.PI, Math.PI).onChange(updateGoal);
-    gui.add(params, 'yaw',   -Math.PI, Math.PI).onChange(updateGoal);
+    gui.add(params, 'x', 0.0, 0.60).onChange(updateGoal);
+    gui.add(params, 'y',  -0.60, 0.60).onChange(updateGoal);
+    gui.add(params, 'z', -0.60, 0.60).onChange(updateGoal);
+    gui.add(params, 'roll',  -1.22, 1.22).onChange(updateGoal);
+    gui.add(params, 'pitch', -1.22, 1.22).onChange(updateGoal);
+    gui.add(params, 'yaw',   -1.22, 1.22).onChange(updateGoal);
 
     /* --- solver --- */
     const solver = new Solver(ikRoot);                // constructor takes root
