@@ -69,42 +69,38 @@ loader.load(
     const ikRoot = urdfRobotToIKRoot(robot);          // :contentReference[oaicite:0]{index=0}
 
     ikRoot.clearDoF()
-    setIKFromUrdf( ikRoot, robot)
-    ikRoot.updateMatrixWorld( true );
 
     /* --- locate the end-effector link inside IK tree --- */
     let ee = null;
-    
     ikRoot.traverse(child => {                        // Frame.traverse
-      if ( child.name === 'ee_gripper_link' ) { ee = child; return true; }
+      if (child.name === 'ee_gripper_link') { ee = child; return true; }
     });
 
     /* --- create a translation-only Goal --- */
     const goal = new Goal();
-    goal.setDoF(DOF.X, DOF.Y, DOF.Z, DOF.EX, DOF.EY, DOF.EZ);
+    goal.setDoF(DOF.X, DOF.Y, DOF.Z, DOF.EX, DOF.EY, DOF.EZ);                 // ignore rotation
+    ee.getWorldPosition(goal.position);               // start at current pose
+    goal.makeClosure(ee);                             // link goal ↔ ee link
 
-    goal.makeClosure( ee );                          // link goal ↔ ee
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xffd000 })
+    );
+    marker.position.copy(goal.position);
+    scene.add(marker);
 
-    /* ---- sample the **visual** EE pose after matrices are fresh */
-    const startPos  = new THREE.Vector3();
+    const startPos = new THREE.Vector3();
     const startQuat = new THREE.Quaternion();
 
-    robot.updateMatrixWorld( true );                 // propagate world mats
-    const eeVis = robot.getObjectByName( 'ee_gripper_link' );
-    eeVis.getWorldPosition   ( startPos  );
-    eeVis.getWorldQuaternion ( startQuat );
+    ee.getWorldPosition(startPos);           // THREE fills 'start'
+    ee.getWorldQuaternion(startQuat);
 
-    goal.setWorldPosition   ( startPos.x, startPos.y, startPos.z );
-    goal.setWorldQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
-
-    /* ---- red sphere exactly at that pose ---------------------- */
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry( 0.02, 16, 16 ),
-      new THREE.MeshStandardMaterial( { color: 0xff0000 } )
-    );
-    marker.position.copy    ( startPos  );
-    marker.quaternion.copy  ( startQuat );
-    scene.add( marker );
+    goal.setPosition(startPos.x, startPos.y, startPos.z);
+    goal.setWorldQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
+    
+    marker.position.copy(startPos);
+    marker.quaternion.copy(startQuat);
+    scene.add(marker);
 
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
@@ -117,21 +113,21 @@ loader.load(
 
     function updateGoal() {
       /* position */
-      goal.setWorldPosition(params.x, params.y, params.z);
+      goal.setPosition(params.x, params.y, params.z);
       marker.position.set(params.x, params.y, params.z);
 
       /* orientation */
       const quat = new THREE.Quaternion().setFromEuler(
         new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
       );
-      goal.setWorldQuaternion(quat.x, quat.y, quat.z, quat.w);
+      goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
       marker.quaternion.copy(quat);
     }
 
     const gui = new GUI();
-    gui.add(params, 'x', 0.0, 0.60).onChange(updateGoal);
-    gui.add(params, 'y',  -0.60, 0.60).onChange(updateGoal);
-    gui.add(params, 'z', -0.60, 0.60).onChange(updateGoal);
+    gui.add(params, 'x', -0.30, 0.30).onChange(updateGoal);
+    gui.add(params, 'y',  -0.6, 0.60).onChange(updateGoal);
+    gui.add(params, 'z', -0.30, 0.30).onChange(updateGoal);
     gui.add(params, 'roll',  -Math.PI, Math.PI).onChange(updateGoal);
     gui.add(params, 'pitch', -Math.PI, Math.PI).onChange(updateGoal);
     gui.add(params, 'yaw',   -Math.PI, Math.PI).onChange(updateGoal);
