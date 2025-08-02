@@ -192,8 +192,9 @@ loader.load(
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
     /* ---------- semi-transparent alignment line -------------------- */
-    const lineLen = 0.80;      // metres      ← tune if needed
-    const lineRad = 0.002;     // thickness   ← tune if needed
+    const lineLen = 0.80;      // meters
+    const lineRad = 0.002;     // thickness
+    const lineOffX = - 0.01;
     const lineMat = new THREE.MeshBasicMaterial({
       color: 0x00ff00, transparent: true, opacity: 0.4
     });
@@ -325,6 +326,7 @@ loader.load(
       setUrdfFromIK(robot, ikRoot);   // IK ➜ URDF                                         :contentReference[oaicite:2]{index=2}
 
       eeVis.getWorldPosition(line.position);
+      line.position.x += lineOffX;
       renderer.render(scene, camera);
     }
     animate();
