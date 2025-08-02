@@ -101,6 +101,7 @@ loader.load(
 
     const state = await getInitialState();
     const initialJointPositions = state.joint_positions ?? {};
+    const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
     for (const [name, val] of Object.entries(initialJointPositions)) {
       robot.setJointValue(name, val);
     }
@@ -281,12 +282,22 @@ loader.load(
     });
 
     const gui = new GUI();
-    gui.add(params, 'x', 0.0, 0.60).onChange(updateGoal);
-    gui.add(params, 'y',  -0.60, 0.60).onChange(updateGoal);
-    gui.add(params, 'z', -0.60, 0.60).onChange(updateGoal);
-    gui.add(params, 'roll',  -1.22, 1.22).onChange(updateGoal);
-    gui.add(params, 'pitch', -1.22, 1.22).onChange(updateGoal);
-    gui.add(params, 'yaw',   -1.22, 1.22).onChange(updateGoal);
+    const spanDefs = [
+      ['x',     0.30],   // meters
+      ['y',     0.30],
+      ['z',     0.30],
+      ['roll',  0.61],   // radians
+      ['pitch', 0.61],
+      ['yaw',   0.61],
+    ];
+
+    spanDefs.forEach(([key, span])=>{
+      if (!activeControls.includes(key)) return;
+      const centre = params[key];          // start-pose value
+      gui.add(params, key, centre - span, centre + span)
+         .onChange(updateGoal);
+    });
+
 
     /* --- solver --- */
     const solver = new Solver(ikRoot);                // constructor takes root

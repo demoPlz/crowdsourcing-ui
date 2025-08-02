@@ -17,9 +17,9 @@ def make_joint_positions() -> dict[str, float]:
     deg = np.deg2rad  # convenience
     return {
         "joint_0": deg(   0.0),
-        "joint_1": deg(  61.0),
-        "joint_2": deg(  73.0),
-        "joint_3": deg(  61.0),
+        "joint_1": deg(  60.0),
+        "joint_2": deg(  75.0),
+        "joint_3": deg(  -60.0),
         "joint_4": deg(   0.0),
         "joint_5": deg(   0.0),
         "left_carriage_joint": 0.0, # 0 = fully closed, 0.044 m = fully open
@@ -76,6 +76,10 @@ def choose_axis() -> str:
     return random.choice(["x", "y", "z", "roll", "pitch", "yaw", "gripper"])
 
 
+def make_controls() -> list[str]:
+    # any subset of ['x', 'y', 'z', 'roll', 'pitch', 'yaw']
+    return ['x','y','z','roll','pitch','yaw']
+
 # --------------------------------------------------------------------------- #
 #  API endpoint                                                               #
 # --------------------------------------------------------------------------- #
@@ -85,8 +89,8 @@ def get_state():
         "joint_positions": make_joint_positions(),
         "views":           make_views(),
         "camera_poses":    make_camera_poses(),
-        "axis":            choose_axis(),
-        "gripper":         gripper_motion()
+        "gripper":         gripper_motion(),
+        'controls':        make_controls()
     }
     return jsonify(state)
 
