@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import cv2
 import time
 import trossen_arm
 import numpy as np
@@ -16,6 +17,15 @@ app = Flask(__name__)
 CORS(app)
 
 states = deque(maxlen=50)
+
+cam_ids = {
+    "front":       0,   # change indices / paths as needed
+    "left":        1,
+    "right":       2,
+    "perspective": 3,
+}
+cams = {}
+
 latest_goal = None
 goal_lock = Lock()
 
@@ -27,6 +37,37 @@ def make_views() -> dict[str, list]:
     # convert to nested lists so Flask’s JSON encoder can handle it
     return {name: img.tolist()
             for name in ("left", "right", "front", "perspective")}
+
+def init_cameras():
+    """Open all cameras once; skip any that fail."""
+    for name, idx in cam_ids.items():
+        cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
+        if cap.isOpened():
+            cams[name] = cap
+        else:
+            print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
+
+def grab_frame(cap, size=(64, 64)) -> np.ndarray | None:
+    ok, frame = cap.read()
+    if not ok:
+        return None
+    frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)   # WxH
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return frame
+
+def get_views() -> dict[str, list]:
+    """Return a 64×64 RGB image dict from available webcams."""
+    H, W = 64, 64
+    pink = np.broadcast_to([255, 105, 180], (H, W, 3)).astype(np.uint8)
+
+    views = {}
+    for name in ("left", "right", "front", "perspective"):
+        if name in cams:
+            frame = grab_frame(cams[name])
+            views[name] = (frame if frame is not None else pink).tolist()
+        else:
+            views[name] = pink.tolist()
+    return views
 
 def euler_pose(x: float, y: float, z: float,
                roll: float, pitch: float, yaw: float) -> list[list[float]]:
@@ -128,6 +169,9 @@ def robot_loop():
     driver.set_gripper_position(0.044, 0.0, False) # default to open
     gripper_motion = 1 # open
 
+    print("Opening webcams...")
+    init_cameras()
+
 
     print("Starting to teleoperate the robots...")
 
@@ -146,7 +190,7 @@ def robot_loop():
             
             states.append({
                 "joint_positions": joint_map,
-                "views":           make_views(),
+                "views":           get_views(),
                 "camera_poses":    make_camera_poses(),
                 "gripper":         gripper_motion,
                 'controls':        make_controls()
@@ -182,7 +226,10 @@ def robot_loop():
                 
     except KeyboardInterrupt:
         pass
-
+    
+    finally:
+        for cap in cams.values():
+            cap.release()
     
     print('Resetting...')
     print("Moving to home positions...")
