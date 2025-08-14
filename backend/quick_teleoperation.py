@@ -13,6 +13,8 @@ from threading import Thread, Lock
 from collections import deque
 from math import cos, sin
 
+import argparse
+
 app = Flask(__name__)
 CORS(app)
 
@@ -29,14 +31,11 @@ cams = {}
 latest_goal = None
 goal_lock = Lock()
 
-def make_views() -> dict[str, list]:
-    """Four NxMx3 pink RGB images (here 64 x 64 x 3)."""
-    H, W = 64, 64
-    pink = np.array([255, 105, 180], dtype=np.uint8)  # hot-pink [R,G,B]
-    img  = np.broadcast_to(pink, (H, W, 3)).copy()    # (64,64,3)
-    # convert to nested lists so Flask’s JSON encoder can handle it
-    return {name: img.tolist()
-            for name in ("left", "right", "front", "perspective")}
+joint_names = [                                 # must match URDF / front-end
+                "joint_0", "joint_1", "joint_2",
+                "joint_3", "joint_4", "joint_5",
+                "left_carriage_joint"
+            ]
 
 def init_cameras():
     """Open all cameras once; skip any that fail."""
@@ -56,17 +55,19 @@ def grab_frame(cap, size=(64, 64)) -> np.ndarray | None:
     return frame
 
 def get_views() -> dict[str, list]:
-    """Return a 64×64 RGB image dict from available webcams."""
+    """Return a 64x64 RGB image dict from available webcams."""
     H, W = 64, 64
-    pink = np.broadcast_to([255, 105, 180], (H, W, 3)).astype(np.uint8)
+    pink = np.broadcast_to([255, 255, 255], (H, W, 3)).astype(np.uint8)
 
     views = {}
     for name in ("left", "right", "front", "perspective"):
-        if name in cams:
-            frame = grab_frame(cams[name])
-            views[name] = (frame if frame is not None else pink).tolist()
-        else:
-            views[name] = pink.tolist()
+        # if name in cams:
+        #     frame = grab_frame(cams[name])
+        #     views[name] = (frame if frame is not None else pink).tolist()
+        # else:
+            # views[name] = pink.tolist()
+
+        views[name] = pink.tolist()
     return views
 
 def euler_pose(x: float, y: float, z: float,
@@ -135,7 +136,7 @@ def submit_goal():
 
     return jsonify({"status": "ok"})
 
-def robot_loop():
+def robot_loop(record: bool = False):
     global latest_goal
 
     server_ip = '192.168.1.3'
@@ -148,7 +149,7 @@ def robot_loop():
         trossen_arm.Model.wxai_v0,
         trossen_arm.StandardEndEffector.wxai_v0_leader,
         server_ip,
-        False
+        True
     )
 
     convert_rad = np.pi / 180.0
@@ -176,16 +177,9 @@ def robot_loop():
     print("Starting to teleoperate the robots...")
 
     try:
-        dead_zone   = 0             # ignore tiny noise around center
 
-        last_t = time.time()
         while True:
-            vec = list(driver.get_all_positions())          # VectorDouble → Python list
-            joint_names = [                                 # must match URDF / front-end
-                "joint_0", "joint_1", "joint_2",
-                "joint_3", "joint_4", "joint_5",
-                "left_carriage_joint"
-            ]
+            vec = list(driver.get_all_positions())
             joint_map = { n: v for n, v in zip(joint_names, vec) }
             
             states.append({
@@ -201,11 +195,6 @@ def robot_loop():
                 latest_goal = None
 
             if submission:
-                joint_names = [
-                    "joint_0", "joint_1", "joint_2",
-                    "joint_3", "joint_4", "joint_5",
-                    "left_carriage_joint"
-                ]
                 goal_positions = np.array(
                     [submission["joint_positions"][n] for n in joint_names],
                     dtype=float
@@ -255,9 +244,17 @@ if __name__=='__main__':
     #  Run Flask server in background so main loop keeps control of the robot    #
     # --------------------------------------------------------------------------- #
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--record',
+        action='store_true',
+        help='Enable recording mode'
+    )
+    args = parser.parse_args()
+
     server_thread = Thread(
         target=lambda: app.run(host="0.0.0.0", port=9000, debug=False, use_reloader=False),
         daemon=True
     )
     server_thread.start()
-    robot_loop()
+    robot_loop(args.record)

@@ -213,6 +213,8 @@ loader.load(
     goal.setPosition   ( startPos.x, startPos.y, startPos.z );
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
+    const baseQuat = startQuat.clone();
+
     /* ---------- semi-transparent alignment line -------------------- */
     const lineLen = 0.80;      // meters
     const lineRad = 0.002;     // thickness
@@ -240,9 +242,12 @@ loader.load(
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
     const params = {
       x: startPos.x, y: startPos.y, z: startPos.z,
-      roll:  startEuler.x,
-      pitch: startEuler.y,
-      yaw:   startEuler.z
+      // roll:  startEuler.x,
+      // pitch: startEuler.y,
+      // yaw:   startEuler.z
+      roll:  0.0,
+      pitch: 0.0,
+      yaw:   0.0
     };
 
     function updateGoal() {
@@ -251,9 +256,10 @@ loader.load(
       // marker.position.set(params.x, params.y, params.z);
 
       /* orientation */
-      const quat = new THREE.Quaternion().setFromEuler(
+      const delta = new THREE.Quaternion().setFromEuler(
         new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
       );
+      const quat = baseQuat.clone().multiply(delta);
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
       // marker.quaternion.copy(quat);
     }
@@ -376,8 +382,8 @@ loader.load(
 
     spanDefs.forEach(([key, span])=>{
       if (!activeControls.includes(key)) return;
-      const centre = params[key];          // start-pose value
-      gui.add(params, key, centre - span, centre + span)
+      const center = params[key];          // start-pose value
+      gui.add(params, key, center - span, center + span)
          .onChange(updateGoal);
     });
 
