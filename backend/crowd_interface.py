@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 CAM_IDS = {
     "front":       0,   # change indices / paths as needed
     "left":        1,
@@ -10,9 +13,6 @@ JOINT_NAMES = [
     "joint_3", "joint_4", "joint_5",
     "left_carriage_joint"
 ]
-
-
-from __future__ import annotations
 
 import cv2
 import time
@@ -30,45 +30,20 @@ import argparse
 
 ### HELPERS
 
-def euler_pose(x: float, y: float, z: float,
-               roll: float, pitch: float, yaw: float) -> list[list[float]]:
-        """
-        Build a 4x4 **world** matrix (row-major list-of-lists) from
-        T = Trans(x,y,z) · Rz(yaw) · Ry(pitch) · Rx(roll)
-        """
-        cr, sr = cos(roll),  sin(roll)
-        cp, sp = cos(pitch), sin(pitch)
-        cy, sy = cos(yaw),   sin(yaw)
-
-        # column-major rotation
-        Rrow = np.array([
-            [ cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
-            [ sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
-            [   -sp,              cp*sr,              cp*cr]
-        ])
-
-        T = np.eye(4)
-        T[:3, :3] = Rrow.T
-        T[:3,  3] = [x, y, z]
-        return T.tolist()
-
 class CrowdInterface():
     '''
     Sits between the frontend and the backend
     '''
     def __init__(self):
-        self.app = Flask(__name__)
-        CORS(self.app)
 
         self.states = deque()
-
         self.cams = {}
-
         self.latest_goal = None
         self.goal_lock = Lock()
+        self._gripper_motion = 1  # Initialize gripper motion
 
 
-    ### ---CAMERAS---
+    ### ---Camera Management---
 
     def init_cameras(self):
         """Open all cameras once; skip any that fail."""
@@ -76,16 +51,15 @@ class CrowdInterface():
             cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
             if cap.isOpened():
                 self.cams[name] = cap
+                print(f"✓ Camera '{name}' opened successfully")
             else:
                 print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
 
-    def grab_frame(cap, size=(64, 64)) -> np.ndarray | None:
-        ok, frame = cap.read()
-        if not ok:
-            return None
-        frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)   # WxH
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame
+    def cleanup_cameras(self):
+        """Close all cameras"""
+        for cap in self.cams.values():
+            cap.release()
+        self.cams.clear()
     
     def get_views(self) -> dict[str, list]:
         """Return a 64x64 RGB image dict from available webcams."""
@@ -95,15 +69,91 @@ class CrowdInterface():
         views = {}
         for name in ("left", "right", "front", "perspective"):
             # if name in cams:
-            #     frame = grab_frame(cams[name])
+            #     frame = _grab_frame(cams[name])
             #     views[name] = (frame if frame is not None else pink).tolist()
             # else:
                 # views[name] = pink.tolist()
 
             views[name] = pink.tolist()
         return views
+    
+    def _grab_frame(cap, size=(64, 64)) -> np.ndarray | None:
+        ok, frame = cap.read()
+        if not ok:
+            return None
+        frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)   # WxH
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return frame
+    
+    # --- State Management ---
+    def add_state(self, joint_positions: dict, gripper_motion: int = None):
+        """Add a new state to the queue"""
+        if gripper_motion is not None:
+            self._gripper_motion = gripper_motion
+            
+        state = {
+            "joint_positions": joint_positions,
+            "views": self.get_views(),
+            "camera_poses": self._make_camera_poses(),
+            "gripper": self._gripper_motion,
+            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
+        }
+        self.states.append(state)
+    
+    def get_latest_state(self) -> dict:
+        """Get the latest state (pops from queue)"""
+        print(f"🔍 get_latest_state called - states length: {len(self.states)}")
+        if not self.states:
+            print("🔍 No states available, returning empty dict")
+            return {}
+        latest = self.states[-1]
+        print(f"🔍 Returning latest state with keys: {list(latest.keys())}")
+        return latest
+    
+    # --- Goal Management ---
+    def submit_goal(self, goal_data: dict):
+        """Submit a new goal from the frontend"""
+        with self.goal_lock:
+            self.latest_goal = goal_data
+            print(f"🔔 Goal received: {goal_data}")
+    
+    def get_latest_goal(self) -> dict | None:
+        """Get and clear the latest goal (for robot loop to consume)"""
+        with self.goal_lock:
+            goal = self.latest_goal
+            self.latest_goal = None
+            return goal
+    
+    def has_pending_goal(self) -> bool:
+        """Check if there's a pending goal"""
+        with self.goal_lock:
+            return self.latest_goal is not None
+    
+    # --- Helper Methods ---
 
-    def make_camera_poses(self) -> dict[str, list]: #TODO Placeholders for now
+    def _make_camera_poses(self) -> dict[str, list]: #TODO Placeholders for now
+        def euler_pose(x: float, y: float, z: float,
+               roll: float, pitch: float, yaw: float) -> list[list[float]]:
+            """
+            Build a 4x4 **world** matrix (row-major list-of-lists) from
+            T = Trans(x,y,z) · Rz(yaw) · Ry(pitch) · Rx(roll)
+            """
+            cr, sr = cos(roll),  sin(roll)
+            cp, sp = cos(pitch), sin(pitch)
+            cy, sy = cos(yaw),   sin(yaw)
+
+            # column-major rotation
+            Rrow = np.array([
+                [ cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
+                [ sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
+                [   -sp,              cp*sr,              cp*cr]
+            ])
+
+            T = np.eye(4)
+            T[:3, :3] = Rrow.T
+            T[:3,  3] = [x, y, z]
+            return T.tolist()
+        
         return {
             #           x     y     z     roll   pitch   yaw
             "front_pose":       euler_pose(1.0, 0.0, 0.15, 0.0, -np.pi/2 - 0.1, -np.pi/2),
@@ -112,8 +162,34 @@ class CrowdInterface():
             "perspective_pose": euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
         }
     
+
+    
+def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
+    """Create and configure Flask app with the crowd interface"""
+    app = Flask(__name__)
+    CORS(app)
+    
     @app.route("/api/get-state")
-    def get_state(self):
-        if not states:
-            return jsonify({})
-        return jsonify(states.popleft())
+    def get_state():
+        state = crowd_interface.get_latest_state()
+        print(f"🔍 Flask route /api/get-state called")
+        print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
+        print(f"🔍 Returning state: {state}")
+        response = jsonify(state)
+        # Prevent caching
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    
+    @app.route("/api/test")
+    def test():
+        return jsonify({"message": "Flask server is working", "states_count": len(crowd_interface.states)})
+    
+    @app.route("/api/submit-goal", methods=["POST"])
+    def submit_goal():
+        data = request.get_json(force=True, silent=True) or {}
+        crowd_interface.submit_goal(data)
+        return jsonify({"status": "ok"})
+    
+    return app

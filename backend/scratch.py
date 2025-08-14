@@ -15,24 +15,25 @@ from lerobot.common.robot_devices.control_configs import (
     TeleoperateControlConfig,
 )
 from lerobot.common.robot_devices.control_utils import (
-    control_loop,
     init_keyboard_listener,
-    log_control_info,
     record_episode_crowd,
     reset_environment,
     sanity_check_dataset_name,
     sanity_check_dataset_robot_compatibility,
     stop_recording,
-    warmup_record,
+    warmup_record_crowd,
 )
 from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_config
 from lerobot.common.robot_devices.utils import busy_wait, safe_disconnect
 from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
 
+from crowd_interface import *
+
 @safe_disconnect
 def record(
     robot: Robot,
+    crowd_interface: CrowdInterface,
     cfg: RecordControlConfig
 ) -> LeRobotDataset:
     if cfg.resume:
@@ -60,7 +61,7 @@ def record(
         )
 
     # Load pretrained policy
-    policy = make_policy(cfg.policy, ds_meta=dataset.meta)
+    policy = make_policy(cfg.policy, ds_meta=dataset.meta) if cfg.policy is not None else None
 
     # Disable the leader arms since we use policy
     robot.leader_arms = []
@@ -76,7 +77,7 @@ def record(
     # 3. place the cameras windows on screen
     enable_teleoperation = policy is None
     log_say("Warmup record", cfg.play_sounds)
-    warmup_record(robot, events, enable_teleoperation, cfg.warmup_time_s, cfg.display_cameras, cfg.fps)
+    warmup_record_crowd(robot, crowd_interface, events, enable_teleoperation, cfg.warmup_time_s, cfg.display_cameras, cfg.fps)
 
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
@@ -96,6 +97,7 @@ def record(
             policy=policy,
             fps=cfg.fps,
             single_task=cfg.single_task,
+            crowd_interface=crowd_interface
         )
 
         # Execute a few seconds without recording to give time to manually reset the environment
@@ -136,11 +138,22 @@ def control_robot(cfg: ControlPipelineConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
 
+    crowd_interface = CrowdInterface()
+    crowd_interface.init_cameras()
+
+    app = create_flask_app(crowd_interface)
+    server_thread = Thread(
+        target=lambda: app.run(host="0.0.0.0", port=9000, debug=False, use_reloader=False),
+        daemon=True
+    )
+
+    server_thread.start()
+
     robot = make_robot_from_config(cfg.robot)
 
     assert isinstance(cfg.control, RecordControlConfig), 'This script is for data collection'
 
-    record(robot, cfg.control)
+    record(robot, crowd_interface, cfg.control)
 
     if robot.is_connected:
         robot.disconnect()
