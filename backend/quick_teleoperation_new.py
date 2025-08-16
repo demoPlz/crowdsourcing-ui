@@ -4,6 +4,8 @@ from crowd_interface import CrowdInterface, create_flask_app, JOINT_NAMES
 import trossen_arm
 import numpy as np
 
+from test import dummy
+
 import time
 
 def robot_loop_with_crowd_interface():
@@ -18,6 +20,8 @@ def robot_loop_with_crowd_interface():
         daemon=True
     )
     server_thread.start()
+
+    dummy()
     
     # Initialize robot
     driver = trossen_arm.TrossenArmDriver()
@@ -36,31 +40,54 @@ def robot_loop_with_crowd_interface():
     )
     
     gripper_motion = 1
+
+    time.sleep(2.0)
+
+    vec = list(driver.get_all_positions())
+    joint_map = {n: v for n, v in zip(JOINT_NAMES, vec)}
+    
+    # Add state to crowd interface
+    crowd_interface.add_state(joint_map, gripper_motion)
+    
+    past_goal_positions = vec  # Initialize with current position
+    past_gripper_action = gripper_motion
     
     try:
         while True:
-            # Get current robot state
-            vec = list(driver.get_all_positions())
-            joint_map = {n: v for n, v in zip(JOINT_NAMES, vec)}
+            # Replicate teleop_step_crowd logic exactly
             
-            # Add state to crowd interface
-            crowd_interface.add_state(joint_map, gripper_motion)
+            # Read velocity to check if moving (simplified - assume we have velocity info)
+            velocity = driver.get_all_velocities() if hasattr(driver, 'get_all_velocities') else [0.0] * 7
+            moving = abs(np.max(velocity) - 0) > 0.1
             
-            # Check for new goals from frontend
+            # add state if we are moving
+            if moving:
+                present_position = list(driver.get_all_positions())
+                joint_map = {n: v for n, v in zip(JOINT_NAMES, present_position)}
+                crowd_interface.add_state(joint_map, past_gripper_action)
+            
+            # get goal only when we stop
             goal = crowd_interface.get_latest_goal()
+
             if goal:
-                # Process the goal
-                goal_positions = np.array([
-                    goal["joint_positions"][n] for n in JOINT_NAMES
-                ], dtype=float)
-                
-                driver.set_all_positions(goal_positions, 2.0, False)
-                
-                # Handle gripper
-                if goal.get("gripper") in (-1, +1):
-                    target = 0.044 if goal["gripper"] > 0 else 0.000
-                    driver.set_gripper_position(target, 0.0, False)
-                    gripper_motion = goal["gripper"]
+                print(f'quick_teleoperation received: {goal}')
+
+            goal_positions = past_goal_positions
+            gripper_action = past_gripper_action
+
+            if goal:
+                goal_positions = [goal['joint_positions'][key][0] for key in JOINT_NAMES]
+                gripper_action = float(goal['gripper'])
+            
+            goal_positions = np.array(goal_positions)
+            gripper_action = np.array([gripper_action])
+
+            past_goal_positions = goal_positions
+
+            goal_joint_action = np.concat((goal_positions, gripper_action))
+
+            # Send the goal to robot (equivalent to write("Goal_Joint_Action"))
+            driver.set_all_positions(goal_positions, 2.0, False)
             
             time.sleep(1/30)  # 30 FPS
             

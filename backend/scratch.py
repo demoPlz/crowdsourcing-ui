@@ -3,6 +3,8 @@ import time
 from dataclasses import asdict
 from pprint import pformat
 
+from threading import Thread
+
 # from safetensors.torch import load_file, save_file
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.policies.factory import make_policy
@@ -75,7 +77,7 @@ def record(
     # 1. teleoperate the robot to move it in starting position if no policy provided,
     # 2. give times to the robot devices to connect and start synchronizing,
     # 3. place the cameras windows on screen
-    enable_teleoperation = policy is None
+    enable_teleoperation = False
     log_say("Warmup record", cfg.play_sounds)
     warmup_record_crowd(robot, crowd_interface, events, enable_teleoperation, cfg.warmup_time_s, cfg.display_cameras, cfg.fps)
 
@@ -146,7 +148,6 @@ def control_robot(cfg: ControlPipelineConfig):
         target=lambda: app.run(host="0.0.0.0", port=9000, debug=False, use_reloader=False),
         daemon=True
     )
-
     server_thread.start()
 
     robot = make_robot_from_config(cfg.robot)

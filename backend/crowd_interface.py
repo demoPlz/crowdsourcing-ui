@@ -88,17 +88,37 @@ class CrowdInterface():
     # --- State Management ---
     def add_state(self, joint_positions: dict, gripper_motion: int = None):
         """Add a new state to the queue"""
+        import time
+        import numpy as np
+        current_time = time.time()
+        
         if gripper_motion is not None:
             self._gripper_motion = gripper_motion
+        
+        # Convert numpy types to JSON-serializable types
+        def convert_numpy(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, (np.int32, np.int64)):
+                return int(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [convert_numpy(item) for item in obj]
+            return obj
             
         state = {
-            "joint_positions": joint_positions,
+            "joint_positions": convert_numpy(joint_positions),
             "views": self.get_views(),
             "camera_poses": self._make_camera_poses(),
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
         }
         self.states.append(state)
+        print(f"🟢 State added at {current_time}, total states: {len(self.states)}")
+        print(f"🟢 Joint positions: {joint_positions}")
     
     def get_latest_state(self) -> dict:
         """Get the latest state (pops from queue)"""
@@ -113,21 +133,18 @@ class CrowdInterface():
     # --- Goal Management ---
     def submit_goal(self, goal_data: dict):
         """Submit a new goal from the frontend"""
-        with self.goal_lock:
-            self.latest_goal = goal_data
-            print(f"🔔 Goal received: {goal_data}")
+        self.latest_goal = goal_data
+        print(f"🔔 Goal received: {goal_data}")
     
     def get_latest_goal(self) -> dict | None:
         """Get and clear the latest goal (for robot loop to consume)"""
-        with self.goal_lock:
-            goal = self.latest_goal
-            self.latest_goal = None
-            return goal
+        goal = self.latest_goal
+        self.latest_goal = None
+        return goal
     
     def has_pending_goal(self) -> bool:
         """Check if there's a pending goal"""
-        with self.goal_lock:
-            return self.latest_goal is not None
+        return self.latest_goal is not None
     
     # --- Helper Methods ---
 
@@ -171,10 +188,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/get-state")
     def get_state():
+        import time
+        current_time = time.time()
         state = crowd_interface.get_latest_state()
-        print(f"🔍 Flask route /api/get-state called")
+        print(f"🔍 Flask route /api/get-state called at {current_time}")
         print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
-        print(f"🔍 Returning state: {state}")
+        if len(crowd_interface.states) > 0:
+            print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
         response = jsonify(state)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
