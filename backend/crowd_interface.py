@@ -51,9 +51,9 @@ class CrowdInterface():
             cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
             if cap.isOpened():
                 self.cams[name] = cap
-                print(f"✓ Camera '{name}' opened successfully")
-            else:
-                print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
+            #     print(f"✓ Camera '{name}' opened successfully")
+            # else:
+            #     print(f"⚠️  camera “{name}” (id {idx}) could not be opened")
 
     def cleanup_cameras(self):
         """Close all cameras"""
@@ -119,22 +119,23 @@ class CrowdInterface():
         self.states.append(state)
         print(f"🟢 State added at {current_time}, total states: {len(self.states)}")
         print(f"🟢 Joint positions: {joint_positions}")
+        print(f"🟢 Gripper: {self._gripper_motion}")
     
     def get_latest_state(self) -> dict:
         """Get the latest state (pops from queue)"""
-        print(f"🔍 get_latest_state called - states length: {len(self.states)}")
+        # print(f"🔍 get_latest_state called - states length: {len(self.states)}")
         if not self.states:
-            print("🔍 No states available, returning empty dict")
+            # print("🔍 No states available, returning empty dict")
             return {}
         latest = self.states[-1]
-        print(f"🔍 Returning latest state with keys: {list(latest.keys())}")
+        # print(f"🔍 Returning latest state with keys: {list(latest.keys())}")
         return latest
     
     # --- Goal Management ---
     def submit_goal(self, goal_data: dict):
         """Submit a new goal from the frontend"""
         self.latest_goal = goal_data
-        print(f"🔔 Goal received: {goal_data}")
+        # print(f"🔔 Goal received: {goal_data}")
     
     def get_latest_goal(self) -> dict | None:
         """Get and clear the latest goal (for robot loop to consume)"""
@@ -191,10 +192,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         import time
         current_time = time.time()
         state = crowd_interface.get_latest_state()
-        print(f"🔍 Flask route /api/get-state called at {current_time}")
-        print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
+        # print(f"🔍 Flask route /api/get-state called at {current_time}")
+        # print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
         if len(crowd_interface.states) > 0:
             print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
+            print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
         response = jsonify(state)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
