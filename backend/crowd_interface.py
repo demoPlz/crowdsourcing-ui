@@ -42,6 +42,21 @@ class CrowdInterface():
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
 
+        self._camera_poses = self._make_camera_poses()
+
+
+        # Precompute immutable views and camera poses to avoid per-tick allocations
+        H, W = 64, 64
+        pink = np.full((H, W, 3), 255, dtype=np.uint8)  # one-time NumPy buffer
+        blank = pink.tolist()                           # one-time JSON-serializable view
+        # Reuse the same object for all cameras (read-only downstream)
+        self._blank_views = {
+            "left":        blank,
+            "right":       blank,
+            "front":       blank,
+            "perspective": blank,
+        }
+
 
     ### ---Camera Management---
 
@@ -87,39 +102,22 @@ class CrowdInterface():
     
     # --- State Management ---
     def add_state(self, joint_positions: dict, gripper_motion: int = None):
-        """Add a new state to the queue"""
-        import time
-        import numpy as np
-        current_time = time.time()
-        
         if gripper_motion is not None:
-            self._gripper_motion = gripper_motion
-        
-        # Convert numpy types to JSON-serializable types
-        def convert_numpy(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, (np.float32, np.float64)):
-                return float(obj)
-            elif isinstance(obj, (np.int32, np.int64)):
-                return int(obj)
-            elif isinstance(obj, dict):
-                return {k: convert_numpy(v) for k, v in obj.items()}
-            elif isinstance(obj, (list, tuple)):
-                return [convert_numpy(item) for item in obj]
-            return obj
-            
-        state = {
-            "joint_positions": convert_numpy(joint_positions),
-            "views": self.get_views(),
-            "camera_poses": self._make_camera_poses(),
+            self._gripper_motion = int(gripper_motion)
+
+        # Cheap, explicit cast of the 7 scalars to built-in floats
+        jp = {k: float(v) for k, v in joint_positions.items()}
+
+        self.states.append({
+            "joint_positions": jp,
+            "views": self._blank_views,       # reuse precomputed JSON-serializable views
+            "camera_poses": self._camera_poses,  # reuse precomputed poses
             "gripper": self._gripper_motion,
-            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper']
-        }
-        self.states.append(state)
-        print(f"🟢 State added at {current_time}, total states: {len(self.states)}")
-        print(f"🟢 Joint positions: {joint_positions}")
-        print(f"🟢 Gripper: {self._gripper_motion}")
+            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
+        })
+        # print(f"🟢 State added at {current_time}, total states: {len(self.states)}")
+        # print(f"🟢 Joint positions: {joint_positions}")
+        # print(f"🟢 Gripper: {self._gripper_motion}")
     
     def get_latest_state(self) -> dict:
         """Get the latest state (pops from queue)"""
@@ -194,9 +192,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         state = crowd_interface.get_latest_state()
         # print(f"🔍 Flask route /api/get-state called at {current_time}")
         # print(f"🔍 crowd_interface.states length: {len(crowd_interface.states)}")
-        if len(crowd_interface.states) > 0:
-            print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
-            print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
+        # if len(crowd_interface.states) > 0:
+        #     print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
+        #     print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
         response = jsonify(state)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
