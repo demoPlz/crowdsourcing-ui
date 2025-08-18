@@ -83,6 +83,7 @@ const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.target.set(0, 0, 0)
 orbit.update();
 orbit.saveState();
+let currentCamName = null;  // track which calibrated cam is active (null = orbit/free)
 
 /* ---------- load URDF ---------- */
 const loader = new URDFLoader();
@@ -102,6 +103,7 @@ loader.load(
     ikRoot.clearDoF()
 
     const state = await getInitialState();
+    const cameraModels = state.camera_models ?? {};
 
     /* ---------- build textures for webcam views -------------------- */
     const viewTextures = {};                        // 'front' → THREE.DataTexture
@@ -184,6 +186,46 @@ loader.load(
     }
 
     const camPoses = state.camera_poses ?? {}
+
+    // --- Intrinsics → projection helper (use Knew from backend) ---
+    function applyProjectionFromK(name) {
+      const model = cameraModels?.[name];
+      if (!model || !model.Knew || !model.width || !model.height) {
+        return false;
+      }
+      const K = model.Knew;       // 3x3 (row-major)
+      const W = model.width|0;
+      const H = model.height|0;
+      const near = camera.near, far = camera.far;
+
+      // Scale intrinsics to current viewport (CSS) size
+      const sz = new THREE.Vector2();
+      renderer.getSize(sz);
+      const vw = sz.x, vh = sz.y;
+      const sx = vw / W, sy = vh / H;
+
+      const fx = K[0][0] * sx, fy = K[1][1] * sy;
+      const cx = K[0][2] * sx, cy = K[1][2] * sy;
+
+      // OpenCV pixels (origin top-left, +y down) → Three frustum (y up)
+      const left   = -cx * near / fx;
+      const right  =  (vw - cx) * near / fx;
+      const top    =  cy * near / fy;
+      const bottom = -(vh - cy) * near / fy;
+
+      const P = new THREE.Matrix4().makePerspective(left, right, top, bottom, near, far);
+      camera.projectionMatrix.copy(P);
+      camera.projectionMatrixInverse.copy(P).invert();
+      camera.projectionMatrixAutoUpdate = false;
+      return true;
+    }
+
+    function applyDefaultPerspective() {
+      camera.projectionMatrixAutoUpdate = true;
+      camera.fov = 45;
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+    }
 
     setIKFromUrdf(ikRoot, robot);
     ikRoot.updateMatrixWorld(true);
@@ -294,6 +336,13 @@ loader.load(
       /* ---------- set matching webcam frame as background ---------- */
       const name = key.replace('_pose', '');   // 'front_pose' → 'front'
       scene.background = viewTextures[name] ?? defaultBg;
+      // Match projection to calibrated intrinsics if available
+      if (applyProjectionFromK(name)) {
+        currentCamName = name;
+      } else {
+        currentCamName = null;
+        applyDefaultPerspective();
+      }
     }
 
     const btnBar   = document.createElement('div');
@@ -410,8 +459,13 @@ loader.load(
 
 /* ---------- responsive canvas ---------- */
 addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
+  if (currentCamName) {
+    // Recompute frustum from Knew for new viewport size
+    applyProjectionFromK(currentCamName);
+  } else {
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+  }
   renderer.setSize(innerWidth, innerHeight);
 });
 </script></body></html>

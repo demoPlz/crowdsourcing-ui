@@ -3,7 +3,7 @@ from __future__ import annotations
 
 CAM_IDS = {
     "front":       14,   # change indices / paths as needed
-    "left":        16,
+    "left":        17,
     "right":       18,
     "perspective": 12,
 }
@@ -14,10 +14,21 @@ JOINT_NAMES = [
     "left_carriage_joint"
 ]
 
+# Per-camera calibration file paths (extend as you calibrate more cams)
+# Use T_three from extrinsics (camera world for Three.js) and map1/map2 from intrinsics to undistort.
+CALIB_PATHS = {
+    "front": {
+        "intr": "calib/intrinsics_front_1_640x480.npz",
+        "extr": "calib/extrinsics_front_1.npz",
+    },
+    "left":        {"intr": None, "extr": None},
+    "right":       {"intr": None, "extr": None},
+    "perspective": {"intr": None, "extr": None},
+}
+
 import cv2
-import time
-import trossen_arm
 import numpy as np
+import os
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -25,8 +36,6 @@ from flask import request
 from threading import Thread, Lock
 from collections import deque
 from math import cos, sin
-
-import argparse
 
 _REALSENSE_BLOCKLIST = (
     "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
@@ -73,7 +82,10 @@ class CrowdInterface():
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
 
-        self._camera_poses = self._make_camera_poses()
+        # Will be filled by _load_calibrations()
+        self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._camera_models: dict[str, dict] = {}
+        self._camera_poses = self._load_calibrations()
 
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
@@ -146,6 +158,11 @@ class CrowdInterface():
             if name not in self.cams:
                 continue
             frame = self._grab_frame(self.cams[name], size=(640, 480))
+            # Apply per-camera undistortion (if intrinsics provided)
+            maps = self._undistort_maps.get(name)
+            if frame is not None and maps is not None:
+                m1, m2 = maps
+                frame = cv2.remap(frame, m1, m2, interpolation=cv2.INTER_LINEAR)
             if frame is not None:
                 views[name] = frame.tolist()
         return views
@@ -176,6 +193,7 @@ class CrowdInterface():
             "joint_positions": jp,
             "views": self.get_views(),       # reuse precomputed JSON-serializable views
             "camera_poses": self._camera_poses,  # reuse precomputed poses
+            "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         })
@@ -211,7 +229,7 @@ class CrowdInterface():
     
     # --- Helper Methods ---
 
-    def _make_camera_poses(self) -> dict[str, list]: #TODO Placeholders for now
+    def _make_camera_poses(self) -> dict[str, list]: #Fallback
         def euler_pose(x: float, y: float, z: float,
                roll: float, pitch: float, yaw: float) -> list[list[float]]:
             """
@@ -236,13 +254,79 @@ class CrowdInterface():
         
         return {
             #           x     y     z     roll   pitch   yaw
-            "front_pose":       euler_pose(1.0, 0.0, 0.15, 0.0, -np.pi/2 - 0.1, -np.pi/2),
+            "front_pose":       euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
             "left_pose":        euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
             "right_pose":       euler_pose(0.2,  1.0, 0.15, np.pi/2, 0.0, np.pi),
             "perspective_pose": euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
         }
     
+    def _load_calibrations(self) -> dict[str, list]:
+        """
+        Load per-camera extrinsics (→ camera_poses) and intrinsics (→ undistortion  Knew for projection).
+        Falls back to placeholder poses for any camera missing calibrations.
+        """
+        poses = self._make_camera_poses()  # start with fallbacks
+        self._undistort_maps = {}
+        self._camera_models = {}
 
+        for name, paths in CALIB_PATHS.items():
+            if not paths:
+                continue
+
+            # ---- Load extrinsics → camera pose ----
+            extr = paths.get("extr")
+            if extr and os.path.exists(extr):
+                try:
+                    data = np.load(extr, allow_pickle=True)
+                    if "T_three" in data:
+                        M = np.asarray(data["T_three"], dtype=np.float64)
+                    elif "T_base_cam" in data:
+                        # Convert OpenCV cam (Z forward) to Three.js cam (looks -Z)
+                        T = np.asarray(data["T_base_cam"], dtype=np.float64)
+                        Rflip = np.diag([1.0, -1.0, -1.0])
+                        M = np.eye(4, dtype=np.float64)
+                        M[:3, :3] = T[:3, :3] @ Rflip
+                        M[:3,  3] = T[:3,  3]
+                    else:
+                        M = None
+                    if M is not None:
+                        poses[f"{name}_pose"] = M.tolist()
+                        print(f"✓ loaded extrinsics for '{name}' from {extr}")
+                except Exception as e:
+                    print(f"⚠️  failed to load extrinsics for '{name}' ({extr}): {e}")
+
+            # ---- Load intrinsics → undistortion maps  Knew for projection ----
+            intr = paths.get("intr")
+            if intr and os.path.exists(intr):
+                try:
+                    idata = np.load(intr, allow_pickle=True)
+                    W = int(idata["width"])
+                    H = int(idata["height"])
+                    # Prefer rectified Knew (matches undistorted frames)
+                    Knew = np.asarray(idata["Knew"], dtype=np.float64)
+                    # Optional: precomputed undistort maps
+                    if "map1" in idata.files and "map2" in idata.files:
+                        self._undistort_maps[name] = (idata["map1"], idata["map2"])
+                        rectified = True
+                        print(f"✓ loaded undistort maps for '{name}' from {intr}")
+                    else:
+                        rectified = False
+                    # Expose per-camera intrinsics to the frontend
+                    self._camera_models[name] = {
+                        "model": "pinhole",
+                        "rectified": rectified,
+                        "width": W,
+                        "height": H,
+                        "Knew": Knew.tolist(),
+                        # (optionally include original K/D if you want)
+                        # "K": np.asarray(idata["K"], dtype=np.float64).tolist(),
+                        # "D": np.asarray(idata["D"], dtype=np.float64).ravel().tolist(),
+                    }
+                    print(f"✓ loaded intrinsics (Knew {W}x{H}) for '{name}' from {intr}")
+                except Exception as e:
+                    print(f"⚠️  failed to load intrinsics for '{name}' ({intr}): {e}")
+
+        return poses
     
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""

@@ -66,4 +66,4 @@ plt.savefig("charuco_5x7_35mm_USletter.pdf", format="pdf", dpi=DPI)
 plt.close(fig)
 
 print("Wrote charuco_5x7_35mm_USletter.pdf")
-print(f"Physical board area: {board_w_mm:.1f} mm × {board_h_mm:.1f} mm")
+print(f"Physical board area: {board_w_mm:.1f} mm x {board_h_mm:.1f} mm")
