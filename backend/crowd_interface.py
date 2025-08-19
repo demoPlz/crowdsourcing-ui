@@ -197,9 +197,9 @@ class CrowdInterface():
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         })
-        # print(f"🟢 State added at {current_time}, total states: {len(self.states)}")
-        # print(f"🟢 Joint positions: {joint_positions}")
-        # print(f"🟢 Gripper: {self._gripper_motion}")
+        print(f"🟢 State added. Total states: {len(self.states)}")
+        print(f"🟢 Joint positions: {joint_positions}")
+        print(f"🟢 Gripper: {self._gripper_motion}")
     
     def get_latest_state(self) -> dict:
         """Get the latest state (pops from queue)"""

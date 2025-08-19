@@ -106,6 +106,8 @@ loader.load(
 
     scene.add(robot);
 
+    let robotVisible = true; // toggle visibility of the robot model
+
     /* --- build IK tree from URDF (limits copied automatically) --- */
     const ikRoot = urdfRobotToIKRoot(robot);          // :contentReference[oaicite:0]{index=0}
 
@@ -294,15 +296,20 @@ loader.load(
     );
     line.rotation.x = Math.PI / 2;   // cylinder-Y → world Z
     scene.add(line);
+    // --- cache & helpers for fast updates (no per-frame allocs) ---
+    const baseLineLen = line.geometry.parameters.height; // original cylinder height
+    const floorZ      = 0.0;      // ground plane (Z-up)
+    const bottomPad   = 0.0005;   // tiny lift to avoid z-fighting
+    const _eePosTmp   = new THREE.Vector3();
 
     /* ---- red sphere exactly at that pose ---------------------- */
-    // const marker = new THREE.Mesh(
-    //   new THREE.SphereGeometry( 0.02, 16, 16 ),
-    //   new THREE.MeshStandardMaterial( { color: 0xff0000 } )
-    // );
-    // marker.position.copy    ( startPos  );
-    // marker.quaternion.copy  ( startQuat );
-    // scene.add( marker );
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry( 0.005, 16, 16 ),
+      new THREE.MeshStandardMaterial( { color: 0xff0000 } )
+    );
+    marker.position.copy    ( startPos  );
+    marker.quaternion.copy  ( startQuat );
+    scene.add( marker );
 
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
@@ -319,7 +326,7 @@ loader.load(
     function updateGoal() {
       /* position */
       goal.setPosition(params.x, params.y, params.z);
-      // marker.position.set(params.x, params.y, params.z);
+      marker.position.set(params.x, params.y, params.z);
 
       /* orientation */
       const delta = new THREE.Quaternion().setFromEuler(
@@ -327,7 +334,7 @@ loader.load(
       );
       const quat = baseQuat.clone().multiply(delta);
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
-      // marker.quaternion.copy(quat);
+      marker.quaternion.copy(quat);
     }
 
     /* ---------- camera-view buttons --------------------------- */
@@ -356,8 +363,22 @@ loader.load(
       const quat  = new THREE.Quaternion();
       const scale = new THREE.Vector3();
       m.decompose( pos, quat, scale );
-      camera.position.copy( pos );
-      camera.quaternion.copy( quat );
+      
+      // --- Extrinsics validation knobs -----------------------------
+      // Scale the translation (e.g., fix mm→m or cm→m mistakes)
+      const poseScale = 0.85;   // >1 = push camera farther, <1 = closer
+      pos.multiplyScalar(poseScale);
+
+      // Optionally nudge along camera forward (+Z camera-local)
+      const zOffset = 0.00;     // meters; positive = move away from scene
+      if (zOffset !== 0) {
+        const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+        pos.addScaledVector(forward, zOffset);
+      }
+
+      camera.position.copy(pos);
+      camera.quaternion.copy(quat);
+
       camera.updateMatrixWorld();
       orbit.enabled = false;
       /* ---------- set matching webcam frame as background ---------- */
@@ -394,6 +415,23 @@ loader.load(
     orbitBtn.textContent = 'orbit';
     orbitBtn.onclick = ()=> switchCamera('orbit');
     btnBar.appendChild(orbitBtn);
+
+    /* add hide/show robot model button (bottom-left corner) */
+    const toggleRobotBtn = document.createElement('button');
+    toggleRobotBtn.textContent = 'hide robot model';
+    toggleRobotBtn.style.position = 'fixed';
+    toggleRobotBtn.style.left     = '8px';
+    toggleRobotBtn.style.bottom   = '8px';
+    toggleRobotBtn.style.zIndex   = 10;
+    document.body.appendChild(toggleRobotBtn);
+
+    toggleRobotBtn.onclick = () => {
+      robotVisible = !robotVisible;
+      robot.visible = robotVisible;
+      toggleRobotBtn.textContent = robotVisible
+        ? 'hide robot model'
+        : 'show robot model';
+    };
 
     /* ---------- confirm button (lower-right corner) ------------------- */
   const confirmBtn = document.createElement('button');
@@ -477,8 +515,20 @@ loader.load(
       solver.solve();                 // run DLS IK
       setUrdfFromIK(robot, ikRoot);   // IK ➜ URDF                                         :contentReference[oaicite:2]{index=2}
 
-      eeVis.getWorldPosition(line.position);
-      line.position.x += lineOffX;
+      // --- align the green line so its bottom sits on the ground ---
+      eeVis.getWorldPosition(_eePosTmp);
+      // Effective vertical length (Z-up), clamped to ≥ 0 with a small gap from the floor
+      let len = _eePosTmp.z - (floorZ + bottomPad);
+      if (len <= 0) {
+        line.visible = false;             // EE at/below floor → hide
+      } else {
+        line.visible = true;
+        // Scale along local Y (already rotated to world Z)
+        line.scale.y = len / baseLineLen;
+        // Center of cylinder should be midway between EE.z and floorZ+pad
+        const midZ = (floorZ + bottomPad) + 0.5 * len;
+        line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
+      }
       renderer.render(scene, camera);
     }
     animate();
