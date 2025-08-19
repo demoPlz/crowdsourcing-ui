@@ -363,18 +363,6 @@ loader.load(
       const quat  = new THREE.Quaternion();
       const scale = new THREE.Vector3();
       m.decompose( pos, quat, scale );
-      
-      // --- Extrinsics validation knobs -----------------------------
-      // Scale the translation (e.g., fix mm→m or cm→m mistakes)
-      const poseScale = 0.85;   // >1 = push camera farther, <1 = closer
-      pos.multiplyScalar(poseScale);
-
-      // Optionally nudge along camera forward (+Z camera-local)
-      const zOffset = 0.00;     // meters; positive = move away from scene
-      if (zOffset !== 0) {
-        const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
-        pos.addScaledVector(forward, zOffset);
-      }
 
       camera.position.copy(pos);
       camera.quaternion.copy(quat);

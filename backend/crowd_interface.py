@@ -3,9 +3,9 @@ from __future__ import annotations
 
 CAM_IDS = {
     "front":       14,   # change indices / paths as needed
-    "left":        17,
-    "right":       18,
-    "perspective": 12,
+    "left":        12,
+    "right":       17,
+    "perspective": 18,
 }
 
 JOINT_NAMES = [
