@@ -97,13 +97,8 @@ renderer.setPixelRatio(devicePixelRatio);
 const mount = document.getElementById('viewport');
 mount.appendChild(renderer.domElement);
 
-const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.target.set(0, 0, 0)
-orbit.update();
-orbit.saveState();
-let currentCamName = null;  // track which calibrated cam is active (null = orbit/free)
-/** Calibration mode (UI & per-camera params) */
-let calibrationMode = false;
+let currentCamName = null;  // track which calibrated cam is active
+let calibrationMode = false; // Calibration mode (UI & per-camera params)
 let calibGUI = null;                       // lil-gui instance for calibration
 const calibState = {};                     // name -> {tx,ty,tz,rx,ry,rz,fx,fy,cx,cy}
 const calibDefaults = {};                  // snapshot at calibration start (per camera)
@@ -120,7 +115,9 @@ loader.load(
 
     scene.add(robot);
 
-    let robotVisible = true; // toggle visibility of the robot model
+    let robotVisible = false; // toggle visibility of the robot model
+    robot.visible = false;     // hide arm until user moves a slider
+    let toggleRobotBtn = null;
 
     /* --- build IK tree from URDF (limits copied automatically) --- */
     const ikRoot = urdfRobotToIKRoot(robot);          // :contentReference[oaicite:0]{index=0}
@@ -515,6 +512,13 @@ loader.load(
       const quat = baseQuat.clone().multiply(delta);
       goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
       marker.quaternion.copy(quat);
+
+      // On first slider interaction: reveal the robot and update button label
+      if (!robotVisible) {
+        robotVisible = true;
+        robot.visible = true;
+        if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
+      }
     }
 
     /* ---------- camera-view buttons --------------------------- */
@@ -528,15 +532,6 @@ loader.load(
     }
 
     function switchCamera (key){
-      if (key === 'orbit') {
-        orbit.enabled = true;
-        orbit.reset();
-        scene.background = defaultBg; // reset background
-        currentCamName = null;
-        renderer.setSize(innerWidth, innerHeight);
-        applyDefaultPerspective();
-        return;
-      }
       if (!camPoses[key]) return;
       const m = poseToMatrix( camPoses[key] );
       const pos   = new THREE.Vector3();
@@ -548,7 +543,6 @@ loader.load(
       camera.quaternion.copy(quat);
 
       camera.updateMatrixWorld();
-      orbit.enabled = false;
       /* ---------- set matching webcam frame as background ---------- */
       const name = key.replace('_pose', '');   // 'front_pose' → 'front'
       scene.background = viewTextures[name] ?? defaultBg;
@@ -583,12 +577,6 @@ loader.load(
       btnBar.appendChild( b );
     });
 
-    /* add orbit button */
-    const orbitBtn = document.createElement('button');
-    orbitBtn.textContent = 'orbit';
-    orbitBtn.onclick = ()=> switchCamera('orbit');
-    btnBar.appendChild(orbitBtn);
-
     /* add calibrate toggle button */
     const calibrateBtn = document.createElement('button');
     calibrateBtn.textContent = 'calibrate';
@@ -605,8 +593,8 @@ loader.load(
     btnBar.appendChild(calibrateBtn);
 
     /* add hide/show robot model button (bottom-left corner) */
-    const toggleRobotBtn = document.createElement('button');
-    toggleRobotBtn.textContent = 'hide robot model';
+    toggleRobotBtn = document.createElement('button');
+    toggleRobotBtn.textContent = 'show robot model';
     toggleRobotBtn.style.position = 'fixed';
     toggleRobotBtn.style.left     = '8px';
     toggleRobotBtn.style.bottom   = '8px';
@@ -621,7 +609,16 @@ loader.load(
         : 'show robot model';
     };
 
+    toggleRobotBtn.textContent = 'show robot model';
+
     /* ---------- confirm button (lower-right corner) ------------------- */
+
+    // Default to the first available camera pose
+    const firstCamKey = Object.keys(camPoses)[0];
+    if (firstCamKey) {
+      switchCamera(firstCamKey);
+    }
+
   const confirmBtn = document.createElement('button');
   confirmBtn.textContent   = 'confirm';
   confirmBtn.style.position = 'fixed';
