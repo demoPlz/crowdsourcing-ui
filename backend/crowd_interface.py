@@ -554,6 +554,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         #     print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
         #     print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
         payload = crowd_interface._state_to_json(state)
+        
+        # Add hardcoded prompt text
+        payload["prompt"] = "Pick up the red block."
+        
         response = jsonify(payload)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'

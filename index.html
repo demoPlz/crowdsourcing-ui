@@ -3,10 +3,260 @@
 <meta charset="utf-8" />
 <title>WidowX AI — position IK only</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden}
-  /* Center the canvas and prevent stretching; letterbox/pillarbox with black */
-  #viewport{position:fixed;inset:0;background:#000;display:grid;place-items:center}
-  canvas{display:block}
+  html,body{margin:0;height:100%;overflow:hidden;background:#f5f5f5}
+  /* Multi-view container wrapper with blue background */
+  #viewport{
+    position:fixed; 
+    top:50%; left:50%; 
+    transform:translate(-50%, -50%);
+    background: #3b82f6;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  
+  /* Text prompt area */
+  #viewport .prompt-text{
+    color: white;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+    font-size: 18px;
+    font-weight: 600;
+    text-align: left;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    line-height: 1.4;
+    min-height: auto;
+    padding: 0;
+    margin: 0;
+  }
+
+  /* Content container for views and controls */
+  #viewport .content-container{
+    display: flex;
+    gap: 20px;
+    align-items: center;
+  }
+  
+  /* Grid container for camera views */
+  #viewport .views-grid{
+    display:grid; 
+    gap:0px; 
+    border-radius:4px;
+    overflow:hidden;
+    flex-shrink: 0;
+  }
+
+  /* Container for sliders with CAPTCHA styling */
+  #viewport .controls-container{
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    padding: 16px 16px 12px 16px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* Single slider layout (underneath views) */
+  #viewport.single-slider{
+    flex-direction: column;
+  }
+  #viewport.single-slider .content-container{
+    flex-direction: column;
+    align-items: center;
+  }
+  #viewport.single-slider .controls-container{
+    align-self: center;
+    max-width: 400px;
+  }
+
+  /* Multiple slider layout (to the right of views) */
+  #viewport.multiple-sliders .content-container{
+    flex-direction: row;
+    align-items: center;
+  }
+
+  /* Style the lil-gui within controls container */
+  .controls-container .lil-gui {
+    --background-color: transparent;
+    --widget-color: rgba(255,255,255,0.9);
+    --hover-color: rgba(255,255,255,1);
+    --focus-color: #3b82f6;
+    --text-color: #374151;
+    --text-color-disabled: #9ca3af;
+    --border-color: rgba(0,0,0,0.1);
+    --border-color-hover: rgba(0,0,0,0.2);
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 16px;
+  }
+
+  /* Hide any lil-gui title/header elements */
+  .controls-container .lil-gui .title,
+  .controls-container .lil-gui .lil-gui > .title {
+    display: none !important;
+  }
+
+  .controls-container .lil-gui .controller {
+    margin: 8px 0;
+    height: 32px;
+  }
+
+  .controls-container .lil-gui .controller .name {
+    font-size: 16px;
+    font-weight: 500;
+    min-width: 60px;
+  }
+
+  .controls-container .lil-gui .controller input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: linear-gradient(to right, #d1d5db 0%, #d1d5db 100%);
+    border-radius: 8px;
+    height: 16px;
+    min-width: 140px;
+    outline: none;
+    border: 1px solid #9ca3af;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+  }
+
+  /* Webkit slider thumb (Chrome, Safari, Edge) */
+  .controls-container .lil-gui .controller input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 40px;
+    height: 28px;
+    background: linear-gradient(145deg, #cbd5e1 0%, #94a3b8 50%, #64748b 100%);
+    border: 2px solid #475569;
+    border-radius: 6px;
+    cursor: pointer;
+    box-shadow: 
+      0 3px 8px rgba(0,0,0,0.4), 
+      inset 0 1px 0 rgba(255,255,255,0.3);
+    position: relative;
+  }
+
+  /* Firefox slider thumb */
+  .controls-container .lil-gui .controller input[type="range"]::-moz-range-thumb {
+    width: 40px;
+    height: 28px;
+    background: linear-gradient(145deg, #cbd5e1 0%, #94a3b8 50%, #64748b 100%);
+    border: 2px solid #475569;
+    border-radius: 6px;
+    cursor: pointer;
+    box-shadow: 
+      0 3px 8px rgba(0,0,0,0.4), 
+      inset 0 1px 0 rgba(255,255,255,0.3);
+  }
+
+  /* Hover effects */
+  .controls-container .lil-gui .controller input[type="range"]::-webkit-slider-thumb:hover {
+    background: linear-gradient(145deg, #e2e8f0 0%, #cbd5e1 50%, #94a3b8 100%);
+    box-shadow: 
+      0 4px 10px rgba(0,0,0,0.5), 
+      inset 0 1px 0 rgba(255,255,255,0.5);
+    border: 2px solid #334155;
+  }
+
+  .controls-container .lil-gui .controller input[type="range"]::-moz-range-thumb:hover {
+    background: linear-gradient(145deg, #e2e8f0 0%, #cbd5e1 50%, #94a3b8 100%);
+    box-shadow: 
+      0 4px 10px rgba(0,0,0,0.5), 
+      inset 0 1px 0 rgba(255,255,255,0.5);
+    border: 2px solid #334155;
+  }
+
+  /* Track styling for Firefox */
+  .controls-container .lil-gui .controller input[type="range"]::-moz-range-track {
+    background: linear-gradient(to right, #d1d5db 0%, #d1d5db 100%);
+    border-radius: 8px;
+    height: 16px;
+    border: 1px solid #9ca3af;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+  }
+
+  /* Hide the number input/display */
+  .controls-container .lil-gui .controller input[type="number"],
+  .controls-container .lil-gui .controller .display {
+    display: none !important;
+  }
+
+  /* Gripper button styling */
+  .controls-container .gripper-section {
+    margin: 0 0 12px 0;
+  }
+
+  .controls-container .gripper-label {
+    font-size: 16px;
+    font-weight: 500;
+    color: #374151;
+    margin-bottom: 8px;
+    text-align: left;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+  }
+
+  .controls-container .gripper-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin: 0;
+  }
+
+  .controls-container .gripper-buttons button,
+  .controls-container .confirm-button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: capitalize;
+  }
+
+  .controls-container .gripper-buttons button.open-btn {
+    background: #10b981;
+    color: white;
+    flex: 1;
+  }
+
+  .controls-container .gripper-buttons button.close-btn {
+    background: #ef4444;
+    color: white;
+    flex: 1;
+  }
+
+  .controls-container .confirm-button {
+    background: #3b82f6;
+    color: white;
+    width: 100%;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 12px 16px;
+  }
+
+  .controls-container button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    transition: all 0.2s ease;
+  }
+
+  .controls-container button:active {
+    transform: translateY(0);
+  }
+
+  .view-container{
+    position:relative;
+    display:grid;
+    place-items:center;
+    overflow:hidden;
+  }
+  .view-container.selected{border:2px solid #60a5fa;box-shadow:0 0 15px rgba(96,165,250,.6)}
+  canvas{display:block;object-fit:cover;width:100%;height:100%}
   /* (no width/height forcing on canvas; renderer controls it) */
  /* --- nice full-screen status overlay + spinner --- */
   #statusOverlay{
@@ -78,7 +328,7 @@ async function getInitialState() {
     console.error("Could not fetch initial state:", error);
     showServerNotStarted();
     // Hide interactive UI when server is not running
-    const uiElems = document.querySelectorAll("button, .lil-gui, #viewport canvas");
+    const uiElems = document.querySelectorAll("button, .lil-gui, #viewport");
     uiElems.forEach(el=>{
       el.style.display = "none";
     });
@@ -120,17 +370,145 @@ scene.add(dir);
 /* ---------- floor / workspace visual -------------------- */
 // light, neutral grid on the ground (y = 0)
 
-const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math.PI);
+// Default camera (will be cloned for each view)
+const templateCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+templateCamera.position.set(0.2, -2, 0).applyAxisAngle(new THREE.Vector3(0, -1, 1), Math.PI);
 
-// Render everything at half-size (both width and height)
-const VIEW_SCALE = 0.5;
+// Render everything at a more compact size for captcha-style layout
+const VIEW_SCALE = 0.8;
 
-const renderer = new THREE.WebGLRenderer({ antialias:true });
-renderer.setSize(innerWidth * VIEW_SCALE, innerHeight * VIEW_SCALE);
-renderer.setPixelRatio(devicePixelRatio);
+// Multi-view system
+const views = new Map(); // viewName -> {camera, renderer, container, name}
+let currentViewName = null;
+let calibrationMode = false; // Calibration mode (UI & per-camera params)
 const mount = document.getElementById('viewport');
-mount.appendChild(renderer.domElement);
+
+// Create the prompt text first
+const promptText = document.createElement('div');
+promptText.className = 'prompt-text';
+promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
+mount.appendChild(promptText);
+
+// Create the content container for views and controls
+const contentContainer = document.createElement('div');
+contentContainer.className = 'content-container';
+mount.appendChild(contentContainer);
+
+// Create the views grid container
+const viewsGrid = document.createElement('div');
+viewsGrid.className = 'views-grid';
+contentContainer.appendChild(viewsGrid);
+
+// Create the controls container for sliders
+const controlsContainer = document.createElement('div');
+controlsContainer.className = 'controls-container';
+controlsContainer.style.display = 'none'; // Hidden initially
+contentContainer.appendChild(controlsContainer);
+
+// Multi-view grid layout helper
+function calculateGridLayout(numViews) {
+  if (numViews === 1) return { rows: 1, cols: 1 };
+  if (numViews === 2) return { rows: 1, cols: 2 };
+  if (numViews === 3) return { rows: 2, cols: 2 }; // 2 on top, 1 on bottom
+  if (numViews === 4) return { rows: 2, cols: 2 };
+  // For more views, calculate a reasonable grid
+  const cols = Math.ceil(Math.sqrt(numViews));
+  const rows = Math.ceil(numViews / cols);
+  return { rows, cols };
+}
+
+function setupViewportGrid(numViews) {
+  const { rows, cols } = calculateGridLayout(numViews);
+  viewsGrid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  viewsGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+}
+
+function createViewRenderer(viewName, cameraModel, texture) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  
+  const camera = templateCamera.clone();
+  
+  const container = document.createElement('div');
+  container.className = 'view-container';
+  container.dataset.viewName = viewName;
+  
+  container.appendChild(renderer.domElement);
+  viewsGrid.appendChild(container);
+  
+  const view = {
+    camera,
+    renderer,
+    container,
+    name: viewName,
+    model: cameraModel,
+    texture: texture
+  };
+  
+  views.set(viewName, view);
+  return view;
+}
+
+function updateViewSizes() {
+  const viewContainers = viewsGrid.querySelectorAll('.view-container');
+  if (viewContainers.length === 0) return;
+  
+  // Define compact view dimensions based on number of views (increased by 87.5% total: 1.25 * 1.5)
+  const numViews = viewContainers.length;
+  let targetWidth, targetHeight;
+  
+  if (numViews === 1) {
+    targetWidth = 600;  // 400 * 1.5
+    targetHeight = 450; // 300 * 1.5
+  } else if (numViews === 2) {
+    targetWidth = 450;  // 300 * 1.5
+    targetHeight = 338; // 225 * 1.5
+  } else if (numViews === 3 || numViews === 4) {
+    targetWidth = 375;  // 250 * 1.5
+    targetHeight = 282; // 188 * 1.5
+  } else {
+    targetWidth = 300;  // 200 * 1.5
+    targetHeight = 225; // 150 * 1.5
+  }
+  
+  // Apply sizing to views grid - no gaps or padding now
+  const { rows, cols } = calculateGridLayout(numViews);
+  const totalWidth = cols * targetWidth; // no gaps
+  const totalHeight = rows * targetHeight; // no gaps
+  
+  viewsGrid.style.width = totalWidth + 'px';
+  viewsGrid.style.height = totalHeight + 'px';
+  
+  views.forEach(view => {
+    const model = view.model;
+    if (!model) return;
+    
+    const W = model.width | 0;
+    const H = model.height | 0;
+    
+    // Make canvas fill the entire container
+    const containerAspect = targetWidth / targetHeight;
+    const imageAspect = W / H;
+    
+    let renderWidth = targetWidth;
+    let renderHeight = targetHeight;
+    
+    // Fill the container completely (may crop image slightly)
+    if (containerAspect > imageAspect) {
+      // Container is wider than image aspect - fit to width
+      renderHeight = Math.round(targetWidth / imageAspect);
+    } else {
+      // Container is taller than image aspect - fit to height  
+      renderWidth = Math.round(targetHeight * imageAspect);
+    }
+    
+    view.renderer.setSize(renderWidth, renderHeight);
+    
+    // Set container size to match target exactly
+    view.container.style.width = targetWidth + 'px';
+    view.container.style.height = targetHeight + 'px';
+  });
+}
 
 
 // --- status overlay (initially hidden) ---
@@ -154,12 +532,10 @@ function showServerNotStarted(){
 }
 
 // ================================ devMode ===================================
-const devMode = true;
+const devMode = false;
 // ================================ devMode ===================================
 
 
-let currentCamName = null;  // track which calibrated cam is active
-let calibrationMode = false; // Calibration mode (UI & per-camera params)
 let calibGUI = null;                       // lil-gui instance for calibration
 const calibState = {};                     // name -> {tx,ty,tz,rx,ry,rz,fx,fy,cx,cy}
 const calibDefaults = {};                  // snapshot at calibration start (per camera)
@@ -202,6 +578,11 @@ loader.load(
 
     const initialJointPositions = state.joint_positions ?? {};
     const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
+    
+    // Update prompt text from server state
+    const promptFromServer = state.prompt || 'Pick up the red block.';
+    promptText.textContent = promptFromServer;
+    
     for (const [name, val] of Object.entries(initialJointPositions)) {
       robot.setJointValue(name, val);
     }
@@ -255,18 +636,45 @@ loader.load(
 
     drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
 
-    const gui = new GUI();
+    const gui = new GUI({ container: controlsContainer });
+    gui.domElement.style.position = 'static'; // Remove absolute positioning
+    gui.domElement.style.width = '100%';
+    
+    // Create gripper controls container (will be added after sliders)
+    let gripperButtonsContainer = null;
     if (activeControls.includes('gripper')) {
-      const gf = gui.addFolder('gripper');      // tiny sub-folder
-      gf.add({ open : () => drawGripArrows(+1) }, 'open');
-      gf.add({ close: () => drawGripArrows(-1) }, 'close');
+      gripperButtonsContainer = document.createElement('div');
+      gripperButtonsContainer.className = 'gripper-section';
+      
+      const gripperLabel = document.createElement('div');
+      gripperLabel.className = 'gripper-label';
+      gripperLabel.textContent = 'gripper';
+      gripperButtonsContainer.appendChild(gripperLabel);
+      
+      const buttonsContainer = document.createElement('div');
+      buttonsContainer.className = 'gripper-buttons';
+      
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open';
+      openBtn.className = 'open-btn';
+      openBtn.onclick = () => drawGripArrows(+1);
+      
+      const closeBtn = document.createElement('button');
+      closeBtn.textContent = 'Close';
+      closeBtn.className = 'close-btn';
+      closeBtn.onclick = () => drawGripArrows(-1);
+      
+      buttonsContainer.appendChild(openBtn);
+      buttonsContainer.appendChild(closeBtn);
+      gripperButtonsContainer.appendChild(buttonsContainer);
     }
 
     const camPoses = state.camera_poses ?? {}
 
     // --- Intrinsics → projection helper (use Knew from backend) ---
-    function applyProjectionFromK(name) {
-      const model = cameraModels?.[name];
+    function applyProjectionFromK(view) {
+      const model = view.model;
+      const camera = view.camera;
       if (!model || !model.Knew || !model.width || !model.height) {
         return false;
       }
@@ -277,7 +685,7 @@ loader.load(
 
       // Scale intrinsics to current viewport (CSS) size
       const sz = new THREE.Vector2();
-      renderer.getDrawingBufferSize(sz);
+      view.renderer.getDrawingBufferSize(sz);
       const vw = sz.x, vh = sz.y;
       const sx = vw / W, sy = vh / H;
 
@@ -297,25 +705,27 @@ loader.load(
       return true;
     }
 
-    function applyDefaultPerspective() {
+    function applyDefaultPerspective(view) {
+      const camera = view.camera;
       camera.projectionMatrixAutoUpdate = true;
       camera.fov = 45;
-      camera.aspect = innerWidth/innerHeight;
+      camera.aspect = 1; // Will be updated when renderer size is set
       camera.updateProjectionMatrix();
     }
 
-    // Fit the renderer to the camera image while preserving its aspect ratio
-    function fitRendererToImage(name){
-      const model = cameraModels?.[name];
-      const tex   = viewTextures[name];
-      if (!model || !tex) return false;
-      const W = model.width|0, H = model.height|0;
-      // Fit inside window with letterbox/pillarbox; keep aspect = W/H
-      const winW = innerWidth * VIEW_SCALE, winH = innerHeight * VIEW_SCALE;
-      const s = Math.min(winW / W, winH / H);
-      const vw = Math.round(W * s), vh = Math.round(H * s);
-      renderer.setSize(vw, vh);         // updates buffer & CSS size together
-      applyProjectionFromK(name);       // rebuild frustum for this viewport
+    function updateViewCamera(view, pose) {
+      if (!pose) return false;
+      
+      const m = poseToMatrix(pose);
+      const pos   = new THREE.Vector3();
+      const quat  = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      m.decompose(pos, quat, scale);
+
+      view.camera.position.copy(pos);
+      view.camera.quaternion.copy(quat);
+      view.camera.updateMatrixWorld();
+      
       return true;
     }
 
@@ -328,12 +738,15 @@ loader.load(
 
     function ensureCalibStateFor(name) {
       if (calibState[name]) return;
-      // Seed from current camera transform & model K
+      // Seed from current view's camera transform & model K
+      const view = views.get(name);
+      if (!view) return;
+      
       const pos = new THREE.Vector3();
       const quat = new THREE.Quaternion();
-      camera.updateMatrixWorld();
-      camera.getWorldPosition(pos);
-      camera.getWorldQuaternion(quat);
+      view.camera.updateMatrixWorld();
+      view.camera.getWorldPosition(pos);
+      view.camera.getWorldQuaternion(quat);
       const eul = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
       const model = cameraModels?.[name];
       const K = model?.Knew;
@@ -352,14 +765,17 @@ loader.load(
 
     function applyExtrinsicsFromParams(name) {
       const s = calibState[name]; if (!s) return;
+      const view = views.get(name); if (!view) return;
+      
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rx, s.ry, s.rz, 'XYZ'));
-      camera.position.set(s.tx, s.ty, s.tz);
-      camera.quaternion.copy(q);
-      camera.updateMatrixWorld(true);
+      view.camera.position.set(s.tx, s.ty, s.tz);
+      view.camera.quaternion.copy(q);
+      view.camera.updateMatrixWorld(true);
+      
       // Update camPoses so switching away/back keeps edited pose
       const key = poseKeyForName(name);
       if (key) {
-        const m = new THREE.Matrix4().compose(camera.position.clone(), camera.quaternion.clone(), new THREE.Vector3(1,1,1));
+        const m = new THREE.Matrix4().compose(view.camera.position.clone(), view.camera.quaternion.clone(), new THREE.Vector3(1,1,1));
         const e = m.elements; // row-major in Three (column-major storage)
         camPoses[key] = [
           [e[0], e[4], e[8],  e[12]],
@@ -373,6 +789,8 @@ loader.load(
     function applyIntrinsicsFromParams(name) {
       const s = calibState[name]; if (!s) return;
       const model = cameraModels?.[name]; if (!model) return;
+      const view = views.get(name); if (!view) return;
+      
       const z = (s.zoom ?? 1.0);
       const fx_eff = s.fx * z;
       const fy_eff = s.fy * z;
@@ -381,7 +799,7 @@ loader.load(
         [0,      fy_eff, s.cy],
         [0,    0,    1   ],
       ];
-      applyProjectionFromK(name);
+      applyProjectionFromK(view);
     }
 
     // tiny helper: add a slider **and** a matching "revert" button for it
@@ -401,36 +819,36 @@ loader.load(
     }
 
     function enterCalibration() {
-      if (!currentCamName) { console.warn('Pick a camera view before calibrating.'); return; }
+      if (!currentViewName) { console.warn('Pick a camera view before calibrating.'); return; }
       calibrationMode = true;
       destroyCalibGUI();
-      ensureCalibStateFor(currentCamName);
-      const s = calibState[currentCamName];
-      calibDefaults[currentCamName] = { ...s };
+      ensureCalibStateFor(currentViewName);
+      const s = calibState[currentViewName];
+      calibDefaults[currentViewName] = { ...s };
       calibGUI = new GUI();
       // Position panel top-right
       calibGUI.domElement.style.position = 'fixed';
       calibGUI.domElement.style.top = '8px';
       calibGUI.domElement.style.right = '8px';
       calibGUI.domElement.style.zIndex = 20;
-      // Intrinsics folder
-      const model = cameraModels[currentCamName];
+      
+      // Intrinsics controls (no folder)
+      const model = cameraModels[currentViewName];
       const W = model?.width  ?? 640;
       const H = model?.height ?? 480;
-      const fin = calibGUI.addFolder('Intrinsics (K)');
-      addParamWithRevert(fin, s, 'zoom', [0.1, 5.0], 0.001, 'zoom', applyIntrinsicsFromParams, currentCamName);
-      addParamWithRevert(fin, s, 'fx', [50, 8000], 1,   'fx', applyIntrinsicsFromParams, currentCamName);
-      addParamWithRevert(fin, s, 'fy', [50, 8000], 1,   'fy', applyIntrinsicsFromParams, currentCamName);
-      addParamWithRevert(fin, s, 'cx', [0, W],     0.1, 'cx', applyIntrinsicsFromParams, currentCamName);
-      addParamWithRevert(fin, s, 'cy', [0, H],     0.1, 'cy', applyIntrinsicsFromParams, currentCamName);
-      // Extrinsics folder
-      const fex = calibGUI.addFolder('Extrinsics (pose)');
-      addParamWithRevert(fex, s, 'tx', [s.tx - 0.25, s.tx + 0.25], 0.0005, 'tx (m)',   applyExtrinsicsFromParams, currentCamName);
-      addParamWithRevert(fex, s, 'ty', [s.ty - 0.25, s.ty + 0.25], 0.0005, 'ty (m)',   applyExtrinsicsFromParams, currentCamName);
-      addParamWithRevert(fex, s, 'tz', [s.tz - 0.25, s.tz + 0.25], 0.0005, 'tz (m)',   applyExtrinsicsFromParams, currentCamName);
-      addParamWithRevert(fex, s, 'rx', [s.rx - 1.0,  s.rx + 1.0 ], 0.0005, 'roll rx',  applyExtrinsicsFromParams, currentCamName);
-      addParamWithRevert(fex, s, 'ry', [s.ry - 1.0,  s.ry + 1.0 ], 0.0005, 'pitch ry', applyExtrinsicsFromParams, currentCamName);
-      addParamWithRevert(fex, s, 'rz', [s.rz - 1.0,  s.rz + 1.0 ], 0.0005, 'yaw rz',   applyExtrinsicsFromParams, currentCamName);
+      addParamWithRevert(calibGUI, s, 'zoom', [0.1, 5.0], 0.001, 'zoom', applyIntrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'fx', [50, 8000], 1,   'fx', applyIntrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'fy', [50, 8000], 1,   'fy', applyIntrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'cx', [0, W],     0.1, 'cx', applyIntrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'cy', [0, H],     0.1, 'cy', applyIntrinsicsFromParams, currentViewName);
+      
+      // Extrinsics controls (no folder)
+      addParamWithRevert(calibGUI, s, 'tx', [s.tx - 0.25, s.tx + 0.25], 0.0005, 'tx (m)',   applyExtrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'ty', [s.ty - 0.25, s.ty + 0.25], 0.0005, 'ty (m)',   applyExtrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'tz', [s.tz - 0.25, s.tz + 0.25], 0.0005, 'tz (m)',   applyExtrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'rx', [s.rx - 1.0,  s.rx + 1.0 ], 0.0005, 'roll rx',  applyExtrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'ry', [s.ry - 1.0,  s.ry + 1.0 ], 0.0005, 'pitch ry', applyExtrinsicsFromParams, currentViewName);
+      addParamWithRevert(calibGUI, s, 'rz', [s.rz - 1.0,  s.rz + 1.0 ], 0.0005, 'yaw rz',   applyExtrinsicsFromParams, currentViewName);
       
       // ---- Save calibration action (writes to backend) ----
       const actions = {
@@ -451,13 +869,13 @@ loader.load(
               [e[2], e[6], e[10], e[14]],
               [e[3], e[7], e[11], e[15]],
             ];
-            const model = cameraModels[currentCamName];
+            const model = cameraModels[currentViewName];
             // Use effective fx/fy that include zoom
             const z = (s.zoom ?? 1.0);
             const fx_eff = s.fx * z;
             const fy_eff = s.fy * z;
             const payload = {
-              camera: currentCamName,
+              camera: currentViewName,
               intrinsics: {
                 width:  model?.width  ?? 640,
                 height: model?.height ?? 480,
@@ -478,7 +896,7 @@ loader.load(
             const out = await resp.json();
             if (!resp.ok) throw new Error(out?.error || 'save failed');
             console.log('✅ saved calibration:', out);
-            alert(`Saved calibration for '${currentCamName}' to ${out.path}`);
+            alert(`Saved calibration for '${currentViewName}' to ${out.path}`);
           } catch (err) {
             console.error('❌ save calibration failed', err);
             alert('Save calibration failed. See console for details.');
@@ -488,8 +906,8 @@ loader.load(
       calibGUI.add(actions, 'save_calibration').name('Save calibration');
 
       // Initial apply so the matrices reflect slider defaults
-      applyIntrinsicsFromParams(currentCamName);
-      applyExtrinsicsFromParams(currentCamName);
+      applyIntrinsicsFromParams(currentViewName);
+      applyExtrinsicsFromParams(currentViewName);
     }
 
     function exitCalibration() {
@@ -598,33 +1016,78 @@ loader.load(
       );
     }
 
-    function switchCamera (key){
-      if (!camPoses[key]) return;
-      const m = poseToMatrix( camPoses[key] );
-      const pos   = new THREE.Vector3();
-      const quat  = new THREE.Quaternion();
-      const scale = new THREE.Vector3();
-      m.decompose( pos, quat, scale );
-
-      camera.position.copy(pos);
-      camera.quaternion.copy(quat);
-
-      camera.updateMatrixWorld();
-      /* ---------- set matching webcam frame as background ---------- */
-      const name = key.replace('_pose', '');   // 'front_pose' → 'front'
-      scene.background = viewTextures[name] ?? defaultBg;
-      // Resize renderer to preserve image aspect; then apply calibrated frustum
-      if (fitRendererToImage(name)) {
-        currentCamName = name;
-        if (calibrationMode) {                 // rebuild UI for the new camera
+    function selectView(viewName) {
+      // Remove selection from all views
+      views.forEach(view => {
+        view.container.classList.remove('selected');
+      });
+      
+      // Select the new view
+      const view = views.get(viewName);
+      if (view) {
+        // Only show visual selection highlighting in devMode
+        if (devMode) {
+          view.container.classList.add('selected');
+        }
+        currentViewName = viewName;
+        
+        if (calibrationMode) {
           destroyCalibGUI();
           enterCalibration();
         }
-      } else {
-        currentCamName = null;
-        renderer.setSize(innerWidth, innerHeight);
-        applyDefaultPerspective();
-        if (calibrationMode) exitCalibration();
+      }
+    }
+
+    function initializeViews() {
+      // Clear existing views
+      views.clear();
+      viewsGrid.innerHTML = '';
+      
+      // Get available camera poses and textures
+      const availableViews = [];
+      Object.keys(camPoses).forEach(poseKey => {
+        const viewName = poseKey.replace('_pose', '');
+        if (viewTextures[viewName] && cameraModels[viewName]) {
+          availableViews.push({
+            name: viewName,
+            poseKey: poseKey,
+            texture: viewTextures[viewName],
+            model: cameraModels[viewName],
+            pose: camPoses[poseKey]
+          });
+        }
+      });
+      
+      if (availableViews.length === 0) return;
+      
+      // Setup grid layout
+      setupViewportGrid(availableViews.length);
+      
+      // Create views
+      availableViews.forEach((viewInfo, index) => {
+        const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
+        
+        // Set up camera pose and projection
+        updateViewCamera(view, viewInfo.pose);
+        applyProjectionFromK(view);
+        
+        // For 3 views, hide the 4th grid position
+        if (availableViews.length === 3 && index === 2) {
+          view.container.style.gridColumn = '1 / -1';
+          view.container.style.justifySelf = 'center';
+        }
+      });
+      
+      // Update sizes and select first view
+      updateViewSizes();
+      if (availableViews.length > 0) {
+        // In devMode, select the first view for visual feedback
+        // In regular mode, just set currentViewName without visual selection
+        if (devMode) {
+          selectView(availableViews[0].name);
+        } else {
+          currentViewName = availableViews[0].name;
+        }
       }
     }
 
@@ -637,12 +1100,16 @@ loader.load(
     btnBar.style.gap = '4px';
     document.body.appendChild( btnBar );
 
-    Object.keys(camPoses).forEach(poseKey=>{
-      const b       = document.createElement('button');
-      b.textContent = poseKey.split('_')[0]; // "left", "right", …
-      b.onclick     = ()=> switchCamera(poseKey);
-      btnBar.appendChild( b );
-    });
+    /* add camera selection buttons (only if devMode enabled) */
+    if (devMode) {
+      Object.keys(camPoses).forEach(poseKey=>{
+        const viewName = poseKey.replace('_pose', '');
+        const b       = document.createElement('button');
+        b.textContent = viewName; // "left", "right", …
+        b.onclick     = ()=> selectView(viewName);
+        btnBar.appendChild( b );
+      });
+    }
 
     /* add calibrate toggle button (only if devMode enabled) */
     if (devMode) {
@@ -650,7 +1117,7 @@ loader.load(
       calibrateBtn.textContent = 'calibrate';
       calibrateBtn.onclick = () => {
         if (!calibrationMode) {
-          if (!currentCamName) { alert('Pick a camera view first (front/left/right/...).'); return; }
+          if (!currentViewName) { alert('Pick a camera view first (front/left/right/...).'); return; }
           enterCalibration();
           calibrateBtn.textContent = 'exit calibration';
         } else {
@@ -661,74 +1128,72 @@ loader.load(
       btnBar.appendChild(calibrateBtn);
     }
 
-    /* add hide/show robot model button (bottom-left corner) */
-    toggleRobotBtn = document.createElement('button');
-    toggleRobotBtn.textContent = 'show robot model';
-    toggleRobotBtn.style.position = 'fixed';
-    toggleRobotBtn.style.left     = '8px';
-    toggleRobotBtn.style.bottom   = '8px';
-    toggleRobotBtn.style.zIndex   = 10;
-    document.body.appendChild(toggleRobotBtn);
+    /* add hide/show robot model button (bottom-left corner) (only if devMode enabled) */
+    if (devMode) {
+      toggleRobotBtn = document.createElement('button');
+      toggleRobotBtn.textContent = 'show robot model';
+      toggleRobotBtn.style.position = 'fixed';
+      toggleRobotBtn.style.left     = '8px';
+      toggleRobotBtn.style.bottom   = '8px';
+      toggleRobotBtn.style.zIndex   = 10;
+      document.body.appendChild(toggleRobotBtn);
 
-    toggleRobotBtn.onclick = () => {
-      robotVisible = !robotVisible;
-      robot.visible = robotVisible;
-      toggleRobotBtn.textContent = robotVisible
-        ? 'hide robot model'
-        : 'show robot model';
-    };
+      toggleRobotBtn.onclick = () => {
+        robotVisible = !robotVisible;
+        robot.visible = robotVisible;
+        toggleRobotBtn.textContent = robotVisible
+          ? 'hide robot model'
+          : 'show robot model';
+      };
 
-    toggleRobotBtn.textContent = 'show robot model';
+      toggleRobotBtn.textContent = 'show robot model';
+    }
 
     /* ---------- confirm button (lower-right corner) ------------------- */
 
-    // Default to the first available camera pose
-    const firstCamKey = Object.keys(camPoses)[0];
-    if (firstCamKey) {
-      switchCamera(firstCamKey);
-    }
+    // Initialize the multi-view system
+    initializeViews();
 
-  const confirmBtn = document.createElement('button');
-  confirmBtn.textContent   = 'confirm';
-  confirmBtn.style.position = 'fixed';
-  confirmBtn.style.right    = '8px';
-  confirmBtn.style.bottom   = '8px';
-  confirmBtn.style.zIndex   = 10;
-  document.body.appendChild(confirmBtn);
+  /* ---------- confirm button (inside controls container) ------------------- */
 
-  confirmBtn.onclick = async () => {
-    /* gather current joint values (radians / metres) */
-    const jointMap = {};
-    Object.entries(robot.joints).forEach(([name, joint]) => {
-      jointMap[name] = joint.jointValue;
-    });
+    // Create confirm button to be added to controls container
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = 'Confirm';
+    confirmBtn.className = 'confirm-button';
 
-    /* gather current end-effector pose (world frame) */
-    robot.updateMatrixWorld(true);             // ensure transforms are fresh
-    const eePos  = new THREE.Vector3();
-    const eeQuat = new THREE.Quaternion();
-    eeVis.getWorldPosition   (eePos);
-    eeVis.getWorldQuaternion (eeQuat);
-    const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
-
-    try {
-      await fetch('http://127.0.0.1:9000/api/submit-goal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          joint_positions: jointMap,
-          gripper:         gripDir,                // -1 / +1 / 0
-          ee_pose: {                               // added  ⤵
-            position:   [eePos.x,  eePos.y,  eePos.z],
-            rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
-          }
-        })
+    confirmBtn.onclick = async () => {
+      /* gather current joint values (radians / metres) */
+      const jointMap = {};
+      Object.entries(robot.joints).forEach(([name, joint]) => {
+        jointMap[name] = joint.jointValue;
       });
-      console.log('✅ goal sent');
-    } catch (err) {
-      console.error('❌ failed to send goal', err);
-    }
-  };
+
+      /* gather current end-effector pose (world frame) */
+      robot.updateMatrixWorld(true);             // ensure transforms are fresh
+      const eePos  = new THREE.Vector3();
+      const eeQuat = new THREE.Quaternion();
+      eeVis.getWorldPosition   (eePos);
+      eeVis.getWorldQuaternion (eeQuat);
+      const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
+
+      try {
+        await fetch('http://127.0.0.1:9000/api/submit-goal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            joint_positions: jointMap,
+            gripper:         gripDir,                // -1 / +1 / 0
+            ee_pose: {                               // added  ⤵
+              position:   [eePos.x,  eePos.y,  eePos.z],
+              rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
+            }
+          })
+        });
+        console.log('✅ goal sent');
+      } catch (err) {
+        console.error('❌ failed to send goal', err);
+      }
+    };
 
     const spanDefs = [
       ['x',     0.20],   // meters
@@ -745,6 +1210,36 @@ loader.load(
       gui.add(params, key, center - span, center + span)
          .onChange(updateGoal);
     });
+
+    // Add gripper buttons after sliders
+    if (gripperButtonsContainer) {
+      controlsContainer.appendChild(gripperButtonsContainer);
+    }
+
+    // Add confirm button at the bottom
+    controlsContainer.appendChild(confirmBtn);
+
+    // Update layout based on number of active controls
+    function updateControlsLayout() {
+      const numSliders = activeControls.filter(ctrl => ['x', 'y', 'z', 'roll', 'pitch', 'yaw'].includes(ctrl)).length;
+      const hasGripper = activeControls.includes('gripper');
+      const totalControls = numSliders + (hasGripper ? 1 : 0) + 1; // +1 for confirm button
+      
+      if (totalControls > 1) { // Always show if we have sliders + confirm
+        controlsContainer.style.display = 'block';
+        
+        if (totalControls === 2 && numSliders === 1) { // 1 slider + confirm
+          mount.className = 'single-slider';
+        } else {
+          mount.className = 'multiple-sliders';
+        }
+      } else {
+        controlsContainer.style.display = 'none';
+        mount.className = '';
+      }
+    }
+    
+    updateControlsLayout();
 
 
     /* --- solver --- */
@@ -773,7 +1268,13 @@ loader.load(
         const midZ = (floorZ + bottomPad) + 0.5 * len;
         line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
       }
-      renderer.render(scene, camera);
+      
+      // Render all views
+      views.forEach(view => {
+        // Set the background texture for this specific view
+        scene.background = view.texture ?? defaultBg;
+        view.renderer.render(scene, view.camera);
+      });
     }
     animate();
   }
@@ -781,13 +1282,7 @@ loader.load(
 
 /* ---------- responsive canvas ---------- */
 addEventListener('resize', () => {
-  if (currentCamName) {
-    // Keep the camera image undistorted on window resizes
-    fitRendererToImage(currentCamName);
-  } else {
-    renderer.setSize(innerWidth, innerHeight);
-    camera.aspect = innerWidth/innerHeight;
-    camera.updateProjectionMatrix();
-  }
+  // Re-center the viewport and update view sizes
+  updateViewSizes();
 });
 </script></body></html>
