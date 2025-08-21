@@ -47,7 +47,7 @@ from threading import Thread, Lock
 from collections import deque
 from math import cos, sin
 import json
-
+import time
 import base64
 
 _REALSENSE_BLOCKLIST = (
@@ -94,6 +94,16 @@ class CrowdInterface():
         self.latest_goal = None
         self.goal_lock = Lock()
         self._gripper_motion = 1  # Initialize gripper motion
+
+        # Background capture state
+        self._cap_threads: dict[str, Thread] = {}
+        self._cap_running: bool = False
+        self._latest_raw: dict[str, np.ndarray] = {}
+        self._latest_ts: dict[str, float] = {}
+        self._latest_proc: dict[str, np.ndarray] = {}
+        self._latest_jpeg: dict[str, str] = {}
+        # JPEG quality for base64 encoding (override with env JPEG_QUALITY)
+        self._jpeg_quality = int(os.getenv("JPEG_QUALITY", "80"))
 
         # Will be filled by _load_calibrations()
         self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -147,9 +157,27 @@ class CrowdInterface():
             self.cams[name] = cap
             print(f"✓ Camera '{name}' opened successfully (/dev/video{idx})")
 
+        # Start background capture workers after all cameras are opened
+        if self.cams and not self._cap_running:
+            self._start_camera_workers()
+
 
     def cleanup_cameras(self):
         """Close all cameras"""
+        # Stop background workers
+        if self._cap_running:
+            self._cap_running = False
+            for t in list(self._cap_threads.values()):
+                try:
+                    t.join(timeout=0.5)
+                except Exception:
+                    pass
+            self._cap_threads.clear()
+        self._latest_raw.clear()
+        self._latest_ts.clear()
+        self._latest_proc.clear()
+        self._latest_jpeg.clear()
+
         for cap in getattr(self, "cams", {}).values():
             try:
                 cap.release()
@@ -210,6 +238,65 @@ class CrowdInterface():
             if not ok or frame is None:
                 return None
         return frame
+    
+    def _capture_worker(self, name: str, cap: cv2.VideoCapture):
+        """
+        Background loop: keep the latest raw BGR frame in self._latest_raw[name].
+        """
+        # Small sleep to avoid a tight spin when frames aren't available
+        backoff = 0.002
+        while self._cap_running and cap.isOpened():
+            # Prefer grab/retrieve to drop old frames quickly
+            ok = cap.grab()
+            if ok:
+                ok, frame = cap.retrieve()
+            else:
+                ok, frame = cap.read()
+            if ok and frame is not None:
+                # Keep raw for debug/inspection (BGR, native size)
+                self._latest_raw[name] = frame
+                ts = time.time()
+                self._latest_ts[name] = ts
+                # ---- Process in worker: resize → BGR2RGB → undistort (if maps) ----
+                if frame.shape[1] != 640 or frame.shape[0] != 480:
+                    frame_resized = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
+                else:
+                    frame_resized = frame
+                rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                maps = self._undistort_maps.get(name)
+                if maps is not None:
+                    m1, m2 = maps
+                    rgb = cv2.remap(rgb, m1, m2, interpolation=cv2.INTER_LINEAR)
+                # Atomic pointer swap to latest processed frame (RGB, 640x480)
+                self._latest_proc[name] = rgb
+                # Pre-encode JPEG base64 (string) for zero-cost serving
+                self._latest_jpeg[name] = self._encode_jpeg_base64(rgb)
+            else:
+                time.sleep(backoff)
+
+    def _start_camera_workers(self):
+        """
+        Spawn one thread per opened camera to capture continuously.
+        """
+        if self._cap_running:
+            return
+        self._cap_running = True
+        for name, cap in self.cams.items():
+            t = Thread(target=self._capture_worker, args=(name, cap), daemon=True)
+            t.start()
+            self._cap_threads[name] = t
+
+    def _snapshot_latest_views(self) -> dict[str, np.ndarray]:
+        """
+        Snapshot the latest **JPEG base64 strings** for each camera.
+        We copy dict entries to avoid referencing a dict being mutated by workers.
+        """
+        out: dict[str, str] = {}
+        for name in ("left", "right", "front", "perspective"):
+            s = self._latest_jpeg.get(name)
+            if s is not None:
+                out[name] = s
+        return out
 
     def _get_views_np(self) -> dict[str, np.ndarray]:
         """
@@ -238,29 +325,40 @@ class CrowdInterface():
     def _state_to_json(self, state: dict) -> dict:
         """
         Convert an internal state into a JSON-serializable dict.
-        If frames are NumPy arrays, reproduce the original processing order:
-        resize (640x480, INTER_AREA) → BGR2RGB → undistort (if maps present).
+        Views are already JPEG base64 strings produced in background workers,
+        so we just pass them through. (If an ndarray sneaks in, encode it.)
         """
         if not state:
             return {}
         out = dict(state)  # shallow copy; we replace 'views'
         raw_views = state.get("views") or {}
-        safe_views: dict[str, list] = {}
+        safe_views: dict[str, str] = {}
         for name, frame in raw_views.items():
-            if isinstance(frame, np.ndarray):
-                # Reproduce original processing: resize → BGR2RGB → remap
-                frame_proc = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
-                frame_proc = cv2.cvtColor(frame_proc, cv2.COLOR_BGR2RGB)
-                maps = self._undistort_maps.get(name)
-                if maps is not None:
-                    m1, m2 = maps
-                    frame_proc = cv2.remap(frame_proc, m1, m2, interpolation=cv2.INTER_LINEAR)
-                safe_views[name] = frame_proc.tolist()
-            else:
-                # Already JSON-safe (e.g., older states or blanks)
+            if isinstance(frame, str):
                 safe_views[name] = frame
+            elif isinstance(frame, np.ndarray):
+                # Fallback: encode on the fly if we ever got an array here
+                safe_views[name] = self._encode_jpeg_base64(frame)
+            else:
+                # Unknown type -> drop or stringify minimally
+                safe_views[name] = ""
         out["views"] = safe_views
         return out
+    
+    def _encode_jpeg_base64(self, img_rgb: np.ndarray, quality: int | None = None) -> str:
+        """
+        Encode an RGB image to a base64 JPEG data URL.
+        """
+        q = int(self._jpeg_quality if quality is None else quality)
+        if not img_rgb.flags["C_CONTIGUOUS"]:
+            img_rgb = np.ascontiguousarray(img_rgb)
+        # OpenCV imencode expects BGR
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        ok, buf = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+        if not ok:
+            return ""
+        b64 = base64.b64encode(buf).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
     
     # --- State Management ---
     def add_state(self, joint_positions: dict, gripper_motion: int = None):
@@ -272,7 +370,7 @@ class CrowdInterface():
 
         self.states.append({
             "joint_positions": jp,
-            "views": self._get_views_np(),       # reuse precomputed JSON-serializable views
+            "views": self._snapshot_latest_views(),
             "camera_poses": self._camera_poses,  # reuse precomputed poses
             "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,

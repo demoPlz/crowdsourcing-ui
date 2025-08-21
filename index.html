@@ -146,9 +146,9 @@ loader.load(
       if (!dir) return;        // nothing to draw
 
       const colour   = dir > 0 ? 0x00ff00 : 0xff0000;
-      const len      = 0.08, headLen = 0.04;
-      const shaftLen = len - headLen, shaftRad = 0.01, offset = 0.00;
-      const tipX     = 0.04;
+      const len      = 0.04, headLen = 0.02;
+      const shaftLen = len - headLen, shaftRad = 0.005, offset = 0.00;
+      const tipX     = 0.02;
 
       function addArrow(linkName, outward) {
         const link = robot.getObjectByName(linkName); if (!link) return;
