@@ -180,13 +180,13 @@ loader.load(
       addArrow('gripper_right', -1);
     }
 
-    // drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
+    drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
 
     const gui = new GUI();
     if (activeControls.includes('gripper')) {
       const gf = gui.addFolder('gripper');      // tiny sub-folder
-      // gf.add({ open : () => drawGripArrows(+1) }, 'open');
-      // gf.add({ close: () => drawGripArrows(-1) }, 'close');
+      gf.add({ open : () => drawGripArrows(+1) }, 'open');
+      gf.add({ close: () => drawGripArrows(-1) }, 'close');
     }
 
     const camPoses = state.camera_poses ?? {}
