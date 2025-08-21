@@ -54,6 +54,27 @@ async function getInitialState() {
   }
 }
 
+
+// Build a THREE.Texture from a base64 JPEG data URL
+async function makeTextureFromDataURL(url) {
+  const loader = new THREE.TextureLoader();
+  return await new Promise((resolve, reject) => {
+    loader.load(
+      url,
+      tex => {
+        tex.flipY = true;
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.needsUpdate = true;
+        resolve(tex);
+      },
+      undefined,
+      err => reject(err)
+    );
+  });
+}
+
 /* ---------- scene ---------- */
 const defaultBg = new THREE.Color(0xf5f5f5);
 const scene = new THREE.Scene();
@@ -109,22 +130,10 @@ loader.load(
     const state = await getInitialState();
     const cameraModels = state.camera_models ?? {};
 
-    /* ---------- build textures for webcam views -------------------- */
-    const viewTextures = {};                        // 'front' → THREE.DataTexture
-    for (const [key, img] of Object.entries(state.views ?? {})) {
-      const H = img.length, W = img[0].length;
-      const buf = new Uint8Array(W * H * 4);
-      let p = 0;
-      for (let y = 0; y < H; ++y) {
-        for (let x = 0; x < W; ++x) {
-          const [r, g, b] = img[y][x];
-          buf[p++] = r; buf[p++] = g; buf[p++] = b; buf[p++] = 255;
-        }
-      }
-      const tex = new THREE.DataTexture(buf, W, H, THREE.RGBAFormat);
-      tex.flipY = true;           // image arrays come top-to-bottom
-      tex.needsUpdate = true;
-      viewTextures[key] = tex;    // store under same key: 'front', 'left', …
+    /* ---------- build textures from JPEG base64 views --------------- */
+    const viewTextures = {}; // 'front' → THREE.Texture
+    for (const [key, dataUrl] of Object.entries(state.views ?? {})) {
+      viewTextures[key] = await makeTextureFromDataURL(dataUrl);
     }
 
     const initialJointPositions = state.joint_positions ?? {};
