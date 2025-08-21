@@ -48,6 +48,8 @@ from collections import deque
 from math import cos, sin
 import json
 
+import base64
+
 _REALSENSE_BLOCKLIST = (
     "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
 )
@@ -87,7 +89,7 @@ class CrowdInterface():
     '''
     def __init__(self):
 
-        self.states = deque()
+        self.states = deque(maxlen=4)
         self.cams = {}
         self.latest_goal = None
         self.goal_lock = Lock()
@@ -129,6 +131,11 @@ class CrowdInterface():
 
             # One-time efficiency settings
             _prep_capture(cap, width=640, height=480, fps=None, mjpg=True)
+
+            try:
+                cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+            except Exception:
+                pass
 
             # Verify we can actually read one frame
             ok, _ = cap.read()
@@ -192,6 +199,69 @@ class CrowdInterface():
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return frame
     
+    def _grab_frame_raw(self, cap) -> np.ndarray | None:
+        """
+        Retrieve a raw BGR frame at native resolution with no resize,
+        color conversion, or undistortion. Used for high-rate capture.
+        """
+        ok, frame = cap.retrieve()
+        if not ok or frame is None:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return None
+        return frame
+
+    def _get_views_np(self) -> dict[str, np.ndarray]:
+        """
+        Return raw NumPy frames (BGR, native size) without resize/undistort.
+        Use this in the high-rate control loop; convert on /api/get-state.
+        """
+        if not hasattr(self, "cams"):
+            self.cams = {}
+
+        order = ("left", "right", "front", "perspective")
+        # 1) grab from all first (non-blocking dequeue)
+        for name in order:
+            if name in self.cams:
+                self.cams[name].grab()
+
+        # 2) retrieve, convert, (optional) undistort
+        views: dict[str, np.ndarray] = {}
+        for name in order:
+            if name not in self.cams:
+                continue
+            frame = self._grab_frame_raw(self.cams[name])
+            if frame is not None:
+                views[name] = frame
+        return views
+
+    def _state_to_json(self, state: dict) -> dict:
+        """
+        Convert an internal state into a JSON-serializable dict.
+        If frames are NumPy arrays, reproduce the original processing order:
+        resize (640x480, INTER_AREA) → BGR2RGB → undistort (if maps present).
+        """
+        if not state:
+            return {}
+        out = dict(state)  # shallow copy; we replace 'views'
+        raw_views = state.get("views") or {}
+        safe_views: dict[str, list] = {}
+        for name, frame in raw_views.items():
+            if isinstance(frame, np.ndarray):
+                # Reproduce original processing: resize → BGR2RGB → remap
+                frame_proc = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
+                frame_proc = cv2.cvtColor(frame_proc, cv2.COLOR_BGR2RGB)
+                maps = self._undistort_maps.get(name)
+                if maps is not None:
+                    m1, m2 = maps
+                    frame_proc = cv2.remap(frame_proc, m1, m2, interpolation=cv2.INTER_LINEAR)
+                safe_views[name] = frame_proc.tolist()
+            else:
+                # Already JSON-safe (e.g., older states or blanks)
+                safe_views[name] = frame
+        out["views"] = safe_views
+        return out
+    
     # --- State Management ---
     def add_state(self, joint_positions: dict, gripper_motion: int = None):
         if gripper_motion is not None:
@@ -202,15 +272,15 @@ class CrowdInterface():
 
         self.states.append({
             "joint_positions": jp,
-            "views": self.get_views(),       # reuse precomputed JSON-serializable views
+            "views": self._get_views_np(),       # reuse precomputed JSON-serializable views
             "camera_poses": self._camera_poses,  # reuse precomputed poses
             "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         })
-        print(f"🟢 State added. Total states: {len(self.states)}")
-        print(f"🟢 Joint positions: {joint_positions}")
-        print(f"🟢 Gripper: {self._gripper_motion}")
+        # print(f"🟢 State added. Total states: {len(self.states)}")
+        # print(f"🟢 Joint positions: {joint_positions}")
+        # print(f"🟢 Gripper: {self._gripper_motion}")
     
     def get_latest_state(self) -> dict:
         """Get the latest state (pops from queue)"""
@@ -385,7 +455,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         # if len(crowd_interface.states) > 0:
         #     print(f"🔍 Latest state joint_positions: {crowd_interface.states[-1].get('joint_positions', 'NO_JOINTS')}")
         #     print(f"🔍 Latest state gripper_action: {crowd_interface.states[-1]['gripper']}")
-        response = jsonify(state)
+        payload = crowd_interface._state_to_json(state)
+        response = jsonify(payload)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         response.headers['Pragma'] = 'no-cache'
