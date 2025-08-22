@@ -40,6 +40,7 @@ import cv2
 import numpy as np
 import os
 import time
+import torch
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -50,6 +51,9 @@ from collections import deque
 from math import cos, sin
 import json
 import base64
+
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
 _REALSENSE_BLOCKLIST = (
     "realsense", "real sense", "d4", "depth", "infrared", "stereo module", "motion module"
@@ -104,6 +108,12 @@ class CrowdInterface():
         self.next_state_id = 0
         self.state_lock = Lock()  # Protects pending_states and next_state_id
 
+        # Dataset
+        self.dataset = None
+
+        # Task
+        self.task = None
+
         # Background capture state
         self._cap_threads: dict[str, Thread] = {}
         self._cap_running: bool = False
@@ -131,7 +141,36 @@ class CrowdInterface():
             "front":       blank,
             "perspective": blank,
         }
+    
+    ### ---Dataset Management---
+    def init_dataset(self, 
+                     cfg,
+                     robot):
+        """Intialize dataset for data collection policy training"""
+        if cfg.resume:
+            self.dataset = LeRobotDataset(
+                cfg.data_collection_policy_repo_id,
+                root=cfg.root
+            )
+            self.dataset.start_image_writer(
+                num_processes=cfg.num_image_writer_processes,
+                num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+            )
+            sanity_check_dataset_robot_compatibility(self.dataset, robot, cfg.fps, cfg.video)
 
+        else:
+            sanity_check_dataset_name(cfg.data_collection_policy_repo_id, cfg.policy)
+            self.dataset = LeRobotDataset.create(
+                cfg.data_collection_policy_repo_id,
+                cfg.fps,
+                root=cfg.root,
+                robot=robot,
+                use_videos=cfg.video,
+                image_writer_processes=cfg.num_image_writer_processes,
+                image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+            )
+
+        self.task = cfg.single_task
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -370,7 +409,7 @@ class CrowdInterface():
         return f"data:image/jpeg;base64,{b64}"
     
     # --- State Management ---
-    def add_state(self, joint_positions: dict, gripper_motion: int = None):
+    def add_state(self, joint_positions: dict, gripper_motion: int = None, obs_dict: dict[str, torch.Tensor] = None):
         if gripper_motion is not None:
             self._gripper_motion = int(gripper_motion)
 
@@ -384,6 +423,7 @@ class CrowdInterface():
             "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
+            "observations": obs_dict
         }
         
         # Add to both old system (for backward compatibility) and new N responses system

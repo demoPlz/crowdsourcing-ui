@@ -62,6 +62,8 @@ def record(
             image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
         )
 
+    crowd_interface.init_dataset(cfg, robot)
+
     # Load pretrained policy
     policy = make_policy(cfg.policy, ds_meta=dataset.meta) if cfg.policy is not None else None
 
@@ -77,9 +79,6 @@ def record(
     # 1. teleoperate the robot to move it in starting position if no policy provided,
     # 2. give times to the robot devices to connect and start synchronizing,
     # 3. place the cameras windows on screen
-    enable_teleoperation = False
-    log_say("Warmup record", cfg.play_sounds)
-    warmup_record_crowd(robot, crowd_interface, events, enable_teleoperation, cfg.warmup_time_s, cfg.display_cameras, cfg.fps)
 
     if has_method(robot, "teleop_safety_stop"):
         robot.teleop_safety_stop()
