@@ -480,9 +480,19 @@ class CrowdInterface():
         with self.state_lock:
             state_id = self.next_state_id
             self.next_state_id += 1
+            
+            # Deep copy obs_dict tensors to avoid memory conflicts with camera operations
+            obs_dict_deep_copy = {}
+            for key, value in obs_dict.items():
+                if isinstance(value, torch.Tensor):
+                    # Create a detached copy to break any memory references
+                    obs_dict_deep_copy[key] = value.clone().detach()
+                else:
+                    obs_dict_deep_copy[key] = value
+
             self.pending_states[state_id] = {
                 "state": frontend_state.copy(),  # Frontend state (lightweight)
-                "observations": obs_dict,  # Keep observations for dataset creation
+                "observations": obs_dict_deep_copy,  # Keep observations for dataset creation
                 "actions": [],  # Will collect action responses here
                 "responses_received": 0,
                 "timestamp": time.time()
