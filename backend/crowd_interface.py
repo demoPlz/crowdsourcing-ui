@@ -41,6 +41,7 @@ import numpy as np
 import os
 import time
 import torch
+import base64
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -48,6 +49,7 @@ from flask import request
 from pathlib import Path
 from threading import Thread, Lock
 from collections import deque
+from math import cos, sin
 from math import cos, sin
 import json
 import base64
@@ -107,6 +109,9 @@ class CrowdInterface():
         self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
         self.next_state_id = 0
         self.state_lock = Lock()  # Protects pending_states and next_state_id
+        
+        # Track which state was served to which user session
+        self.served_states = {}  # session_id -> state_id (most recently served state to this session)
 
         # Dataset
         self.dataset = None
@@ -171,6 +176,11 @@ class CrowdInterface():
             )
 
         self.task = cfg.single_task
+
+    def set_dataset_reference(self, dataset, task: str):
+        """Set the dataset reference and task for completed state recording"""
+        self.dataset = dataset
+        self.task = task
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -375,10 +385,15 @@ class CrowdInterface():
         Convert an internal state into a JSON-serializable dict.
         Views are already JPEG base64 strings produced in background workers,
         so we just pass them through. (If an ndarray sneaks in, encode it.)
+        
+        Note: observations and actions are not included in the frontend state
+        as they're not needed there - only state_id is used for correspondence.
         """
         if not state:
             return {}
         out = dict(state)  # shallow copy; we replace 'views'
+        
+        # Handle views (convert any arrays to base64 strings)
         raw_views = state.get("views") or {}
         safe_views: dict[str, str] = {}
         for name, frame in raw_views.items():
@@ -391,6 +406,7 @@ class CrowdInterface():
                 # Unknown type -> drop or stringify minimally
                 safe_views[name] = ""
         out["views"] = safe_views
+        
         return out
     
     def _encode_jpeg_base64(self, img_rgb: np.ndarray, quality: int | None = None) -> str:
@@ -416,25 +432,27 @@ class CrowdInterface():
         # Cheap, explicit cast of the 7 scalars to built-in floats
         jp = {k: float(v) for k, v in joint_positions.items()}
 
-        state = {
+        # Frontend state (lightweight, no observations/actions)
+        frontend_state = {
             "joint_positions": jp,
             "views": self._snapshot_latest_views(),
             "camera_poses": self._camera_poses,  # reuse precomputed poses
             "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
-            "observations": obs_dict
         }
         
         # Add to both old system (for backward compatibility) and new N responses system
-        self.states.append(state)
+        self.states.append(frontend_state)
         
         # Add to pending states for N responses pattern
         with self.state_lock:
             state_id = self.next_state_id
             self.next_state_id += 1
             self.pending_states[state_id] = {
-                "state": state.copy(),  # Make a copy to avoid mutation
+                "state": frontend_state.copy(),  # Frontend state (lightweight)
+                "observations": obs_dict,  # Keep observations for dataset creation
+                "actions": [],  # Will collect action responses here
                 "responses_received": 0,
                 "timestamp": time.time()
             }
@@ -443,11 +461,14 @@ class CrowdInterface():
         # print(f"🟢 Joint positions: {joint_positions}")
         # print(f"🟢 Gripper: {self._gripper_motion}")
     
-    def get_latest_state(self) -> dict:
+    def get_latest_state(self, session_id: str = "default") -> dict:
         """
         Get a state that needs responses with movement-aware prioritization:
         - When robot is NOT moving: prioritize LATEST state for immediate execution
         - When robot is moving: prioritize OLDEST state for systematic collection
+        
+        Args:
+            session_id: Unique identifier for the user session (for tracking which state was served)
         """
         with self.state_lock:
             if not self.pending_states:
@@ -457,43 +478,103 @@ class CrowdInterface():
                 # Robot not moving - prioritize LATEST state for immediate execution
                 latest_state_id = max(self.pending_states.keys(), 
                                     key=lambda sid: self.pending_states[sid]["timestamp"])
-                state = self.pending_states[latest_state_id]["state"]
+                state = self.pending_states[latest_state_id]["state"].copy()
                 
-                print(f"🎯 Robot stationary - serving LATEST state {latest_state_id} for immediate execution")
+                # Track which state was served to this session
+                self.served_states[session_id] = latest_state_id
+                
+                # Include state_id in the response so frontend can send it back
+                state["state_id"] = latest_state_id
+                
+                print(f"🎯 Robot stationary - serving LATEST state {latest_state_id} to session {session_id} for immediate execution")
                 return state
             else:
                 # Robot moving - prioritize OLDEST state for systematic data collection
                 oldest_state_id = min(self.pending_states.keys(), 
                                     key=lambda sid: self.pending_states[sid]["timestamp"])
-                state = self.pending_states[oldest_state_id]["state"]
+                state = self.pending_states[oldest_state_id]["state"].copy()
                 
-                print(f"🔍 Robot moving - serving OLDEST state {oldest_state_id} for data collection")
+                # Track which state was served to this session
+                self.served_states[session_id] = oldest_state_id
+                
+                # Include state_id in the response so frontend can send it back
+                state["state_id"] = oldest_state_id
+                
+                print(f"🔍 Robot moving - serving OLDEST state {oldest_state_id} to session {session_id} for data collection")
                 return state
     
-    def record_response(self, response_data: dict) -> bool:
+    def record_response(self, response_data: dict, session_id: str = "default") -> bool:
         """
-        Record a response for the most recently served state.
+        Record a response for a specific state.
         Returns True if this completes the required responses for a state.
-        For now, we don't save the actual response data carefully.
+        
+        Args:
+            response_data: The response data containing state_id and action data
+            session_id: The user session that submitted the response
         """
         with self.state_lock:
             if not self.pending_states:
+                print("⚠️  No pending states available to record response")
                 return False
             
-            # For simplicity, assume the response is for the oldest pending state
-            # In a more sophisticated system, we'd include state_id in the response
-            oldest_state_id = min(self.pending_states.keys(), 
-                                key=lambda sid: self.pending_states[sid]["timestamp"])
+            # Try to get state_id from response data first
+            state_id = response_data.get("state_id")
+            if state_id is not None:
+                print(f"✅ Received state_id {state_id} from frontend for session {session_id}")
             
-            pending_info = self.pending_states[oldest_state_id]
+            # Validate that the state still exists
+            if state_id not in self.pending_states:
+                print(f"⚠️  State {state_id} no longer exists in pending states")
+                return False
+            
+            pending_info = self.pending_states[state_id]
             pending_info["responses_received"] += 1
             
-            # print(f"🔔 Response recorded for state {oldest_state_id} ({pending_info['responses_received']}/{self.required_responses_per_state})")
+            # Extract joint positions and gripper action from response
+            joint_positions = response_data.get("joint_positions", {})
+            gripper_action = response_data.get("gripper", 0)
+            
+            # Assemble goal_positions like in teleop_step_crowd
+            # Convert joint positions dict to ordered list matching JOINT_NAMES
+            goal_positions = []
+            for joint_name in JOINT_NAMES:
+                goal_positions.append(float(joint_positions.get(joint_name, 0.0)[0]))
+            
+            # Handle gripper like in teleop_step_crowd: set to 0.044 or 0.0 based on sign
+            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+            goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
+            
+            # Store this action response in the same format as teleop_step_crowd
+            pending_info["actions"].append(goal_positions)
+
+            print(f"🔔 Response recorded for state {state_id} from session {session_id} ({pending_info['responses_received']}/{self.required_responses_per_state})")
             
             # Check if we've received enough responses
             if pending_info["responses_received"] >= self.required_responses_per_state:
-                del self.pending_states[oldest_state_id]
-                # print(f"✅ State {oldest_state_id} completed, removed from pending. Remaining: {len(self.pending_states)}")
+                # Stack all action responses into final action tensor
+                # This will have shape [REQUIRED_RESPONSES_PER_STATE, action_dim]
+                all_actions = torch.stack(pending_info["actions"], dim=0)
+                
+                # Create the complete frame for dataset.add_frame() 
+                # Format matches exactly what teleop_step_crowd produces
+                completed_state = {
+                    **pending_info["observations"],  # observations dict
+                    "action": all_actions,           # action tensor with all crowd responses
+                    "task": self.task if self.task else "crowdsourced_task"
+                }
+                
+                self.dataset.add_frame(completed_state)
+                
+                # Remove from pending states
+                del self.pending_states[state_id]
+                print(f"✅ State {state_id} completed, removed from pending. Remaining: {len(self.pending_states)}")
+                
+                # Clean up served states tracking for this completed state
+                sessions_to_clean = [sid for sid, served_state_id in self.served_states.items() 
+                                   if served_state_id == state_id]
+                for sid in sessions_to_clean:
+                    del self.served_states[sid]
+                
                 return True
             
             return False
@@ -662,7 +743,10 @@ class CrowdInterface():
                 print(f"⚠️  failed to apply manual calibration for '{name}': {e}")
 
         return poses
-    
+
+    def is_recording(self):
+        return len(self.pending_states) > 0
+
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""
     app = Flask(__name__)
@@ -671,7 +755,11 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/get-state")
     def get_state():
         current_time = time.time()
-        state = crowd_interface.get_latest_state()
+        
+        # Generate or retrieve session ID from request headers or IP
+        session_id = request.headers.get('X-Session-ID', request.remote_addr)
+        
+        state = crowd_interface.get_latest_state(session_id)
         # print(f"🔍 Flask route /api/get-state called at {current_time}")
         # print(f"🔍 Pending states: {len(crowd_interface.pending_states)}")
         payload = crowd_interface._state_to_json(state)
@@ -693,10 +781,15 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
         data = request.get_json(force=True, silent=True) or {}
+        
+        # Generate or retrieve session ID from request headers or IP
+        session_id = request.headers.get('X-Session-ID', request.remote_addr)
+        
         crowd_interface.submit_goal(data)
         
-        # Record this as a response to the current state
-        crowd_interface.record_response(data)
+        # Record this as a response to the correct state for this session
+        # The frontend now includes state_id in the request data
+        crowd_interface.record_response(data, session_id)
         
         return jsonify({"status": "ok"})
     

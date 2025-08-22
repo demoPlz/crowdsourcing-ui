@@ -179,10 +179,19 @@
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
   }
 
-  /* Hide the number input/display */
+  /* Hide the number input/display by default */
   .controls-container .lil-gui .controller input[type="number"],
   .controls-container .lil-gui .controller .display {
     display: none !important;
+  }
+
+  /* Show numerical values in dev mode */
+  body.dev-mode .controls-container .lil-gui .controller input[type="number"],
+  body.dev-mode .controls-container .lil-gui .controller .display {
+    display: block !important;
+    width: 60px;
+    font-size: 12px;
+    margin-left: 8px;
   }
 
   /* Gripper button styling */
@@ -532,7 +541,11 @@ function showServerNotStarted(){
 }
 
 // ================================ devMode ===================================
-const devMode = false;
+const devMode = true;
+// Apply dev-mode class to body if devMode is enabled
+if (devMode) {
+  document.body.classList.add('dev-mode');
+}
 // ================================ devMode ===================================
 
 
@@ -1186,7 +1199,8 @@ loader.load(
             ee_pose: {                               // added  ⤵
               position:   [eePos.x,  eePos.y,  eePos.z],
               rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
-            }
+            },
+            state_id: state.state_id                 // include state_id for tracking
           })
         });
         console.log('✅ goal sent');

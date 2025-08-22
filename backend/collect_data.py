@@ -124,13 +124,21 @@ def record(
         if events["stop_recording"]:
             break
 
-    log_say("Stop recording", cfg.play_sounds, blocking=True)
+    log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     stop_recording(robot, listener, cfg.display_cameras)
+
+    while crowd_interface.is_recording():
+
+        log_say("Still recording from users", cfg.play_sounds, blocking=True)
+        time.sleep(1)
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
+        crowd_interface.dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
 
-    log_say("Exiting", cfg.play_sounds)
+
+    log_say("Users have finished labeling. Exiting", cfg.play_sounds)
+
     return dataset
     
 @parser.wrap()
@@ -157,10 +165,6 @@ def control_robot(cfg: ControlPipelineConfig):
 
     if robot.is_connected:
         robot.disconnect()
-
-    while True:
-        time.sleep(1)
-        print("ctrl-C to stop")
 
 
 
