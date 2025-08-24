@@ -75,6 +75,9 @@ def record(
 
     listener, events = init_keyboard_listener()
 
+    # Pass events to crowd_interface for API control
+    crowd_interface.set_events(events)
+
     # Execute a few seconds without recording to:
     # 1. teleoperate the robot to move it in starting position if no policy provided,
     # 2. give times to the robot devices to connect and start synchronizing,
@@ -150,6 +153,9 @@ def control_robot(cfg: ControlPipelineConfig):
     # exact same pattern as lerobot/scripts/control_robot.py
     init_logging()
     logging.info(pformat(asdict(cfg)))
+
+    # Disable Flask request logging to reduce terminal noise
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
     crowd_interface = CrowdInterface()
     crowd_interface.init_cameras()

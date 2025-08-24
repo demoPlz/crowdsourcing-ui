@@ -106,6 +106,9 @@ class CrowdInterface():
 
         self.robot_is_moving = False
         
+        # Control events for keyboard-like functionality
+        self.events = None
+        
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
         self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
@@ -114,6 +117,9 @@ class CrowdInterface():
         
         # Track which state was served to which user session
         self.served_states = {}  # session_id -> state_id (most recently served state to this session)
+        
+        # Recently completed states cache for monitoring
+        self.recently_completed = {}  # state_id -> {responses_received: int, completion_time: float}
 
         # Dataset
         self.dataset = None
@@ -148,6 +154,10 @@ class CrowdInterface():
             "front":       blank,
             "perspective": blank,
         }
+    
+    def set_events(self, events):
+        """Set the events object for keyboard-like control functionality"""
+        self.events = events
     
     ### ---Dataset Management---
     def init_dataset(self, 
@@ -553,6 +563,45 @@ class CrowdInterface():
                 print(f"🎲 Robot moving - serving RANDOM state {random_state_id} to session {session_id}")
                 return state
     
+    def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, threshold: float = 0.01) -> bool:
+        """
+        Check if the submitted joint positions are meaningfully different from the original state.
+        
+        Args:
+            submitted_joints: Joint positions from user submission
+            original_joints: Original joint positions from the state
+            threshold: Minimum difference threshold (in radians/meters)
+        
+        Returns:
+            True if the submission is meaningful, False if it's too similar to original
+        """
+        total_diff = 0.0
+        joint_count = 0
+        
+        for joint_name in JOINT_NAMES[:-1]:  # Exclude gripper for now
+            if joint_name in submitted_joints and joint_name in original_joints:
+                # Get the first element if it's a list/array, otherwise use directly
+                submitted_val = submitted_joints[joint_name]
+                if isinstance(submitted_val, (list, tuple)):
+                    submitted_val = submitted_val[0]
+                
+                original_val = original_joints[joint_name]
+                if isinstance(original_val, (list, tuple)):
+                    original_val = original_val[0]
+                
+                diff = abs(float(submitted_val) - float(original_val))
+                total_diff += diff
+                joint_count += 1
+        
+        if joint_count == 0:
+            return False  # No valid joints to compare
+        
+        avg_diff = total_diff / joint_count
+        is_meaningful = avg_diff > threshold
+        
+        print(f"📏 Joint submission check: avg_diff={avg_diff:.4f}, threshold={threshold}, meaningful={is_meaningful}")
+        return is_meaningful
+
     def record_response(self, response_data: dict, session_id: str = "default") -> bool:
         """
         Record a response for a specific state.
@@ -579,6 +628,16 @@ class CrowdInterface():
             
             pending_info = self.pending_states[state_id]
             
+            # Extract joint positions and gripper action from response
+            joint_positions = response_data.get("joint_positions", {})
+            gripper_action = response_data.get("gripper", 0)
+            
+            # Check if the submission is meaningful (not too close to original state)
+            original_joints = pending_info["state"].get("joint_positions", {})
+            if not self._is_submission_meaningful(joint_positions, original_joints):
+                print(f"⚠️  Ignoring submission from session {session_id} for state {state_id}: too similar to original position")
+                return False
+            
             # Check if this is the first response to a state that was served during stationary mode
             if (pending_info["responses_received"] == 0 and 
                 pending_info["served_during_stationary"] is True):
@@ -588,10 +647,6 @@ class CrowdInterface():
                 print(f"🎯 Setting goal for immediate execution - first response to stationary-served state {state_id}")
             
             pending_info["responses_received"] += 1
-            
-            # Extract joint positions and gripper action from response
-            joint_positions = response_data.get("joint_positions", {})
-            gripper_action = response_data.get("gripper", 0)
             
             # Assemble goal_positions like in teleop_step_crowd
             # Convert joint positions dict to ordered list matching JOINT_NAMES
@@ -624,6 +679,12 @@ class CrowdInterface():
                 
                 self.dataset.add_frame(completed_state)
                 
+                # Add to recently completed cache before removing from pending states
+                self.recently_completed[state_id] = {
+                    "responses_received": pending_info["responses_received"],
+                    "completion_time": time.time()
+                }
+                
                 # Remove from pending states
                 del self.pending_states[state_id]
                 print(f"✅ State {state_id} completed, removed from pending. Remaining: {len(self.pending_states)}")
@@ -641,17 +702,39 @@ class CrowdInterface():
     def get_pending_states_info(self) -> dict:
         """Get information about pending states for debugging/monitoring"""
         with self.state_lock:
+            # Clean up old completed states (older than 2 seconds)
+            current_time = time.time()
+            states_to_remove = []
+            for state_id, info in self.recently_completed.items():
+                if (current_time - info["completion_time"]) > 2.0:
+                    states_to_remove.append(state_id)
+            
+            for state_id in states_to_remove:
+                del self.recently_completed[state_id]
+            
+            # Combine pending and recently completed states for monitoring
+            all_states_info = {}
+            
+            # Add pending states
+            for state_id, info in self.pending_states.items():
+                all_states_info[state_id] = {
+                    "responses_received": info["responses_received"],
+                    "responses_needed": self.required_responses_per_state - info["responses_received"],
+                    "age_seconds": current_time - info["timestamp"]
+                }
+            
+            # Add recently completed states
+            for state_id, info in self.recently_completed.items():
+                all_states_info[state_id] = {
+                    "responses_received": info["responses_received"],
+                    "responses_needed": 0,  # Completed
+                    "age_seconds": current_time - info["completion_time"]
+                }
+            
             return {
                 "total_pending": len(self.pending_states),
                 "required_responses_per_state": self.required_responses_per_state,
-                "states_info": {
-                    state_id: {
-                        "responses_received": info["responses_received"],
-                        "responses_needed": self.required_responses_per_state - info["responses_received"],
-                        "age_seconds": time.time() - info["timestamp"]
-                    }
-                    for state_id, info in self.pending_states.items()
-                }
+                "states_info": all_states_info
             }
     
     # --- Goal Management ---
@@ -889,6 +972,100 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """Debug endpoint to see pending states information"""
         info = crowd_interface.get_pending_states_info()
         return jsonify(info)
+    
+    @app.route("/api/monitor/latest-state", methods=["GET"])
+    def monitor_latest_state():
+        """
+        Read-only monitoring endpoint that returns the newest state's camera views
+        and basic information without interfering with the data collection system.
+        This endpoint only reads data and does not modify any state.
+        """
+        try:
+            # Use a very quick read operation without locks to avoid any interference
+            with crowd_interface.state_lock:
+                if not crowd_interface.pending_states:
+                    return jsonify({
+                        "status": "no_states",
+                        "message": "No pending states available",
+                        "views": {},
+                        "timestamp": time.time()
+                    })
+                
+                # Get the newest state (highest state_id)
+                newest_state_id = max(crowd_interface.pending_states.keys())
+                newest_state_data = crowd_interface.pending_states[newest_state_id]
+                newest_state = newest_state_data["state"]
+            
+            # Convert to JSON format safely (this doesn't modify anything)
+            monitoring_data = {
+                "status": "success",
+                "state_id": newest_state_id,
+                "timestamp": newest_state_data["timestamp"],
+                "responses_received": newest_state_data["responses_received"],
+                "responses_required": crowd_interface.required_responses_per_state,
+                "views": newest_state.get("views", {}),
+                "joint_positions": newest_state.get("joint_positions", {}),
+                "gripper": newest_state.get("gripper", 0),
+                "robot_moving": crowd_interface.is_robot_moving(),
+                "total_pending_states": len(crowd_interface.pending_states),
+                "current_time": time.time()
+            }
+            
+            response = jsonify(monitoring_data)
+            # Prevent caching for real-time monitoring
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
+            
+        except Exception as e:
+            # Don't let monitoring errors affect the main system
+            return jsonify({
+                "status": "error",
+                "message": f"Monitoring error: {str(e)}",
+                "timestamp": time.time()
+            }), 500
+    
+    @app.route("/api/control/next-episode", methods=["POST"])
+    def next_episode():
+        """Trigger next episode (equivalent to 'q' keyboard input)"""
+        try:
+            if crowd_interface.events is not None:
+                print("API trigger: Exiting current loop...")
+                crowd_interface.events["exit_early"] = True
+                return jsonify({"status": "success", "message": "Next episode triggered"})
+            else:
+                return jsonify({"status": "error", "message": "Events not initialized"}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/control/rerecord", methods=["POST"])
+    def rerecord_episode():
+        """Trigger re-record episode (equivalent to 'r' keyboard input)"""
+        try:
+            if crowd_interface.events is not None:
+                print("API trigger: Exiting loop and re-record the last episode...")
+                crowd_interface.events["rerecord_episode"] = True
+                crowd_interface.events["exit_early"] = True
+                return jsonify({"status": "success", "message": "Re-record episode triggered"})
+            else:
+                return jsonify({"status": "error", "message": "Events not initialized"}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/control/stop", methods=["POST"])
+    def stop_recording():
+        """Trigger stop recording (equivalent to 'x' keyboard input)"""
+        try:
+            if crowd_interface.events is not None:
+                print("API trigger: Stopping data recording...")
+                crowd_interface.events["stop_recording"] = True
+                crowd_interface.events["exit_early"] = True
+                return jsonify({"status": "success", "message": "Stop recording triggered"})
+            else:
+                return jsonify({"status": "error", "message": "Events not initialized"}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
     
     @app.route("/api/save-calibration", methods=["POST"])
     def save_calibration():
