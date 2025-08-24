@@ -340,17 +340,37 @@ async function getCurrentNgrokUrl() {
 // Initialize API_BASE_URL dynamically
 let API_BASE_URL = 'http://127.0.0.1:9000'; // Default fallback
 
+// For local development, check if we're running on Vite dev server
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+  if (location.port === '5173' || location.port === '5174') {
+    // Running on Vite dev server - use direct ngrok URL
+    API_BASE_URL = 'https://f3b96af8b7bb.ngrok-free.app';
+    console.log('[DEBUG] Using direct ngrok URL for Vite dev server:', API_BASE_URL);
+  } else {
+    // Running on production build locally
+    API_BASE_URL = 'http://127.0.0.1:9000';
+  }
+}
+
 async function getInitialState() {
   try {
+    console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}/api/get-state`);
     const response = await fetch(`${API_BASE_URL}/api/get-state`, {
       headers: {
         'ngrok-skip-browser-warning': 'true'
       }
     });
+    console.log('[DEBUG] Response status:', response.status, response.statusText);
+    
     if (!response.ok) {
+      const responseText = await response.text();
+      console.error('[DEBUG] Response error body:', responseText.substring(0, 500));
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    return await response.json();
+    
+    const data = await response.json();
+    console.log('[DEBUG] Successfully fetched initial state');
+    return data;
   } catch (error) {
     console.error("Could not fetch initial state:", error);
     showServerNotStarted();
@@ -628,21 +648,22 @@ loader.load(
 
     function drawGripArrows(dir /* +1 open | –1 close */) {
       /* remove previous arrows */
-      gripArrows.forEach(a => a.parent?.remove(a));
+      gripArrows.forEach(a => scene.remove(a));
       gripArrows.length = 0;
 
       gripDir = dir || 0;     // remember last request
-      if (!dir) return;        // nothing to draw
-
-      const colour   = dir > 0 ? 0x00ff00 : 0xff0000;
+      
+      // Always create arrows, use default direction if none specified
+      const effectiveDir = dir || 1; // default to open arrows if no direction specified
+      const colour   = effectiveDir > 0 ? 0x00ff00 : 0xff0000;
       const len      = 0.04, headLen = 0.02;
       const shaftLen = len - headLen, shaftRad = 0.005, offset = 0.00;
       const tipX     = 0.02;
 
       function addArrow(linkName, outward) {
         const link = robot.getObjectByName(linkName); if (!link) return;
-        const dirLocal    = new THREE.Vector3(0, dir * outward, 0).normalize();
-        const baseDist    = dir > 0 ? offset : offset + len;
+        const dirLocal    = new THREE.Vector3(0, effectiveDir * outward, 0).normalize();
+        const baseDist    = effectiveDir > 0 ? offset : offset + len;
         const originLocal = new THREE.Vector3(tipX, outward * baseDist, 0);
 
         /* geometry ---------------------------------------------------- */
@@ -662,14 +683,34 @@ loader.load(
 
         grp.position.copy(originLocal);
         grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirLocal);
-        link.add(grp);
+        
+        // Add arrows to scene instead of robot links so they're visible even when robot is hidden
+        scene.add(grp);
+        
+        // Store link reference to update arrow position in animation loop
+        grp.userData.targetLink = link;
+        grp.userData.originLocal = originLocal.clone();
+        grp.userData.dirLocal = dirLocal.clone();
+        
         gripArrows.push(grp);
       }
       addArrow('gripper_left',  +1);
       addArrow('gripper_right', -1);
     }
 
+    function updateGripArrowVisibility() {
+      // Show gripper arrows only for front and perspective cameras
+      const showArrows = currentViewName === 'front' || currentViewName === 'perspective';
+      console.log(`[DEBUG] updateGripArrowVisibility: currentViewName="${currentViewName}", showArrows=${showArrows}, gripArrows.length=${gripArrows.length}`);
+      gripArrows.forEach(arrow => {
+        if (arrow && arrow.visible !== undefined) {
+          arrow.visible = showArrows;
+        }
+      });
+    }
+
     drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
+    updateGripArrowVisibility();               // set initial visibility based on current view
 
     const gui = new GUI({ container: controlsContainer });
     gui.domElement.style.position = 'static'; // Remove absolute positioning
@@ -692,12 +733,18 @@ loader.load(
       const openBtn = document.createElement('button');
       openBtn.textContent = 'Open';
       openBtn.className = 'open-btn';
-      openBtn.onclick = () => drawGripArrows(+1);
+      openBtn.onclick = () => {
+        drawGripArrows(+1);
+        updateGripArrowVisibility();
+      };
       
       const closeBtn = document.createElement('button');
       closeBtn.textContent = 'Close';
       closeBtn.className = 'close-btn';
-      closeBtn.onclick = () => drawGripArrows(-1);
+      closeBtn.onclick = () => {
+        drawGripArrows(-1);
+        updateGripArrowVisibility();
+      };
       
       buttonsContainer.appendChild(openBtn);
       buttonsContainer.appendChild(closeBtn);
@@ -1069,6 +1116,9 @@ loader.load(
         }
         currentViewName = viewName;
         
+        // Update gripper arrow visibility based on selected view
+        updateGripArrowVisibility();
+        
         if (calibrationMode) {
           destroyCalibGUI();
           enterCalibration();
@@ -1095,6 +1145,8 @@ loader.load(
           });
         }
       });
+      
+      console.log(`[DEBUG] availableViews:`, availableViews.map(v => v.name));
       
       if (availableViews.length === 0) return;
       
@@ -1125,6 +1177,8 @@ loader.load(
           selectView(availableViews[0].name);
         } else {
           currentViewName = availableViews[0].name;
+          console.log(`[DEBUG] Initial currentViewName set to: "${currentViewName}"`);
+          updateGripArrowVisibility(); // Update arrow visibility for initial view
         }
       }
     }
@@ -1310,6 +1364,29 @@ loader.load(
         const midZ = (floorZ + bottomPad) + 0.5 * len;
         line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
       }
+      
+      // Update gripper arrow positions based on robot link positions
+      gripArrows.forEach(arrow => {
+        const link = arrow.userData.targetLink;
+        const originLocal = arrow.userData.originLocal;
+        const dirLocal = arrow.userData.dirLocal;
+        
+        if (link) {
+          // Get the world transform of the target link
+          link.updateMatrixWorld(true);
+          
+          // Transform the local position to world coordinates
+          const worldPos = originLocal.clone().applyMatrix4(link.matrixWorld);
+          arrow.position.copy(worldPos);
+          
+          // Transform the local direction to world coordinates
+          const worldDir = dirLocal.clone().transformDirection(link.matrixWorld);
+          arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), worldDir);
+        }
+      });
+      
+      // Update gripper arrow visibility based on current view
+      updateGripArrowVisibility();
       
       // Render all views
       views.forEach(view => {
