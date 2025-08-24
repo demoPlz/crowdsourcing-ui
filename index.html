@@ -326,9 +326,27 @@ import {
 
 import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
 
+// Simple API Configuration - use Netlify Functions proxy
+async function getCurrentNgrokUrl() {
+  try {
+    // Use the direct Netlify function URL since redirects aren't working
+    return '/.netlify/functions/api'; // Direct function path
+  } catch (error) {
+    console.error('Error in getCurrentNgrokUrl:', error);
+    return '/.netlify/functions/api'; // Fallback to direct function
+  }
+}
+
+// Initialize API_BASE_URL dynamically
+let API_BASE_URL = 'http://127.0.0.1:9000'; // Default fallback
+
 async function getInitialState() {
   try {
-    const response = await fetch('http://127.0.0.1:9000/api/get-state');
+    const response = await fetch(`${API_BASE_URL}/api/get-state`, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    });
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -541,7 +559,7 @@ function showServerNotStarted(){
 }
 
 // ================================ devMode ===================================
-const devMode = true;
+const devMode = false;
 // Apply dev-mode class to body if devMode is enabled
 if (devMode) {
   document.body.classList.add('dev-mode');
@@ -562,6 +580,10 @@ loader.packages = {                 // map package:// paths → server paths
 loader.load(
   'assets/trossen_arm_description/urdf/generated/wxai/wxai_base.urdf',
   async robot => {
+
+    // Initialize API_BASE_URL dynamically
+    API_BASE_URL = await getCurrentNgrokUrl();
+    console.log('Using API Base URL:', API_BASE_URL);
 
     scene.add(robot);
 
@@ -901,9 +923,12 @@ loader.load(
               },
               extrinsics: { T_three }
             };
-            const resp = await fetch('http://127.0.0.1:9000/api/save-calibration', {
+            const resp = await fetch(`${API_BASE_URL}/api/save-calibration`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true'
+              },
               body: JSON.stringify(payload)
             });
             const out = await resp.json();
@@ -1190,9 +1215,12 @@ loader.load(
       const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
 
       try {
-        await fetch('http://127.0.0.1:9000/api/submit-goal', {
+        await fetch(`${API_BASE_URL}/api/submit-goal`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
+          },
           body: JSON.stringify({
             joint_positions: jointMap,
             gripper:         gripDir,                // -1 / +1 / 0

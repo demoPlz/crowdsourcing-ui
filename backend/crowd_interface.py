@@ -46,7 +46,7 @@ import base64
 
 from flask import Flask, jsonify
 from flask_cors import CORS
-from flask import request
+from flask import request, make_response
 from pathlib import Path
 from threading import Thread, Lock
 from collections import deque
@@ -791,7 +791,27 @@ class CrowdInterface():
 def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""
     app = Flask(__name__)
-    CORS(app)
+    CORS(app, origins=["*"], 
+         allow_headers=["Content-Type", "ngrok-skip-browser-warning"],
+         methods=["GET", "POST", "OPTIONS"])
+    
+    # Add ngrok-specific headers
+    @app.after_request
+    def after_request(response):
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,ngrok-skip-browser-warning'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+        return response
+    
+    # Handle preflight OPTIONS requests
+    @app.before_request
+    def handle_preflight():
+        if request.method == "OPTIONS":
+            response = make_response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add('Access-Control-Allow-Headers', "Content-Type,ngrok-skip-browser-warning")
+            response.headers.add('Access-Control-Allow-Methods', "GET,POST,OPTIONS")
+            return response
     
     @app.route("/api/get-state")
     def get_state():

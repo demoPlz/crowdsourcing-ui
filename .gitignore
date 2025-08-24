@@ -23,3 +23,11 @@ Thumbs.db
 
 calib/cam*
 calib/*.png
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+# Local Netlify folder
+.netlify
