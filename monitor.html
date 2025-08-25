@@ -563,19 +563,19 @@
     </div>
 
     <script>
-        // Simple API Configuration - use Netlify Functions proxy
+        // Simple API Configuration - use direct ngrok URL
         async function getCurrentNgrokUrl() {
             try {
-                // Use the direct Netlify function URL since redirects aren't working
-                return '/.netlify/functions/api'; // Direct function path
+                // Always use the direct ngrok URL
+                return 'https://fae7822f2b6a.ngrok-free.app';
             } catch (error) {
                 console.error('Error in getCurrentNgrokUrl:', error);
-                return '/.netlify/functions/api'; // Fallback to direct function
+                return 'https://fae7822f2b6a.ngrok-free.app'; // Fallback to direct ngrok
             }
         }
 
         // Initialize API_BASE_URL dynamically
-        let API_BASE_URL = 'http://127.0.0.1:9000'; // Default fallback
+        let API_BASE_URL = 'https://fae7822f2b6a.ngrok-free.app'; // Use direct ngrok URL
 
         // For local development, check if we're running on Vite dev server
         if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
@@ -587,10 +587,6 @@
                 // Running on production build locally
                 API_BASE_URL = 'http://127.0.0.1:9000';
             }
-        } else {
-            // Running on deployed Netlify - use function proxy
-            API_BASE_URL = '/.netlify/functions/api';
-            console.log('[DEBUG] Monitor using Netlify function proxy:', API_BASE_URL);
         }
 
         // Configuration
