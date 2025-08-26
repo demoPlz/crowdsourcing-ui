@@ -1,7 +1,8 @@
 from __future__ import annotations
 import os
 
-REQUIRED_RESPONSES_PER_STATE = 3
+REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
+REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -96,7 +97,9 @@ class CrowdInterface():
     '''
     Sits between the frontend and the backend
     '''
-    def __init__(self, required_responses_per_state= REQUIRED_RESPONSES_PER_STATE):
+    def __init__(self, 
+                 required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
+                 required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE):
 
         self.states = deque(maxlen=4)
         self.cams = {}
@@ -111,6 +114,7 @@ class CrowdInterface():
         
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
+        self.required_responses_per_important_state = required_responses_per_important_state
         self.pending_states = {}  # state_id -> {state: dict, responses_received: int, timestamp: float}
         self.next_state_id = 0
         self.state_lock = Lock()  # Protects pending_states and next_state_id
@@ -200,7 +204,7 @@ class CrowdInterface():
             from lerobot.common.datasets.utils import get_hf_features_from_features
             
             original_action_dim = self.dataset.features["action"]["shape"][-1]  # Get the last dimension (joint count)
-            new_action_shape = (self.required_responses_per_state * original_action_dim,)
+            new_action_shape = (self.required_responses_per_important_state * original_action_dim,)
             
             # Update both the dataset features and metadata
             self.dataset.features["action"]["shape"] = new_action_shape
@@ -222,7 +226,7 @@ class CrowdInterface():
                 # Replace the old dataset
                 self.dataset.hf_dataset = new_hf_dataset
 
-            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_state}, joints={original_action_dim})")
+            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_important_state}, joints={original_action_dim})")
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -507,12 +511,16 @@ class CrowdInterface():
                 "actions": [],  # Will collect action responses here
                 "responses_received": 0,
                 "timestamp": time.time(),
-                "served_during_stationary": None  # Track if this state was served when robot was stationary
+                "served_during_stationary": None,  # Track if this state was served when robot was stationary
+                "important": False # updated later
             }
         
         print(f"🟢 State {state_id} added. Pending states: {len(self.pending_states)}")
         # print(f"🟢 Joint positions: {joint_positions}")
         # print(f"🟢 Gripper: {self._gripper_motion}")
+
+    def set_last_state_to_important(self):
+        self.pending_states[self.next_state_id - 1]['important'] = True
     
     def get_latest_state(self, session_id: str = "default") -> dict:
         """
@@ -639,6 +647,8 @@ class CrowdInterface():
                 return False
             
             pending_info = self.pending_states[state_id]
+
+            required_responses_this_state = self.required_responses_per_important_state if pending_info['important'] else self.required_responses_per_state
             
             # Extract joint positions and gripper action from response
             joint_positions = response_data.get("joint_positions", {})
@@ -685,10 +695,23 @@ class CrowdInterface():
             print(f"🔔 Response recorded for state {state_id} from session {session_id} ({pending_info['responses_received']}/{self.required_responses_per_state})")
             
             # Check if we've received enough responses
-            if pending_info["responses_received"] >= self.required_responses_per_state:
+            if pending_info["responses_received"] >= required_responses_this_state:
                 # Concatenate all action responses into a 1D tensor
                 # This will have shape [REQUIRED_RESPONSES_PER_STATE * action_dim]
-                all_actions = torch.cat(pending_info["actions"][:self.required_responses_per_state], dim=0)
+                all_actions = torch.cat(pending_info["actions"][:required_responses_this_state], dim=0)
+
+                if required_responses_this_state < self.required_responses_per_important_state:
+                    # Pad all_actions with torch.inf to have the same shape as if we collected all important state responses
+                    # Calculate how many additional responses needed
+                    missing_responses = self.required_responses_per_important_state - required_responses_this_state
+                    action_dim = len(JOINT_NAMES)  # Number of joints per action
+                    
+                    # Create padding tensor filled with inf values
+                    padding_size = missing_responses * action_dim
+                    padding = torch.full((padding_size,), float('inf'), dtype=torch.float32)
+                    
+                    # Concatenate original actions with padding
+                    all_actions = torch.cat([all_actions, padding], dim=0)
 
                 # Create the complete frame for dataset.add_frame()
                 # Format matches exactly what teleop_step_crowd produces
@@ -726,22 +749,24 @@ class CrowdInterface():
             # Clean up old completed states (older than 2 seconds)
             current_time = time.time()
             states_to_remove = []
-            for state_id, info in self.recently_completed.items():
-                if (current_time - info["completion_time"]) > 2.0:
-                    states_to_remove.append(state_id)
+            # for state_id, info in self.recently_completed.items():
+            #     if (current_time - info["completion_time"]) > 2.0:
+            #         states_to_remove.append(state_id)
             
-            for state_id in states_to_remove:
-                del self.recently_completed[state_id]
+            # for state_id in states_to_remove:
+            #     del self.recently_completed[state_id]
             
             # Combine pending and recently completed states for monitoring
             all_states_info = {}
             
             # Add pending states
             for state_id, info in self.pending_states.items():
+                required_responses_this_state = self.required_responses_per_important_state if self.pending_states[state_id]['important'] else self.required_responses_per_state
                 all_states_info[state_id] = {
                     "responses_received": info["responses_received"],
-                    "responses_needed": self.required_responses_per_state - info["responses_received"],
-                    "age_seconds": current_time - info["timestamp"]
+                    "responses_needed": required_responses_this_state - info["responses_received"],
+                    "age_seconds": current_time - info["timestamp"],
+                    "is_important": info.get("important", False)  # Include importance flag
                 }
             
             # Add recently completed states
@@ -755,6 +780,7 @@ class CrowdInterface():
             return {
                 "total_pending": len(self.pending_states),
                 "required_responses_per_state": self.required_responses_per_state,
+                "required_responses_per_important_state": self.required_responses_per_important_state,
                 "states_info": all_states_info
             }
     
@@ -1023,7 +1049,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "state_id": newest_state_id,
                 "timestamp": newest_state_data["timestamp"],
                 "responses_received": newest_state_data["responses_received"],
-                "responses_required": crowd_interface.required_responses_per_state,
+                "responses_required": crowd_interface.required_responses_per_important_state,
+                "is_important": newest_state_data.get("important", False),  # Include importance flag
                 "views": newest_state.get("views", {}),
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),

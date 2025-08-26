@@ -417,6 +417,22 @@
             height: 100% !important;
         }
         
+        .state-bar.important-complete {
+            background: linear-gradient(180deg, #dc2626, #991b1b) !important;
+        }
+        
+        .state-bar.important-incomplete {
+            background: linear-gradient(180deg, #f87171, #dc2626) !important;
+        }
+        
+        .state-bar.regular-complete {
+            background: linear-gradient(180deg, #2563eb, #1d4ed8) !important;
+        }
+        
+        .state-bar.regular-incomplete {
+            background: linear-gradient(180deg, #60a5fa, #2563eb) !important;
+        }
+        
         .state-bar-label {
             position: absolute;
             bottom: -16px;
@@ -547,6 +563,14 @@
                             <span class="status-label">Current State ID</span>
                             <span class="status-value" id="current-state-id">--</span>
                         </div>
+                        <div class="status-item">
+                            <span class="status-label">State Type</span>
+                            <span class="status-value" id="state-type">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Responses</span>
+                            <span class="status-value" id="state-responses">--</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -645,6 +669,8 @@
         const serverStatus = document.getElementById('server-status');
         const robotState = document.getElementById('robot-state');
         const currentStateId = document.getElementById('current-state-id');
+        const stateType = document.getElementById('state-type');
+        const stateResponses = document.getElementById('state-responses');
         
         // Control button elements
         const fastForwardBtn = document.getElementById('fast-forward-btn');
@@ -663,7 +689,8 @@
         const episodeChartsContainer = document.getElementById('episode-charts-container');
         let episodes = []; // Array of episode data
         let currentEpisodeIndex = 0;
-        let REQUIRED_RESPONSES_PER_STATE = 3; // Will be updated from API
+        let REQUIRED_RESPONSES_PER_STATE = 1; // Will be updated from API
+        let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10; // Will be updated from API
         let lastProcessedStateId = -1; // Track the highest state ID we've processed
         let episodeStartStateId = 0; // Track where current episode started
         
@@ -745,29 +772,34 @@
                 </div>
                 <div class="chart-container">
                     <div class="chart-y-axis">
+                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_IMPORTANT_STATE}</div>
                         <div class="y-axis-label">${REQUIRED_RESPONSES_PER_STATE}</div>
                         <div class="y-axis-label">0</div>
                     </div>
                     <div class="chart-bars" id="episode-${episode.index}-bars">
                         <!-- State bars will be added here -->
                     </div>
-                    <div class="chart-x-axis">States →</div>
+                    <div class="chart-x-axis">States → (🔴 Important, 🔵 Regular)</div>
                 </div>
             `;
             
             episodeChartsContainer.appendChild(episodeDiv);
         }
         
-        function updateEpisodeChart(episodeIndex, stateId, responsesReceived) {
+        function updateEpisodeChart(episodeIndex, stateId, responsesReceived, isImportant) {
             if (episodeIndex >= episodes.length) return;
             
             const episode = episodes[episodeIndex];
             
-            // Update episode data
-            episode.states[stateId] = responsesReceived;
+            // Update episode data with importance information
+            episode.states[stateId] = {
+                responses: responsesReceived,
+                isImportant: isImportant || false
+            };
             episode.maxStates = Math.max(episode.maxStates, Object.keys(episode.states).length);
             
-            console.log(`📊 Updating chart for episode ${episodeIndex}, state ${stateId}, responses: ${responsesReceived}`);
+            const stateType = isImportant ? "IMPORTANT" : "regular";
+            console.log(`📊 Updating chart for episode ${episodeIndex}, state ${stateId} (${stateType}), responses: ${responsesReceived}`);
             
             // Get the bars container
             const barsContainer = document.getElementById(`episode-${episodeIndex}-bars`);
@@ -788,7 +820,11 @@
             const barWidth = Math.max(2, Math.min(20, (availableWidth - totalGapWidth) / stateIds.length));
             
             stateIds.forEach((stateId, index) => {
-                const responses = episode.states[stateId];
+                const stateData = episode.states[stateId];
+                const responses = stateData.responses;
+                const isImportant = stateData.isImportant;
+                const requiredResponses = isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+                
                 const barContainer = document.createElement('div');
                 barContainer.className = 'state-bar-container';
                 barContainer.style.width = `${barWidth}px`;
@@ -800,9 +836,27 @@
                 if (responses === 0) {
                     bar.classList.add('empty');
                 } else {
-                    const heightPercent = (responses / REQUIRED_RESPONSES_PER_STATE) * 100;
+                    const heightPercent = (responses / REQUIRED_RESPONSES_PER_IMPORTANT_STATE) * 100; // Use max scale for consistent chart height
                     bar.style.height = `${heightPercent}%`;
+                    
+                    // Color code based on state type and completion
+                    if (isImportant) {
+                        if (responses >= requiredResponses) {
+                            bar.style.background = 'linear-gradient(180deg, #dc2626, #991b1b)'; // Red - important complete
+                        } else {
+                            bar.style.background = 'linear-gradient(180deg, #f87171, #dc2626)'; // Light red - important incomplete
+                        }
+                    } else {
+                        if (responses >= requiredResponses) {
+                            bar.style.background = 'linear-gradient(180deg, #2563eb, #1d4ed8)'; // Blue - regular complete
+                        } else {
+                            bar.style.background = 'linear-gradient(180deg, #60a5fa, #2563eb)'; // Light blue - regular incomplete
+                        }
+                    }
                 }
+                
+                // Add tooltip
+                barContainer.title = `State ${stateId}: ${responses}/${requiredResponses} responses (${isImportant ? 'Important' : 'Regular'})`;
                 
                 barContainer.appendChild(bar);
                 barsContainer.appendChild(barContainer);
@@ -811,13 +865,18 @@
             // Update episode stats
             const statsElement = document.getElementById(`episode-${episodeIndex}-stats`);
             if (statsElement) {
-                const totalResponses = Object.values(episode.states).reduce((sum, count) => sum + count, 0);
+                const totalResponses = Object.values(episode.states).reduce((sum, data) => sum + data.responses, 0);
                 const stateCount = Object.keys(episode.states).length;
-                statsElement.textContent = `${stateCount} states, ${totalResponses} responses`;
+                const importantCount = Object.values(episode.states).filter(data => data.isImportant).length;
+                const regularCount = stateCount - importantCount;
+                statsElement.textContent = `${stateCount} states (🔴${importantCount} 🔵${regularCount}), ${totalResponses} responses`;
             }
             
             // Check if episode is complete
-            const allStatesComplete = Object.values(episode.states).every(count => count >= REQUIRED_RESPONSES_PER_STATE);
+            const allStatesComplete = Object.values(episode.states).every(data => {
+                const requiredResponses = data.isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+                return data.responses >= requiredResponses;
+            });
             if (allStatesComplete && stateCount > 0) {
                 episode.isComplete = true;
                 document.getElementById(`episode-${episodeIndex}`).classList.add('complete');
@@ -840,9 +899,12 @@
         }
         
         function processMonitoringData(data) {
-            // Update REQUIRED_RESPONSES_PER_STATE from the data if available
+            // Update response requirements from the data if available
             if (data.required_responses_per_state) {
                 REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
+            }
+            if (data.required_responses_per_important_state) {
+                REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
             }
             
             // Ensure we have at least one episode
@@ -858,12 +920,14 @@
                 Object.entries(data.states_info).forEach(([stateIdStr, stateInfo]) => {
                     const stateId = parseInt(stateIdStr);
                     const responsesReceived = stateInfo.responses_received || 0;
+                    const isImportant = stateInfo.is_important || false;
                     
                     // Only process states that belong to the current episode
                     // (states with ID >= the episode's start state ID)
                     if (stateId >= currentEpisode.startStateId) {
-                        console.log(`📊 Processing state ${stateId} for episode ${currentEpisodeIndex} (responses: ${responsesReceived})`);
-                        updateEpisodeChart(currentEpisodeIndex, stateId, responsesReceived);
+                        const stateType = isImportant ? "IMPORTANT" : "regular";
+                        console.log(`📊 Processing ${stateType} state ${stateId} for episode ${currentEpisodeIndex} (responses: ${responsesReceived})`);
+                        updateEpisodeChart(currentEpisodeIndex, stateId, responsesReceived, isImportant);
                         lastProcessedStateId = Math.max(lastProcessedStateId, stateId);
                     } else {
                         console.log(`⏭️  Skipping state ${stateId} (belongs to previous episode, current episode starts at ${currentEpisode.startStateId})`);
@@ -903,12 +967,25 @@
                     // Update status information
                     currentStateId.textContent = data.state_id || '--';
                     
+                    // Update state type and response information
+                    if (data.is_important !== undefined) {
+                        stateType.textContent = data.is_important ? '🔴 Important' : '🔵 Regular';
+                        const required = data.is_important ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+                        const received = data.responses_received || 0;
+                        stateResponses.textContent = `${received}/${required}`;
+                    } else {
+                        stateType.textContent = '--';
+                        stateResponses.textContent = '--';
+                    }
+                    
                     // Update robot state
                     updateRobotState(data.robot_moving);
                     
                 } else if (data.status === 'no_states') {
                     console.log('No pending states available');
                     currentStateId.textContent = 'No states';
+                    stateType.textContent = '--';
+                    stateResponses.textContent = '--';
                     
                     // Clear camera views
                     for (const cameraName of Object.keys(cameraViews)) {
