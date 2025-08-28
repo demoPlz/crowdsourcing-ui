@@ -571,6 +571,10 @@
                             <span class="status-label">Responses</span>
                             <span class="status-value" id="state-responses">--</span>
                         </div>
+                        <div class="status-item">
+                            <span class="status-label">Pending States</span>
+                            <span class="status-value" id="pending-states-count">--</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -671,6 +675,7 @@
         const currentStateId = document.getElementById('current-state-id');
         const stateType = document.getElementById('state-type');
         const stateResponses = document.getElementById('state-responses');
+        const pendingStatesCount = document.getElementById('pending-states-count');
         
         // Control button elements
         const fastForwardBtn = document.getElementById('fast-forward-btn');
@@ -981,11 +986,19 @@
                     // Update robot state
                     updateRobotState(data.robot_moving);
                     
+                    // Update pending states count
+                    if (data.total_pending_states !== undefined) {
+                        pendingStatesCount.textContent = data.total_pending_states;
+                    } else {
+                        pendingStatesCount.textContent = '--';
+                    }
+                    
                 } else if (data.status === 'no_states') {
                     console.log('No pending states available');
                     currentStateId.textContent = 'No states';
                     stateType.textContent = '--';
                     stateResponses.textContent = '--';
+                    pendingStatesCount.textContent = '0';
                     
                     // Clear camera views
                     for (const cameraName of Object.keys(cameraViews)) {

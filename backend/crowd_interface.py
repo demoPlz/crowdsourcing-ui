@@ -5,8 +5,8 @@ REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
-    "front":       18,   # change indices / paths as needed
-    "left":        4,
+    "front":       4,   # change indices / paths as needed
+    "left":        19,
     "right":       0,
     "perspective": 2,
 }
@@ -52,6 +52,7 @@ from flask import request, make_response
 from pathlib import Path
 from threading import Thread, Lock
 from collections import deque
+import queue
 from math import cos, sin
 from math import cos, sin
 import json
@@ -123,7 +124,12 @@ class CrowdInterface():
         self.served_states = {}  # session_id -> state_id (most recently served state to this session)
         
         # Recently completed states cache for monitoring
-        self.recently_completed = {}  # state_id -> {responses_received: int, completion_time: float}
+        self.completed_states = {}  # state_id -> {responses_received: int, completion_time: float}
+
+        # Auto-labeling queue and worker thread
+        self.auto_label_queue = queue.Queue()
+        self.auto_label_worker_thread = None
+        self.auto_label_worker_running = False
 
         # Dataset
         self.dataset = None
@@ -158,6 +164,148 @@ class CrowdInterface():
             "front":       blank,
             "perspective": blank,
         }
+        
+        # Start the auto-labeling worker thread
+        self._start_auto_label_worker()
+    
+    def _start_auto_label_worker(self):
+        """Start the dedicated auto-labeling worker thread"""
+        if self.auto_label_worker_thread is not None and self.auto_label_worker_thread.is_alive():
+            return
+        
+        self.auto_label_worker_running = True
+        self.auto_label_worker_thread = Thread(target=self._auto_label_worker, daemon=True)
+        self.auto_label_worker_thread.start()
+        print("🧵 Started dedicated auto-labeling worker thread")
+    
+    def _stop_auto_label_worker(self):
+        """Stop the auto-labeling worker thread"""
+        self.auto_label_worker_running = False
+        # Send a stop signal to the queue
+        self.auto_label_queue.put(None)
+        if self.auto_label_worker_thread and self.auto_label_worker_thread.is_alive():
+            self.auto_label_worker_thread.join(timeout=1.0)
+        print("🛑 Stopped auto-labeling worker thread")
+    
+    def _auto_label_worker(self):
+        """Dedicated worker thread that processes auto-labeling tasks from the queue"""
+        while self.auto_label_worker_running:
+            try:
+                # Wait for a task from the queue (blocking)
+                important_state_id = self.auto_label_queue.get(timeout=1.0)
+                
+                # None is our stop signal
+                if important_state_id is None:
+                    break
+                
+                # Process the auto-labeling task
+                self._process_auto_labeling(important_state_id)
+                
+                # Mark task as done
+                self.auto_label_queue.task_done()
+                
+            except queue.Empty:
+                # Timeout reached, continue the loop
+                continue
+            except Exception as e:
+                print(f"❌ Error in auto-labeling worker: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def _process_auto_labeling(self, important_state_id):
+        """Process auto-labeling for states before the given important state ID"""
+        try:
+            with self.state_lock:
+                # Find the earliest pending state to get its first response as the template
+                if not self.pending_states:
+                    return
+                
+                earliest_state_id = min(self.pending_states.keys())
+                earliest_state = self.pending_states.get(earliest_state_id)
+                
+                if not earliest_state or not earliest_state.get("actions"):
+                    # No actions available to use as template - convert joint positions to tensor
+                    joint_positions = earliest_state['state']['joint_positions']
+                    gripper_action = earliest_state['state'].get('gripper', 0)
+                    
+                    # Convert to tensor format like in record_response
+                    goal_positions = []
+                    for joint_name in JOINT_NAMES:
+                        joint_value = joint_positions.get(joint_name, 0.0)
+                        if isinstance(joint_value, (list, tuple)) and len(joint_value) > 0:
+                            goal_positions.append(float(joint_value[0]))
+                        else:
+                            goal_positions.append(float(joint_value))
+                    
+                    # Handle gripper like in record_response
+                    goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+                    template_action = torch.tensor(goal_positions, dtype=torch.float32)
+                else:
+                    # Get the first action as template (already a tensor)
+                    template_action = earliest_state["actions"][0]
+                
+                # Find all unimportant states that are earlier than the important state
+                states_to_label = []
+                for state_id, state_info in self.pending_states.items():
+                    if (state_id < important_state_id and 
+                        not state_info.get("important", False) and 
+                        state_info["responses_received"] < self.required_responses_per_state):
+                        states_to_label.append(state_id)
+                
+                print(f"🏷️  Auto-labeling {len(states_to_label)} unimportant states before important state {important_state_id}")
+                
+                # Label each unimportant state with the template action
+                for state_id in states_to_label:
+                    state_info = self.pending_states[state_id]
+                    
+                    # Add template actions until we reach required responses
+                    while state_info["responses_received"] < self.required_responses_per_state:
+                        state_info["actions"].append(template_action.clone())
+                        state_info["responses_received"] += 1
+                    
+                    # Complete the state
+                    if state_info["responses_received"] >= self.required_responses_per_state:
+                        # Concatenate all action responses into a 1D tensor
+                        all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
+                        
+                        # Pad with inf values to match important state shape
+                        missing_responses = self.required_responses_per_important_state - self.required_responses_per_state
+                        action_dim = len(JOINT_NAMES)
+                        padding_size = missing_responses * action_dim
+                        padding = torch.full((padding_size,), float('inf'), dtype=torch.float32)
+                        all_actions = torch.cat([all_actions, padding], dim=0)
+                        
+                        # Create completed state for dataset
+                        completed_state = {
+                            **state_info["observations"],
+                            "action": all_actions,
+                            "task": self.task if self.task else "crowdsourced_task"
+                        }
+                        
+                        # Add to dataset
+                        if self.dataset is not None:
+                            self.dataset.add_frame(completed_state)
+                        
+                        # Move to recently completed
+                        self.completed_states[state_id] = {
+                            "responses_received": state_info["responses_received"],
+                            "completion_time": time.time()
+                        }
+                        
+                        print(f"🏷️  Auto-labeled and completed state {state_id}")
+                
+                # Remove auto-labeled states from pending
+                for state_id in states_to_label:
+                    if state_id in self.pending_states:
+                        del self.pending_states[state_id]
+                
+                if states_to_label:
+                    print(f"🗑️  Removed {len(states_to_label)} auto-labeled states from pending. Remaining: {len(self.pending_states)}")
+                    
+        except Exception as e:
+            print(f"❌ Error in _process_auto_labeling: {e}")
+            import traceback
+            traceback.print_exc()
     
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
@@ -267,7 +415,10 @@ class CrowdInterface():
 
 
     def cleanup_cameras(self):
-        """Close all cameras"""
+        """Close all cameras and stop workers"""
+        # Stop auto-labeling worker
+        self._stop_auto_label_worker()
+        
         # Stop background workers
         if self._cap_running:
             self._cap_running = False
@@ -521,6 +672,21 @@ class CrowdInterface():
 
     def set_last_state_to_important(self):
         self.pending_states[self.next_state_id - 1]['important'] = True
+        self.auto_label_previous_states(self.next_state_id - 1)
+
+    def auto_label_previous_states(self, important_state_id):
+        """
+        Queue an auto-labeling task for unimportant pending states that are 
+        earlier than the given important state ID.
+        """
+        try:
+            # Add the task to the queue (non-blocking)
+            self.auto_label_queue.put_nowait(important_state_id)
+            print(f"📝 Queued auto-labeling task for states before {important_state_id}")
+        except queue.Full:
+            print(f"⚠️  Auto-labeling queue is full, skipping task for state {important_state_id}")
+        except Exception as e:
+            print(f"❌ Error queuing auto-labeling task: {e}")
     
     def get_latest_state(self, session_id: str = "default") -> dict:
         """
@@ -724,7 +890,7 @@ class CrowdInterface():
                 self.dataset.add_frame(completed_state)
                 
                 # Add to recently completed cache before removing from pending states
-                self.recently_completed[state_id] = {
+                self.completed_states[state_id] = {
                     "responses_received": pending_info["responses_received"],
                     "completion_time": time.time()
                 }
@@ -746,15 +912,6 @@ class CrowdInterface():
     def get_pending_states_info(self) -> dict:
         """Get information about pending states for debugging/monitoring"""
         with self.state_lock:
-            # Clean up old completed states (older than 2 seconds)
-            current_time = time.time()
-            states_to_remove = []
-            # for state_id, info in self.recently_completed.items():
-            #     if (current_time - info["completion_time"]) > 2.0:
-            #         states_to_remove.append(state_id)
-            
-            # for state_id in states_to_remove:
-            #     del self.recently_completed[state_id]
             
             # Combine pending and recently completed states for monitoring
             all_states_info = {}
@@ -765,16 +922,14 @@ class CrowdInterface():
                 all_states_info[state_id] = {
                     "responses_received": info["responses_received"],
                     "responses_needed": required_responses_this_state - info["responses_received"],
-                    "age_seconds": current_time - info["timestamp"],
                     "is_important": info.get("important", False)  # Include importance flag
                 }
             
             # Add recently completed states
-            for state_id, info in self.recently_completed.items():
+            for state_id, info in self.completed_states.items():
                 all_states_info[state_id] = {
                     "responses_received": info["responses_received"],
                     "responses_needed": 0,  # Completed
-                    "age_seconds": current_time - info["completion_time"]
                 }
             
             return {
@@ -1035,6 +1190,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                         "status": "no_states",
                         "message": "No pending states available",
                         "views": {},
+                        "total_pending_states": 0,
                         "timestamp": time.time()
                     })
                 
