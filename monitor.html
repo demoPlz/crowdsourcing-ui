@@ -240,6 +240,18 @@
             border: 1px solid #6ee7b7;
         }
         
+        .robot-state.resetting {
+            background: #fef3c7;
+            color: #92400e;
+            border: 1px solid #fcd34d;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
         .error-message {
             background: #fef2f2;
             border: 1px solid #fecaca;
@@ -721,13 +733,30 @@
         }
         
         // Update robot state
-        function updateRobotState(isMoving) {
-            if (isMoving) {
+        function updateRobotState(isMoving, isResetting, resetCountdown) {
+            if (isResetting) {
+                robotState.className = 'robot-state resetting';
+                const countdownText = resetCountdown > 0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
+                robotState.textContent = `🔄 Resetting Environment${countdownText}`;
+            } else if (isMoving) {
                 robotState.className = 'robot-state moving';
                 robotState.textContent = '🏃 Robot Moving';
             } else {
                 robotState.className = 'robot-state stationary';
                 robotState.textContent = '🛑 Robot Stationary';
+            }
+        }
+        
+        // Update control buttons based on reset state
+        function updateControlButtons(isResetting) {
+            if (isResetting) {
+                // Change "Next Episode" to "Start Episode" during reset
+                fastForwardBtn.innerHTML = '<span class="control-icon">▶️</span>Start Episode';
+                fastForwardBtn.title = 'Skip remaining reset time and start episode immediately';
+            } else {
+                // Normal "Next Episode" button
+                fastForwardBtn.innerHTML = '<span class="control-icon">⏩</span>Next Episode';
+                fastForwardBtn.title = 'Finish current episode and move to next';
             }
         }
         
@@ -1033,7 +1062,10 @@
                     }
                     
                     // Update robot state
-                    updateRobotState(data.robot_moving);
+                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown);
+                    
+                    // Update control button based on reset state
+                    updateControlButtons(data.is_resetting);
                     
                     // Update pending states count
                     if (data.total_pending_states !== undefined) {
@@ -1111,13 +1143,17 @@
         
         // Control button handlers
         async function handleFastForward() {
-            console.log('Next Episode button clicked');
+            const buttonText = fastForwardBtn.textContent;
+            const isStartEpisode = buttonText.includes('Start Episode');
+            
+            console.log(isStartEpisode ? 'Start Episode button clicked' : 'Next Episode button clicked');
             const button = fastForwardBtn;
             button.classList.add('loading');
             button.disabled = true;
             
             try {
-                const response = await fetch(`${API_BASE_URL}/api/control/next-episode`, {
+                const endpoint = isStartEpisode ? '/api/control/start-episode' : '/api/control/next-episode';
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1126,16 +1162,19 @@
                 
                 const result = await response.json();
                 if (result.status === 'success') {
-                    console.log('✅ Next episode triggered successfully');
+                    const action = isStartEpisode ? 'episode start' : 'next episode';
+                    console.log(`✅ ${action} triggered successfully`);
                     
                     // The new episode will be automatically detected on the next data fetch
                     // No need to manually create episode charts since backend manages episodes
                     
                 } else {
-                    console.error('❌ Failed to trigger next episode:', result.message);
+                    const action = isStartEpisode ? 'start episode' : 'trigger next episode';
+                    console.error(`❌ Failed to ${action}:`, result.message);
                 }
             } catch (error) {
-                console.error('❌ Error triggering next episode:', error);
+                const action = isStartEpisode ? 'starting episode' : 'triggering next episode';
+                console.error(`❌ Error ${action}:`, error);
             } finally {
                 button.classList.remove('loading');
                 button.disabled = false;

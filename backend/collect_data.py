@@ -19,7 +19,7 @@ from lerobot.common.robot_devices.control_configs import (
 from lerobot.common.robot_devices.control_utils import (
     init_keyboard_listener,
     record_episode_crowd,
-    reset_environment,
+    reset_environment_crowd,
     sanity_check_dataset_name,
     sanity_check_dataset_robot_compatibility,
     stop_recording,
@@ -113,7 +113,7 @@ def record(
             (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
         ):
             log_say("Reset the environment", cfg.play_sounds)
-            reset_environment(robot, events, cfg.reset_time_s, cfg.fps)
+            reset_environment_crowd(robot, events, cfg.reset_time_s, cfg.fps, crowd_interface)
 
         if events["rerecord_episode"]:
             log_say("Re-record episode", cfg.play_sounds)

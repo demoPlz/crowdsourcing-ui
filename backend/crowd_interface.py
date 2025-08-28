@@ -107,6 +107,11 @@ class CrowdInterface():
 
         self.robot_is_moving = False
         
+        # Reset state management
+        self.is_resetting = False
+        self.reset_start_time = None
+        self.reset_duration_s = 0
+        
         # Control events for keyboard-like functionality
         self.events = None
         
@@ -793,12 +798,29 @@ class CrowdInterface():
             
             # Select state based on robot movement status
             if self.robot_is_moving is False:
-                # Robot not moving - prioritize LATEST state for immediate execution
-                latest_state_id = max(episode_states.keys(), 
-                                    key=lambda sid: episode_states[sid]["timestamp"])
-                state_info = episode_states[latest_state_id]
+                # Robot not moving - prioritize LATEST state from ALL EPISODES for immediate execution
+                latest_state_id = None
+                latest_timestamp = 0
+                latest_episode = None
+                
+                # Find the most recent state across all episodes
+                for ep_id, ep_states in self.pending_states_by_episode.items():
+                    if not ep_states:
+                        continue
+                    for state_id, state_data in ep_states.items():
+                        if state_data["timestamp"] > latest_timestamp:
+                            latest_timestamp = state_data["timestamp"]
+                            latest_state_id = state_id
+                            latest_episode = ep_id
+                
+                if latest_state_id is not None:
+                    state_info = self.pending_states_by_episode[latest_episode][latest_state_id]
+                    episode_states = self.pending_states_by_episode[latest_episode]
+                else:
+                    # Fallback if no states found
+                    return {}
             else:
-                # Robot moving - select random state for diverse data collection
+                # Robot moving - select random state for diverse data collection from current serving episode
                 random_state_id = random.choice(list(episode_states.keys()))
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
@@ -808,17 +830,18 @@ class CrowdInterface():
                 state_info["served_during_stationary"] = not self.robot_is_moving
             
             # Track which state was served to this session (episode-aware)
-            if self.current_serving_episode not in self.served_states_by_episode:
-                self.served_states_by_episode[self.current_serving_episode] = {}
-            self.served_states_by_episode[self.current_serving_episode][session_id] = latest_state_id
+            serving_episode = latest_episode if self.robot_is_moving is False else self.current_serving_episode
+            if serving_episode not in self.served_states_by_episode:
+                self.served_states_by_episode[serving_episode] = {}
+            self.served_states_by_episode[serving_episode][session_id] = latest_state_id
             
             # Prepare response
             state = state_info["state"].copy()
             state["state_id"] = latest_state_id
-            state["episode_id"] = self.current_serving_episode
+            state["episode_id"] = serving_episode
             
             status = "stationary" if not self.robot_is_moving else "moving"
-            print(f"🎯 Serving state {latest_state_id} from episode {self.current_serving_episode} to session {session_id} ({status})")
+            print(f"🎯 Serving state {latest_state_id} from episode {serving_episode} to session {session_id} ({status})")
             return state
     
     def _is_submission_meaningful(self, submitted_joints: dict, original_joints: dict, submitted_gripper: int = None, original_gripper: int = None, threshold: float = 0.01) -> bool:
@@ -1067,6 +1090,39 @@ class CrowdInterface():
     def is_robot_moving(self) -> bool:
         """Get current robot movement state"""
         return self.robot_is_moving
+    
+    # --- Reset State Management ---
+    def start_reset(self, duration_s: float):
+        """Start the reset countdown timer"""
+        self.is_resetting = True
+        self.reset_start_time = time.time()
+        self.reset_duration_s = duration_s
+        print(f"🔄 Starting reset countdown: {duration_s}s")
+    
+    def stop_reset(self):
+        """Stop the reset countdown timer"""
+        self.is_resetting = False
+        self.reset_start_time = None
+        self.reset_duration_s = 0
+        print(f"✅ Reset completed")
+    
+    def get_reset_countdown(self) -> float:
+        """Get remaining reset time in seconds, or 0 if not resetting"""
+        if not self.is_resetting or self.reset_start_time is None:
+            return 0
+        
+        elapsed = time.time() - self.reset_start_time
+        remaining = max(0, self.reset_duration_s - elapsed)
+        
+        # Auto-stop when countdown reaches 0
+        if remaining <= 0 and self.is_resetting:
+            self.stop_reset()
+        
+        return remaining
+    
+    def is_in_reset(self) -> bool:
+        """Check if currently in reset state"""
+        return self.is_resetting and self.get_reset_countdown() > 0
     
     # --- Helper Methods ---
 
@@ -1323,6 +1379,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),
                 "robot_moving": crowd_interface.is_robot_moving(),
+                "is_resetting": crowd_interface.is_in_reset(),
+                "reset_countdown": crowd_interface.get_reset_countdown(),
                 "total_pending_states": len(all_pending),
                 "current_time": time.time()
             }
@@ -1379,6 +1437,18 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 return jsonify({"status": "success", "message": "Stop recording triggered"})
             else:
                 return jsonify({"status": "error", "message": "Events not initialized"}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route("/api/control/start-episode", methods=["POST"])
+    def start_episode():
+        """Skip remaining reset time and start the next episode immediately"""
+        try:
+            if crowd_interface.is_in_reset():
+                crowd_interface.stop_reset()
+                return jsonify({"status": "success", "message": "Reset skipped, starting episode"})
+            else:
+                return jsonify({"status": "error", "message": "Not currently in reset state"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
     
