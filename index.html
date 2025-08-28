@@ -368,6 +368,69 @@
     box-shadow: 0 0 20px rgba(96,165,250,.35);
   }
   @keyframes spin{ to { transform: rotate(360deg); } }
+  
+  /* Auto-refresh progress bar styles */
+  #refreshProgressBar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  
+  #refreshProgressBar.visible {
+    opacity: 1;
+  }
+  
+  #refreshProgressBar .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+    width: 0%;
+    transition: width 0.1s linear;
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
+  }
+  
+  #refreshCountdown {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(17, 24, 39, 0.9);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 25px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 10001;
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(-10px);
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  
+  #refreshCountdown.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  
+  #refreshCountdown .countdown-icon {
+    display: inline-block;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
 </style>
 
 <!-- Polyfill so the import-map works everywhere -->
@@ -385,6 +448,17 @@
 </script></head><body>
   <!-- Centering mount for the WebGL canvas; avoids CSS stretching -->
   <div id="viewport"></div>
+  
+  <!-- Auto-refresh progress bar -->
+  <div id="refreshProgressBar">
+    <div class="progress-fill"></div>
+  </div>
+  
+  <!-- Auto-refresh countdown display -->
+  <div id="refreshCountdown">
+    <span class="countdown-icon">🔄</span>
+    <span>Loading next task in <span id="countdownTime">5</span>s</span>
+  </div>
 <script type="module">
 /* ---------- imports ---------- */
 import * as THREE                    from 'three';
@@ -436,6 +510,51 @@ async function getCurrentCloudflaredUrl() {
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
 let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
+
+// Auto-refresh with progress bar function
+function delayedRefresh(delay = 5000) {
+  const progressBar = document.getElementById('refreshProgressBar');
+  const countdown = document.getElementById('refreshCountdown');
+  const countdownTime = document.getElementById('countdownTime');
+  const progressFill = progressBar.querySelector('.progress-fill');
+  
+  // Show progress bar and countdown
+  progressBar.classList.add('visible');
+  countdown.classList.add('visible');
+  
+  let timeLeft = delay / 1000; // Convert to seconds
+  let elapsed = 0;
+  
+  const updateInterval = 100; // Update every 100ms for smooth progress
+  
+  const timer = setInterval(() => {
+    elapsed += updateInterval;
+    timeLeft = Math.max(0, (delay - elapsed) / 1000);
+    
+    // Update progress bar
+    const progress = (elapsed / delay) * 100;
+    progressFill.style.width = `${Math.min(progress, 100)}%`;
+    
+    // Update countdown display
+    countdownTime.textContent = Math.ceil(timeLeft);
+    
+    // Check if time is up
+    if (elapsed >= delay) {
+      clearInterval(timer);
+      
+      // Hide progress elements
+      progressBar.classList.remove('visible');
+      countdown.classList.remove('visible');
+      
+      // Perform the refresh after a brief delay to allow animations
+      setTimeout(() => {
+        // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
+        // This forces a bypass of all caches
+        window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+      }, 300);
+    }
+  }, updateInterval);
+}
 
 async function getInitialState() {
   try {
@@ -1416,9 +1535,8 @@ loader.load(
         
         if (response.ok) {
           console.log('✅ goal sent');
-          // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
-          // This forces a bypass of all caches
-          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+          // Start 5-second countdown with progress bar before refreshing
+          delayedRefresh(5000);
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
         }
@@ -1484,9 +1602,8 @@ loader.load(
         
         if (response.ok) {
           console.log('✅ Task already completed response sent');
-          // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
-          // This forces a bypass of all caches
-          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+          // Start 5-second countdown with progress bar before refreshing
+          delayedRefresh(5000);
         } else {
           const errorData = await response.json();
           console.error('❌ Failed to send task already completed response:', errorData);

@@ -777,9 +777,9 @@
                 </div>
                 <div class="chart-container">
                     <div class="chart-y-axis">
-                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_IMPORTANT_STATE}</div>
-                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_STATE}</div>
-                        <div class="y-axis-label">0</div>
+                        <div class="y-axis-label">100%</div>
+                        <div class="y-axis-label">50%</div>
+                        <div class="y-axis-label">0%</div>
                     </div>
                     <div class="chart-bars" id="episode-${episode.index}-bars">
                         <!-- State bars will be added here -->
@@ -841,8 +841,9 @@
                 if (responses === 0) {
                     bar.classList.add('empty');
                 } else {
-                    const heightPercent = (responses / REQUIRED_RESPONSES_PER_IMPORTANT_STATE) * 100; // Use max scale for consistent chart height
-                    bar.style.height = `${heightPercent}%`;
+                    // Calculate height based on percentage of required responses fulfilled
+                    const completionPercent = Math.min((responses / requiredResponses) * 100, 100);
+                    bar.style.height = `${completionPercent}%`;
                     
                     // Color code based on state type and completion
                     if (isImportant) {
@@ -860,8 +861,9 @@
                     }
                 }
                 
-                // Add tooltip
-                barContainer.title = `State ${stateId}: ${responses}/${requiredResponses} responses (${isImportant ? 'Important' : 'Regular'})`;
+                // Add tooltip with percentage information
+                const completionPercent = Math.min((responses / requiredResponses) * 100, 100);
+                barContainer.title = `State ${stateId}: ${responses}/${requiredResponses} responses (${completionPercent.toFixed(1)}% complete, ${isImportant ? 'Important' : 'Regular'})`;
                 
                 barContainer.appendChild(bar);
                 barsContainer.appendChild(barContainer);
@@ -1023,9 +1025,78 @@
                 if (response.ok) {
                     const data = await response.json();
                     processMonitoringData(data);
+                    
+                    // Update the pending states count in the DOM
+                    if (pendingStatesCount) {
+                        pendingStatesCount.textContent = data.total_pending || 0;
+                    }
                 }
             } catch (error) {
                 console.error('Error fetching pending states info:', error);
+            }
+        }
+        
+        // Rebuild episode charts from existing state data (called on page load)
+        async function rebuildEpisodesFromStateData() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, {
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                if (!response.ok) {
+                    console.log('No existing state data to rebuild from');
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('🔄 Rebuilding episode charts from existing state data:', data);
+                
+                // Update response requirements
+                if (data.required_responses_per_state) {
+                    REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
+                }
+                if (data.required_responses_per_important_state) {
+                    REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
+                }
+                
+                if (!data.states_info || Object.keys(data.states_info).length === 0) {
+                    console.log('No states to rebuild from');
+                    return;
+                }
+                
+                // Sort state IDs numerically
+                const stateIds = Object.keys(data.states_info).map(id => parseInt(id)).sort((a, b) => a - b);
+                
+                if (stateIds.length === 0) return;
+                
+                // Create the current episode if it doesn't exist
+                if (episodes.length === 0) {
+                    createNewEpisode();
+                }
+                
+                const currentEpisode = episodes[0];
+                
+                // Rebuild episode data from state info
+                for (const stateId of stateIds) {
+                    const stateInfo = data.states_info[stateId];
+                    const responses = stateInfo.responses_received;
+                    const isImportant = stateInfo.is_important || false;
+                    const isCompleted = stateInfo.responses_needed === 0;
+                    
+                    console.log(`📊 Rebuilding state ${stateId}: ${responses} responses, important: ${isImportant}, completed: ${isCompleted}`);
+                    
+                    // Update episode chart
+                    updateEpisodeChart(0, stateId, responses, isImportant);
+                    
+                    // Track the highest state ID processed
+                    lastProcessedStateId = Math.max(lastProcessedStateId, stateId);
+                }
+                
+                console.log(`📊 Rebuilt episode chart with ${stateIds.length} states, highest ID: ${lastProcessedStateId}`);
+                
+            } catch (error) {
+                console.error('Error rebuilding episodes from state data:', error);
             }
         }
         
@@ -1145,6 +1216,7 @@
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('Data Collection Monitor initialized');
             await initializeApiUrl(); // Initialize API URL first
+            await rebuildEpisodesFromStateData(); // Rebuild episode charts from existing data
             fetchLatestState(); // Initial fetch
             startAutoRefresh(); // Start auto-refresh immediately
         });

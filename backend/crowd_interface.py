@@ -892,7 +892,8 @@ class CrowdInterface():
                 # Add to recently completed cache before removing from pending states
                 self.completed_states[state_id] = {
                     "responses_received": pending_info["responses_received"],
-                    "completion_time": time.time()
+                    "completion_time": time.time(),
+                    "is_important": pending_info.get("important", False)  # Preserve importance flag
                 }
                 
                 # Remove from pending states
@@ -930,6 +931,7 @@ class CrowdInterface():
                 all_states_info[state_id] = {
                     "responses_received": info["responses_received"],
                     "responses_needed": 0,  # Completed
+                    "is_important": info.get("is_important", False)  # Include importance flag for completed states
                 }
             
             return {
