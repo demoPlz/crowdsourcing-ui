@@ -187,6 +187,8 @@ def control_robot(cfg: ControlPipelineConfig):
     if robot.is_connected:
         robot.disconnect()
 
+    print('Data Collection Completed')
+
 
 
 if __name__ == "__main__":
