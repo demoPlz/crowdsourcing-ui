@@ -511,8 +511,36 @@ async function getCurrentCloudflaredUrl() {
 // Initialize API_BASE_URL - will be set dynamically in the loader
 let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
 
+// Function to check if we're in async collection mode
+async function isAsyncCollectionMode() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`);
+    if (!response.ok) {
+      console.warn('Could not check async collection mode, defaulting to false');
+      return false;
+    }
+    const data = await response.json();
+    return data.is_async_collection === true;
+  } catch (error) {
+    console.warn('Error checking async collection mode:', error);
+    return false;
+  }
+}
+
 // Auto-refresh with progress bar function
-function delayedRefresh(delay = 5000) {
+async function delayedRefresh(delay = 5000) {
+  // Check if we're in async collection mode
+  const isAsync = await isAsyncCollectionMode();
+  
+  // If in async collection mode, refresh immediately
+  if (isAsync) {
+    console.log('🔄 Async collection mode detected - refreshing immediately');
+    // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
+    // This forces a bypass of all caches
+    window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
+    return;
+  }
+  
   const progressBar = document.getElementById('refreshProgressBar');
   const countdown = document.getElementById('refreshCountdown');
   const countdownTime = document.getElementById('countdownTime');

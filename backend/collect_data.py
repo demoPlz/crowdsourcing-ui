@@ -128,7 +128,7 @@ def record(
         if events["stop_recording"]:
             break
     
-    crowd_interface.set_robot_moving(True)  # Continue serving random states for diverse data collection
+    crowd_interface.set_async_collection(True)  # Switch to asynchronous data collection mode
     log_say("Stop recording from cameras", cfg.play_sounds, blocking=True)
     stop_recording(robot, listener, cfg.display_cameras)
 
@@ -138,7 +138,6 @@ def record(
         time.sleep(1)
 
     crowd_interface.cleanup_cameras()
-    crowd_interface.dataset.save_episode()
 
     if cfg.push_to_hub:
         dataset.push_to_hub(tags=cfg.tags, private=cfg.private)

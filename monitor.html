@@ -240,6 +240,13 @@
             border: 1px solid #6ee7b7;
         }
         
+        .robot-state.async-collection {
+            background: #e0e7ff;
+            color: #3730a3;
+            border: 1px solid #a5b4fc;
+            animation: pulse 2s infinite;
+        }
+        
         .robot-state.resetting {
             background: #fef3c7;
             color: #92400e;
@@ -733,11 +740,14 @@
         }
         
         // Update robot state
-        function updateRobotState(isMoving, isResetting, resetCountdown) {
+        function updateRobotState(isMoving, isResetting, resetCountdown, isAsyncCollection) {
             if (isResetting) {
                 robotState.className = 'robot-state resetting';
                 const countdownText = resetCountdown > 0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
                 robotState.textContent = `🔄 Resetting Environment${countdownText}`;
+            } else if (isAsyncCollection) {
+                robotState.className = 'robot-state async-collection';
+                robotState.textContent = '🔄 Asynchronous Data Collection';
             } else if (isMoving) {
                 robotState.className = 'robot-state moving';
                 robotState.textContent = '🏃 Robot Moving';
@@ -1062,7 +1072,7 @@
                     }
                     
                     // Update robot state
-                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown);
+                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown, data.is_async_collection);
                     
                     // Update control button based on reset state
                     updateControlButtons(data.is_resetting);

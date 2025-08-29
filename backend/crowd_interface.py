@@ -22,7 +22,7 @@ from math import cos, sin
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
-REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
+REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 2
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
@@ -106,6 +106,7 @@ class CrowdInterface():
         self._gripper_motion = 1  # Initialize gripper motion
 
         self.robot_is_moving = False
+        self.is_async_collection = False  # True when serving states asynchronously after recording
         
         # Reset state management
         self.is_resetting = False
@@ -796,9 +797,9 @@ class CrowdInterface():
             if not episode_states:
                 return {}
             
-            # Select state based on robot movement status
-            if self.robot_is_moving is False:
-                # Robot not moving - prioritize LATEST state from ALL EPISODES for immediate execution
+            # Select state based on robot movement status and async collection mode
+            if self.robot_is_moving is False and not self.is_async_collection:
+                # Robot not moving and not in async mode - prioritize LATEST state from ALL EPISODES for immediate execution
                 latest_state_id = None
                 latest_timestamp = 0
                 latest_episode = None
@@ -820,17 +821,17 @@ class CrowdInterface():
                     # Fallback if no states found
                     return {}
             else:
-                # Robot moving - select random state for diverse data collection from current serving episode
+                # Robot moving OR async collection mode - select random state for diverse data collection from current serving episode
                 random_state_id = random.choice(list(episode_states.keys()))
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
             
             # Mark state as served
             if state_info["served_during_stationary"] is None:
-                state_info["served_during_stationary"] = not self.robot_is_moving
+                state_info["served_during_stationary"] = not (self.robot_is_moving or self.is_async_collection)
             
             # Track which state was served to this session (episode-aware)
-            serving_episode = latest_episode if self.robot_is_moving is False else self.current_serving_episode
+            serving_episode = latest_episode if (self.robot_is_moving is False and not self.is_async_collection) else self.current_serving_episode
             if serving_episode not in self.served_states_by_episode:
                 self.served_states_by_episode[serving_episode] = {}
             self.served_states_by_episode[serving_episode][session_id] = latest_state_id
@@ -840,7 +841,12 @@ class CrowdInterface():
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
             
-            status = "stationary" if not self.robot_is_moving else "moving"
+            if self.is_async_collection:
+                status = "async_collection"
+            elif self.robot_is_moving:
+                status = "moving"
+            else:
+                status = "stationary"
             print(f"🎯 Serving state {latest_state_id} from episode {serving_episode} to session {session_id} ({status})")
             return state
     
@@ -1083,6 +1089,8 @@ class CrowdInterface():
     def set_robot_moving(self, is_moving: bool = True):
         """Set the robot movement state"""
         self.robot_is_moving = is_moving
+        if is_moving:
+            self.is_async_collection = False  # Clear async mode when robot is actually moving
         status = "MOVING" if is_moving else "STATIONARY"
         emoji = "🏃" if is_moving else "🛑"
         print(f"{emoji} Robot state set to: {status}")
@@ -1090,6 +1098,19 @@ class CrowdInterface():
     def is_robot_moving(self) -> bool:
         """Get current robot movement state"""
         return self.robot_is_moving
+    
+    def set_async_collection(self, is_async: bool = True):
+        """Set asynchronous data collection mode (serving random states after recording)"""
+        self.is_async_collection = is_async
+        if is_async:
+            self.robot_is_moving = False  # Robot is not actually moving during async collection
+        status = "ASYNC COLLECTION" if is_async else "NORMAL"
+        emoji = "🔄" if is_async else "⏸️"
+        print(f"{emoji} Data collection mode set to: {status}")
+    
+    def is_async_collection_mode(self) -> bool:
+        """Check if in asynchronous data collection mode"""
+        return self.is_async_collection
     
     # --- Reset State Management ---
     def start_reset(self, duration_s: float):
@@ -1379,6 +1400,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),
                 "robot_moving": crowd_interface.is_robot_moving(),
+                "is_async_collection": crowd_interface.is_async_collection_mode(),
                 "is_resetting": crowd_interface.is_in_reset(),
                 "reset_countdown": crowd_interface.get_reset_countdown(),
                 "total_pending_states": len(all_pending),
