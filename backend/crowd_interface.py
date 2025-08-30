@@ -1088,6 +1088,21 @@ class CrowdInterface():
                         del self.pending_states_by_episode[found_episode]
                         if found_episode in self.served_states_by_episode:
                             del self.served_states_by_episode[found_episode]
+                        
+                        # Update current_serving_episode if this was the current one
+                        if self.current_serving_episode == found_episode:
+                            # Find next episode to serve
+                            available_episodes = [ep_id for ep_id in self.pending_states_by_episode.keys() 
+                                                if ep_id not in self.episodes_completed and 
+                                                self.pending_states_by_episode[ep_id] and
+                                                ep_id is not None]
+                            
+                            if available_episodes:
+                                self.current_serving_episode = min(available_episodes)
+                                print(f"🎬 Now serving next episode {self.current_serving_episode}")
+                            else:
+                                self.current_serving_episode = None
+                                print(f"🏁 All episodes completed, no more episodes to serve")
                     finally:
                         # Always remove from being_completed set, even if there's an error
                         self.episodes_being_completed.discard(found_episode)
@@ -1103,20 +1118,26 @@ class CrowdInterface():
             episodes_info = {}
             total_pending = 0
             
+            # Get all episode IDs from both pending and completed episodes
+            all_episode_ids = set()
+            all_episode_ids.update(self.pending_states_by_episode.keys())
+            all_episode_ids.update(self.completed_states_by_episode.keys())
+            
             # Process each episode
-            for episode_id in sorted(self.pending_states_by_episode.keys()):
+            for episode_id in sorted(all_episode_ids):
                 episode_states = {}
                 
                 # Add pending states from this episode
-                for state_id, info in self.pending_states_by_episode[episode_id].items():
-                    required_responses = (self.required_responses_per_important_state 
-                                        if info['important'] else self.required_responses_per_state)
-                    episode_states[state_id] = {
-                        "responses_received": info["responses_received"],
-                        "responses_needed": required_responses - info["responses_received"],
-                        "is_important": info.get("important", False)
-                    }
-                    total_pending += 1
+                if episode_id in self.pending_states_by_episode:
+                    for state_id, info in self.pending_states_by_episode[episode_id].items():
+                        required_responses = (self.required_responses_per_important_state 
+                                            if info['important'] else self.required_responses_per_state)
+                        episode_states[state_id] = {
+                            "responses_received": info["responses_received"],
+                            "responses_needed": required_responses - info["responses_received"],
+                            "is_important": info.get("important", False)
+                        }
+                        total_pending += 1
                 
                 # Add completed states from this episode
                 if episode_id in self.completed_states_by_episode:
@@ -1129,7 +1150,7 @@ class CrowdInterface():
                 
                 episodes_info[episode_id] = {
                     "states": episode_states,
-                    "pending_count": len(self.pending_states_by_episode[episode_id]),
+                    "pending_count": len(self.pending_states_by_episode.get(episode_id, {})),
                     "completed_count": len(self.completed_states_by_episode.get(episode_id, {})),
                     "is_current_serving": episode_id == self.current_serving_episode,
                     "is_completed": episode_id in self.episodes_completed
@@ -1460,12 +1481,22 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     all_pending.update(episode_states)
                 
                 if not all_pending:
+                    # No pending states - check if we have any completed states to show info about
+                    total_completed_states = sum(len(states) for states in crowd_interface.completed_states_by_episode.values())
+                    completed_episodes = list(crowd_interface.episodes_completed)
+                    
                     return jsonify({
-                        "status": "no_states",
-                        "message": "No pending states available",
+                        "status": "no_pending_states",
+                        "message": f"All episodes completed. Total states processed: {total_completed_states}",
                         "views": {},
                         "total_pending_states": 0,
+                        "total_completed_states": total_completed_states,
                         "current_serving_episode": current_episode,
+                        "completed_episodes": completed_episodes,
+                        "robot_moving": crowd_interface.is_robot_moving(),
+                        "is_async_collection": crowd_interface.is_async_collection_mode(),
+                        "is_resetting": crowd_interface.is_in_reset(),
+                        "reset_countdown": crowd_interface.get_reset_countdown(),
                         "timestamp": time.time()
                     })
                 
