@@ -714,6 +714,22 @@
         let episodes = []; // Array of episode data
         let REQUIRED_RESPONSES_PER_STATE = 1; // Will be updated from API
         let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10; // Will be updated from API
+
+        // Remove episodes that the backend no longer reports (they've been fully completed and pruned)
+        function pruneMissingEpisodes(presentIds) {
+            const present = new Set(presentIds);
+            // Filter the local array and remove corresponding DOM nodes
+            episodes = episodes.filter(ep => {
+                if (!present.has(ep.id)) {
+                    const el = document.getElementById(`episode-${ep.id}`);
+                    if (el) el.remove();
+                    return false;
+                }
+                return true;
+            });
+            // After pruning, refresh the "current" marker
+            updateCurrentEpisodeIndicator();
+        }
         
         // Update server status indicator
         function updateServerStatus(connected) {
@@ -957,6 +973,9 @@
             // Process episode-based data structure
             if (data.episodes) {
                 console.log(`📈 Processing episodes data:`, data.episodes);
+
+                // First, drop any episodes that the backend no longer reports (they're done)
+                pruneMissingEpisodes(Object.keys(data.episodes));
                 
                 // Process each episode
                 Object.entries(data.episodes).forEach(([episodeId, episodeData]) => {
@@ -1084,7 +1103,7 @@
                         pendingStatesCount.textContent = '--';
                     }
                     
-                } else if (data.status === 'no_states') {
+                } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
                     console.log('No pending states available');
                     currentStateId.textContent = 'No states';
                     stateType.textContent = '--';

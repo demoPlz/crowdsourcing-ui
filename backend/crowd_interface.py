@@ -27,7 +27,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        4,
+    "left":        16,
     "right":       2,
     "perspective": 0,
 }
@@ -1088,6 +1088,12 @@ class CrowdInterface():
                         del self.pending_states_by_episode[found_episode]
                         if found_episode in self.served_states_by_episode:
                             del self.served_states_by_episode[found_episode]
+
+                        # NEW: drop completed episode from monitor memory so it won't be transferred to the frontend
+                        # This removes the (potentially large) completed-state bookkeeping for this episode.
+                        if found_episode in self.completed_states_by_episode:
+                            del self.completed_states_by_episode[found_episode]
+                            print(f"🧹 Dropped completed episode {found_episode} from monitor memory")
                         
                         # Update current_serving_episode if this was the current one
                         if self.current_serving_episode == found_episode:
@@ -1118,10 +1124,8 @@ class CrowdInterface():
             episodes_info = {}
             total_pending = 0
             
-            # Get all episode IDs from both pending and completed episodes
-            all_episode_ids = set()
-            all_episode_ids.update(self.pending_states_by_episode.keys())
-            all_episode_ids.update(self.completed_states_by_episode.keys())
+            # Only expose episodes that still have pending states (hide completed episodes entirely)
+            all_episode_ids = set(self.pending_states_by_episode.keys())
             
             # Process each episode
             for episode_id in sorted(all_episode_ids):
@@ -1159,7 +1163,6 @@ class CrowdInterface():
             return {
                 "total_pending": total_pending,
                 "current_serving_episode": self.current_serving_episode,
-                "episodes_completed": list(self.episodes_completed),
                 "required_responses_per_state": self.required_responses_per_state,
                 "required_responses_per_important_state": self.required_responses_per_important_state,
                 "episodes": episodes_info
@@ -1487,12 +1490,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     
                     return jsonify({
                         "status": "no_pending_states",
-                        "message": f"All episodes completed. Total states processed: {total_completed_states}",
+                        "message": "No pending states.",
                         "views": {},
                         "total_pending_states": 0,
-                        "total_completed_states": total_completed_states,
                         "current_serving_episode": current_episode,
-                        "completed_episodes": completed_episodes,
                         "robot_moving": crowd_interface.is_robot_moving(),
                         "is_async_collection": crowd_interface.is_async_collection_mode(),
                         "is_resetting": crowd_interface.is_in_reset(),
