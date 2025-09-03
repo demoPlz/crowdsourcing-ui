@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import cv2
+import shutil
+import tempfile
 import numpy as np
 import time
 import torch
@@ -22,7 +24,7 @@ from math import cos, sin
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
-REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10
+REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 2
 REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
@@ -99,6 +101,14 @@ class CrowdInterface():
     def __init__(self, 
                  required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
                  required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE):
+
+        # -------- Observation disk cache (spills heavy per-state obs to disk) --------
+        # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
+        self._obs_cache_root = Path(os.getenv("CROWD_OBS_CACHE", os.path.join(tempfile.gettempdir(), "crowd_obs_cache")))
+        try:
+            self._obs_cache_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
         self.cams = {}
         self.latest_goal = None
@@ -191,14 +201,124 @@ class CrowdInterface():
             if buffered_states:
                 print(f"🚿 Flushing {len(buffered_states)} remaining buffered states for episode {episode_id}")
                 # Sort states by state_id to ensure chronological order
-                for state_id in sorted(buffered_states.keys()):
-                    self.dataset.add_frame(buffered_states[state_id])
+                for sid in sorted(buffered_states.keys()):
+                    entry = buffered_states[sid]
+                    if isinstance(entry, dict) and entry.get("_manifest"):
+                        obs = self._load_obs_from_disk(entry.get("obs_path"))
+                        frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                        self.dataset.add_frame(frame)
+                        self._delete_obs_from_disk(entry.get("obs_path"))
+                    else:
+                        self.dataset.add_frame(entry)
                 # Save the episode
                 self.dataset.save_episode()
+                # Purge any leftover cache files for this episode
+                try:
+                    self._purge_episode_cache(episode_id)
+                except Exception:
+                    pass
         
         # Clear the buffer
         self.completed_states_buffer_by_episode.clear()
         print("🧹 All buffered states flushed during shutdown")
+
+    # --- Per-state VIEW snapshot cache (persist camera images to disk) ---
+    def _persist_views_to_disk(self, episode_id: str, state_id: int, views_b64: dict[str, str]) -> dict[str, str]:
+        """
+        Persist base64 (data URL) JPEGs for each camera to disk.
+        Returns a mapping: camera_name -> absolute file path.
+        """
+        if not views_b64:
+            return {}
+        out: dict[str, str] = {}
+        try:
+            d = self._episode_cache_dir(episode_id) / "views"
+            d.mkdir(parents=True, exist_ok=True)
+            for cam, data_url in views_b64.items():
+                # Expect "data:image/jpeg;base64,....."
+                if not isinstance(data_url, str):
+                    continue
+                idx = data_url.find("base64,")
+                if idx == -1:
+                    continue
+                b64 = data_url[idx + len("base64,"):]
+                try:
+                    raw = base64.b64decode(b64)
+                except Exception:
+                    continue
+                path = d / f"{state_id}_{cam}.jpg"
+                with open(path, "wb") as f:
+                    f.write(raw)
+                out[cam] = str(path)
+        except Exception as e:
+            print(f"⚠️  failed to persist views ep={episode_id} state={state_id}: {e}")
+        return out
+
+    def _load_views_from_disk(self, view_paths: dict[str, str]) -> dict[str, str]:
+        """
+        Load per-camera JPEG files and return data URLs.
+        """
+        if not view_paths:
+            return {}
+        out: dict[str, str] = {}
+        for cam, path in view_paths.items():
+            try:
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                out[cam] = f"data:image/jpeg;base64,{b64}"
+            except Exception:
+                # Missing/removed file → skip this camera
+                pass
+        return out
+
+    # --- Observation cache helpers (spill large 'observations' to disk) ---
+    def _episode_cache_dir(self, episode_id: str) -> Path:
+        d = self._obs_cache_root / str(episode_id)
+        if not d.exists():
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return d
+
+    def _persist_obs_to_disk(self, episode_id: str, state_id: int, obs: dict) -> str | None:
+        """
+        Writes the observations dict to a single file for the state and returns the path.
+        """
+        try:
+            p = self._episode_cache_dir(episode_id) / f"{state_id}.pt"
+            # Tensors/ndarrays/py objects handled by torch.save
+            torch.save(obs, p)
+            return str(p)
+        except Exception as e:
+            print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
+            return None
+
+    def _load_obs_from_disk(self, path: str | None) -> dict:
+        if not path:
+            return {}
+        try:
+            return torch.load(path, map_location="cpu")
+        except Exception as e:
+            print(f"⚠️  failed to load obs from {path}: {e}")
+            return {}
+
+    def _delete_obs_from_disk(self, path: str | None):
+        if not path:
+            return
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+    def _purge_episode_cache(self, episode_id: str):
+        """Remove the entire temp cache folder for an episode."""
+        try:
+            d = self._episode_cache_dir(episode_id)
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
     
     def _start_auto_label_worker(self):
         """Start the dedicated auto-labeling worker thread"""
@@ -357,11 +477,12 @@ class CrowdInterface():
                         padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                         all_actions = torch.cat([all_actions, padding], dim=0)
                         
-                        # Create completed state for dataset
+                        # Buffer a MANIFEST entry (avoid materializing observations into RAM)
                         completed_state = {
-                            **state_info["observations"],
+                            "_manifest": True,
+                            "obs_path": state_info.get("obs_path"),
                             "action": all_actions,
-                            "task": self.task if self.task else "crowdsourced_task"
+                            "task": self.task if self.task else "crowdsourced_task",
                         }
                         
                         # Buffer completed state for chronological ordering
@@ -674,30 +795,25 @@ class CrowdInterface():
 
     def _state_to_json(self, state: dict) -> dict:
         """
-        Convert an internal state into a JSON-serializable dict.
-        Views are already JPEG base64 strings produced in background workers,
-        so we just pass them through. (If an ndarray sneaks in, encode it.)
-        
-        Note: observations and actions are not included in the frontend state
-        as they're not needed there - only state_id is used for correspondence.
+        Build the JSON payload for the labeling frontend:
+        - If the state contains 'view_paths', load the state-aligned JPEGs from disk (correct behavior).
+        - Otherwise, fall back to the latest live previews.
+        Also attach static camera models/poses.
         """
         if not state:
             return {}
-        out = dict(state)  # shallow copy; we replace 'views'
-        
-        # Handle views (convert any arrays to base64 strings)
-        raw_views = state.get("views") or {}
-        safe_views: dict[str, str] = {}
-        for name, frame in raw_views.items():
-            if isinstance(frame, str):
-                safe_views[name] = frame
-            elif isinstance(frame, np.ndarray):
-                # Fallback: encode on the fly if we ever got an array here
-                safe_views[name] = self._encode_jpeg_base64(frame)
-            else:
-                # Unknown type -> drop or stringify minimally
-                safe_views[name] = ""
-        out["views"] = safe_views
+        out = dict(state)  # shallow copy (we'll remove internal fields)
+        # Prefer state-aligned snapshots if available
+        views = {}
+        view_paths = out.pop("view_paths", None)  # don't expose file paths to the client
+        if isinstance(view_paths, dict) and view_paths:
+            views = self._load_views_from_disk(view_paths)
+        # Fallback to live previews (older states or missing files)
+        if not views:
+            views = self._snapshot_latest_views()
+        out["views"] = views
+        out["camera_poses"] = self._camera_poses
+        out["camera_models"] = self._camera_models
         
         return out
     
@@ -735,9 +851,6 @@ class CrowdInterface():
         # Frontend state (lightweight, no observations/actions)
         frontend_state = {
             "joint_positions": jp,
-            "views": self._snapshot_latest_views(),
-            "camera_poses": self._camera_poses,  # reuse precomputed poses
-            "camera_models": self._camera_models,  # per-camera intrinsics for Three.js
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
         }
@@ -745,18 +858,30 @@ class CrowdInterface():
         # Episode-based state management - fast path to minimize latency
         state_id = self.next_state_id
         self.next_state_id += 1
+
+        # Persist a snapshot of the camera views to disk for THIS state.
+        # (Keeps index.html aligned with the exact observation that produced the state.)
+        try:
+            view_paths = self._persist_views_to_disk(episode_id, state_id, self._snapshot_latest_views())
+        except Exception: view_paths = {}
         
-        # Deep copy obs_dict tensors (necessary for correctness)
+        # Deep copy obs_dict tensors (necessary for correctness) and spill to disk
         obs_dict_deep_copy = {}
         for key, value in obs_dict.items():
             if isinstance(value, torch.Tensor):
                 obs_dict_deep_copy[key] = value.clone().detach()
             else:
                 obs_dict_deep_copy[key] = value
+        # Spill heavy observations to disk now and drop from RAM
+        obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
+        # Explicitly release the deep copy to encourage GC
+        del obs_dict_deep_copy
 
         state_info = {
             "state": frontend_state.copy(),
-            "observations": obs_dict_deep_copy,
+            "observations": None,           # kept on disk only
+            "obs_path": obs_path,           # pointer to disk cache
+            "view_paths": view_paths,
             "actions": [],
             "responses_received": 0,
             "timestamp": time.time(),
@@ -900,6 +1025,10 @@ class CrowdInterface():
             state = state_info["state"].copy()
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
+            # Attach view_paths so serializer can serve the correct snapshot for this state
+            vp = state_info.get("view_paths")
+            if vp:
+                state["view_paths"] = vp
             
             if self.is_async_collection:
                 status = "async_collection"
@@ -1040,17 +1169,18 @@ class CrowdInterface():
                     padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                     all_actions = torch.cat([all_actions, padding], dim=0)
 
-                # Create complete frame for dataset
-                completed_state = {
-                    **state_info["observations"],
+                # Manifest entry: keep only obs_path + action (do not materialize observations in RAM)
+                manifest_entry = {
+                    "_manifest": True,
+                    "obs_path": state_info.get("obs_path"),
                     "action": all_actions,
-                    "task": self.task if self.task else "crowdsourced_task"
+                    "task": self.task if self.task else "crowdsourced_task",
                 }
                 
                 # Buffer completed state for chronological ordering
                 if found_episode not in self.completed_states_buffer_by_episode:
                     self.completed_states_buffer_by_episode[found_episode] = {}
-                self.completed_states_buffer_by_episode[found_episode][state_id] = completed_state
+                self.completed_states_buffer_by_episode[found_episode][state_id] = manifest_entry
                 
                 # Move to completed states
                 if found_episode not in self.completed_states_by_episode:
@@ -1075,11 +1205,22 @@ class CrowdInterface():
                         if found_episode in self.completed_states_buffer_by_episode:
                             buffered_states = self.completed_states_buffer_by_episode[found_episode]
                             # Sort states by state_id to ensure chronological order
-                            for state_id in sorted(buffered_states.keys()):
-                                self.dataset.add_frame(buffered_states[state_id])
+                            for sid in sorted(buffered_states.keys()):
+                                entry = buffered_states[sid]
+                                if isinstance(entry, dict) and entry.get("_manifest"):
+                                    obs = self._load_obs_from_disk(entry.get("obs_path"))
+                                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                                    self.dataset.add_frame(frame)
+                                    # Delete obs file once it's committed to dataset
+                                    self._delete_obs_from_disk(entry.get("obs_path"))
+                                else:
+                                    # Backward-compat: already materialized dict
+                                    self.dataset.add_frame(entry)
                             print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
                             # Clean up buffer
                             del self.completed_states_buffer_by_episode[found_episode]
+                            # Purge any leftover cache directory for the episode
+                            self._purge_episode_cache(found_episode)
                         
                         self.episodes_completed.add(found_episode)
                         self.dataset.save_episode()
@@ -1485,13 +1626,12 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 
                 if not all_pending:
                     # No pending states - check if we have any completed states to show info about
-                    total_completed_states = sum(len(states) for states in crowd_interface.completed_states_by_episode.values())
-                    completed_episodes = list(crowd_interface.episodes_completed)
                     
                     return jsonify({
                         "status": "no_pending_states",
                         "message": "No pending states.",
-                        "views": {},
+                        # Always serve the latest camera previews even when idle
+                        "views": crowd_interface._snapshot_latest_views(),
                         "total_pending_states": 0,
                         "current_serving_episode": current_episode,
                         "robot_moving": crowd_interface.is_robot_moving(),
@@ -1518,7 +1658,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "responses_required": (crowd_interface.required_responses_per_important_state 
                                      if newest_state_data.get("important", False) else crowd_interface.required_responses_per_state),
                 "is_important": newest_state_data.get("important", False),
-                "views": newest_state.get("views", {}),
+                # Attach freshest camera previews on demand (we don't store per-state views)
+                "views": crowd_interface._snapshot_latest_views(),
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),
                 "robot_moving": crowd_interface.is_robot_moving(),
