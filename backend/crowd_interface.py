@@ -186,6 +186,8 @@ class CrowdInterface():
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
 
+        self._exec_gate_by_session: dict[str, dict] = {}
+
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
         self._shutting_down = True
@@ -832,6 +834,17 @@ class CrowdInterface():
         b64 = base64.b64encode(buf).decode("ascii")
         return f"data:image/jpeg;base64,{b64}"
     
+    def _global_max_pending_state_id(self) -> int | None:
+        """Return newest state_id across all episodes (pending only); None if none."""
+        max_id = None
+        for ep_states in self.pending_states_by_episode.values():
+            if not ep_states:
+                continue
+            k = max(ep_states.keys())
+            if max_id is None or k > max_id:
+                max_id = k
+        return max_id
+    
     # --- State Management ---
     def add_state(self, 
                   joint_positions: dict, 
@@ -1020,6 +1033,17 @@ class CrowdInterface():
             if serving_episode not in self.served_states_by_episode:
                 self.served_states_by_episode[serving_episode] = {}
             self.served_states_by_episode[serving_episode][session_id] = latest_state_id
+
+            # Snapshot an execution gate for this session so only this (fresh) state
+            # can trigger immediate motion, and only if no newer state appears.
+            if state_info["served_during_stationary"]:
+                self._exec_gate_by_session[session_id] = {
+                    "state_id": latest_state_id,
+                    "episode_id": serving_episode,
+                    # Snapshot of "newest pending state" at serve time; if this changes, gate fails.
+                    "served_max_state_id": self._global_max_pending_state_id(),
+                }
+
             
             # Prepare response
             state = state_info["state"].copy()
@@ -1132,11 +1156,27 @@ class CrowdInterface():
                 original_gripper = state_info["state"].get("gripper", 0)
                 self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
             
-            # Set as goal if first response to stationary-served state
-            if (state_info["responses_received"] == 0 and 
-                state_info["served_during_stationary"] is True):
-                self.latest_goal = response_data
-                print(f"🎯 Setting goal for immediate execution - first response to stationary state {state_id}")
+            # Set as goal only if this is the exact state last served to THIS session,
+            # and no newer state has been added since serving (no TTL).
+            if state_info["responses_received"] == 0 and state_info["served_during_stationary"] is True:
+                gate = self._exec_gate_by_session.get(session_id)
+                current_max = self._global_max_pending_state_id()
+                gate_ok = (
+                    gate is not None
+                    and gate.get("state_id") == state_id
+                    and gate.get("episode_id") == found_episode
+                    and current_max == gate.get("served_max_state_id")
+                )
+                if gate_ok:
+                    self.latest_goal = response_data
+                    # consume the gate so it can't be reused
+                    self._exec_gate_by_session.pop(session_id, None)
+                    print(f"🎯 Setting goal for immediate execution - first response to stationary state {state_id} (session={session_id})")
+                else:
+                    print(
+                        "⏭️ Skipping immediate execution; state is stale or gate mismatch "
+                        f"(gate={gate}, current_max={current_max})"
+                    )
             
             # Record the response
             state_info["responses_received"] += 1
@@ -1535,14 +1575,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     """Create and configure Flask app with the crowd interface"""
     app = Flask(__name__)
     CORS(app, origins=["*"], 
-         allow_headers=["Content-Type", "ngrok-skip-browser-warning"],
+         allow_headers=["Content-Type", "ngrok-skip-browser-warning", "X-Session-ID"],
          methods=["GET", "POST", "OPTIONS"])
     
     # Add ngrok-specific headers
     @app.after_request
     def after_request(response):
         response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,ngrok-skip-browser-warning'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,ngrok-skip-browser-warning,X-Session-ID'
         response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
         return response
     
@@ -1552,7 +1592,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         if request.method == "OPTIONS":
             response = make_response()
             response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add('Access-Control-Allow-Headers', "Content-Type,ngrok-skip-browser-warning")
+            response.headers.add('Access-Control-Allow-Headers', "Content-Type,ngrok-skip-browser-warning,X-Session-ID")
             response.headers.add('Access-Control-Allow-Methods', "GET,POST,OPTIONS")
             return response
     

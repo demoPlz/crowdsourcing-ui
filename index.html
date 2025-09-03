@@ -497,6 +497,34 @@
     <span>Loading next task in <span id="countdownTime">5</span>s</span>
   </div>
 <script type="module">
+
+/* ---------- stable per-browser session id + fetch helper ---------- */
+const SID_STORAGE_KEY = 'crowd_sid';
+function getStableSID() {
+  try {
+    const existing = localStorage.getItem(SID_STORAGE_KEY);
+    if (existing) return existing;
+  } catch (_) { /* localStorage blocked? proceed with ephemeral */ }
+
+  let sid;
+  try {
+    sid = (crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
+  } catch (_) { sid = null; }
+  if (!sid) sid = 'sid-' + Math.random().toString(36).slice(2) + '-' + Date.now();
+
+  try { localStorage.setItem(SID_STORAGE_KEY, sid); } catch (_) {}
+  return sid;
+}
+const SID = getStableSID();
+console.log('[SID]', SID);
+
+/** Like fetch(), but always sends X-Session-ID and expands relative API paths */
+function apiFetch(path, options = {}) {
+  const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+  const headers = { ...(options.headers || {}), 'X-Session-ID': SID };
+  return fetch(url, { ...options, headers });
+}
+
 /* ---------- imports ---------- */
 import * as THREE                    from 'three';
 import { OrbitControls }             from 'three/examples/jsm/controls/OrbitControls.js';
@@ -624,7 +652,7 @@ async function delayedRefresh(delay = 5000) {
 async function getInitialState() {
   try {
     console.log('[DEBUG] Fetching initial state from:', `${API_BASE_URL}/api/get-state`);
-    const response = await fetch(`${API_BASE_URL}/api/get-state`, {
+    const response = await apiFetch(`/api/get-state`, {
       headers: {
         'Accept': 'application/json'
       }
@@ -1289,7 +1317,7 @@ loader.load(
               },
               extrinsics: { T_three }
             };
-            const resp = await fetch(`${API_BASE_URL}/api/save-calibration`, {
+            const resp = await apiFetch(`/api/save-calibration`, {
               method: 'POST',
               headers: { 
                 'Content-Type': 'application/json'
@@ -1603,7 +1631,7 @@ loader.load(
       const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/submit-goal`, {
+        const response = await apiFetch(`/api/submit-goal`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json'
@@ -1696,7 +1724,7 @@ loader.load(
 
     taskCompletedBtn.onclick = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/task-already-completed`, {
+        const response = await apiFetch(`/api/task-already-completed`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json'
