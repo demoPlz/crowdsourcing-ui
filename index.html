@@ -237,6 +237,34 @@
     margin: 0;
   }
 
+  /* Reset button styling */
+  .controls-container .lil-gui .controller .reset-btn {
+    padding: 1px 0px;
+    margin-left: 5px;
+    border: 1px solid #d1d5db;
+    background: #f3f4f6;
+    border-radius: 1px;
+    font-size: 8px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    color: #374151;
+    width: 30px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+
+  .controls-container .lil-gui .controller .reset-btn:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+  }
+
+  .controls-container .lil-gui .controller .reset-btn:active {
+    background: #d1d5db;
+  }
+
   .controls-container .gripper-buttons button,
   .controls-container .confirm-button {
     padding: 8px 16px;
@@ -1616,8 +1644,27 @@ loader.load(
     spanDefs.forEach(([key, span])=>{
       if (!activeControls.includes(key)) return;
       const center = params[key];          // start-pose value
-      gui.add(params, key, center - span, center + span)
+      const slider = gui.add(params, key, center - span, center + span)
          .onChange(updateGoal);
+      
+      // Add reset button to each slider
+      setTimeout(() => {
+        const controller = slider.domElement;
+        if (controller) {
+          const resetBtn = document.createElement('button');
+          resetBtn.textContent = '⟲';
+          resetBtn.className = 'reset-btn';
+          resetBtn.title = `Reset ${key} to default`;
+          resetBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            params[key] = center; // Reset to initial center value
+            slider.updateDisplay();
+            updateGoal();
+          };
+          controller.appendChild(resetBtn);
+        }
+      }, 0);
     });
 
     // Add gripper buttons after sliders
