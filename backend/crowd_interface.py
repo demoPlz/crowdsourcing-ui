@@ -949,6 +949,37 @@ class CrowdInterface():
             else:
                 print("⚠️  No pending states found to mark as important")
 
+    def clear_episode_data(self, episode_id: str):
+        """Clear all episode-related data for a specific episode (used when rerecording)"""
+        with self.state_lock:
+            
+            # Clear pending states
+            if episode_id in self.pending_states_by_episode:
+                del self.pending_states_by_episode[episode_id]
+                print(f"🧹 Cleared pending states for episode {episode_id}")
+            
+            # Clear completed states
+            if episode_id in self.completed_states_by_episode:
+                del self.completed_states_by_episode[episode_id]
+                print(f"🧹 Cleared completed states for episode {episode_id}")
+            
+            # Clear completed states buffer
+            if episode_id in self.completed_states_buffer_by_episode:
+                del self.completed_states_buffer_by_episode[episode_id]
+                print(f"🧹 Cleared completed states buffer for episode {episode_id}")
+            
+            # Clear served states
+            if episode_id in self.served_states_by_episode:
+                del self.served_states_by_episode[episode_id]
+                print(f"🧹 Cleared served states for episode {episode_id}")
+            
+            # Remove from completed and being completed sets
+            self.episodes_completed.discard(episode_id)
+            self.episodes_being_completed.discard(episode_id)
+            
+            # Clear the episode cache directory
+            self._purge_episode_cache(episode_id)
+
     def auto_label_previous_states(self, important_state_id):
         """
         Queue an auto-labeling task for unimportant pending states that are 

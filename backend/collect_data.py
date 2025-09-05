@@ -134,6 +134,8 @@ def record(
             events["rerecord_episode"] = False
             events["exit_early"] = False
             dataset.clear_episode_buffer()
+            # Clear the crowd interface episode data
+            crowd_interface.clear_episode_data(recorded_episodes)
             continue
 
         dataset.save_episode()
