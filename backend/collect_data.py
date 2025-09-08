@@ -1,4 +1,6 @@
 import logging
+import argparse
+import sys
 import time
 from dataclasses import asdict
 from pprint import pformat
@@ -45,6 +47,29 @@ def _stop_display_only(listener, display_cameras: bool):
             cv2.destroyAllWindows()
     except Exception:
         pass
+
+def _pop_crowd_cli_overrides(argv=None):
+    """
+    Extract our two lightweight CLI flags and remove them from sys.argv
+    so LeRobot's config parser never sees unknown args.
+    """
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--required-responses-per-important-state", type=int, dest="crowd_rrpis")
+    ap.add_argument("--autofill-important-states", action="store_true", dest="crowd_autofill")
+    ap.add_argument(
+        "--num-autofill-actions",
+        type=int,
+        dest="crowd_num_autofill_actions",
+        help="For IMPORTANT states, per unique submission fill this many actions in total "
+             "(1 actual + N-1 clones). Default = required-responses-per-important-state."
+    )
+    args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
+    # Strip our flags before LeRobot parses CLI
+    sys.argv = [sys.argv[0]] + remaining
+    return args
+
+# Parse once at import time so @parser.wrap can run normally later
+_CROWD_OVERRIDES = _pop_crowd_cli_overrides()
 
 @safe_disconnect
 def record(
@@ -171,7 +196,15 @@ def control_robot(cfg: ControlPipelineConfig):
     # Disable Flask request logging to reduce terminal noise
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
-    crowd_interface = CrowdInterface()
+    # Wire our optional CLI overrides into the crowd interface
+    ci_kwargs = {}
+    if getattr(_CROWD_OVERRIDES, "crowd_rrpis", None) is not None:
+        ci_kwargs["required_responses_per_important_state"] = _CROWD_OVERRIDES.crowd_rrpis
+    if getattr(_CROWD_OVERRIDES, "crowd_autofill", False):
+        ci_kwargs["autofill_important_states"] = True
+    if getattr(_CROWD_OVERRIDES, "crowd_num_autofill_actions", None) is not None:
+        ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
+    crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()
 
     app = create_flask_app(crowd_interface)
@@ -190,7 +223,6 @@ def control_robot(cfg: ControlPipelineConfig):
         robot.disconnect()
 
     print('Data Collection Completed')
-
 
 
 if __name__ == "__main__":

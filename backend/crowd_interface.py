@@ -29,7 +29,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        16,
+    "left":        10,
     "right":       2,
     "perspective": 0,
 }
@@ -100,7 +100,9 @@ class CrowdInterface():
     '''
     def __init__(self, 
                  required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
-                 required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE):
+                 required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
+                 autofill_important_states: bool = False,
+                 num_autofill_actions: int | None = None):
 
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
@@ -129,6 +131,15 @@ class CrowdInterface():
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
         self.required_responses_per_important_state = required_responses_per_important_state
+        self.autofill_important_states = bool(autofill_important_states)
+        # If not specified, default to "complete on first submission"
+        if num_autofill_actions is None:
+            self.num_autofill_actions = self.required_responses_per_important_state
+        else:
+            self.num_autofill_actions = int(num_autofill_actions)
+        # Clamp to [1, required_responses_per_important_state]
+        self.num_autofill_actions = max(1, min(self.num_autofill_actions,
+                                               self.required_responses_per_important_state))
         
         # Episode-based state management
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int, timestamp: float}}
@@ -163,6 +174,12 @@ class CrowdInterface():
         # JPEG quality for base64 encoding (override with env JPEG_QUALITY)
         self._jpeg_quality = int(os.getenv("JPEG_QUALITY", "80"))
 
+        # Observation camera (obs_dict) live previews → background-encoded JPEGs
+        self._latest_obs_jpeg: dict[str, str] = {}
+        self._obs_img_queue: queue.Queue = queue.Queue(maxsize=int(os.getenv("OBS_STREAM_QUEUE", "8")))
+        self._obs_img_running: bool = False
+        self._obs_img_thread: Thread | None = None
+
         # Will be filled by _load_calibrations()
         self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._camera_models: dict[str, dict] = {}
@@ -188,9 +205,15 @@ class CrowdInterface():
 
         self._exec_gate_by_session: dict[str, dict] = {}
 
+        self._start_obs_stream_worker()
+
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
         self._shutting_down = True
+        try:
+            self._stop_obs_stream_worker()
+        except Exception:
+            pass
         # Flush any remaining buffered states before shutdown
         self._flush_remaining_buffered_states()
     
@@ -630,6 +653,11 @@ class CrowdInterface():
             self._stop_auto_label_worker()
         except Exception:
             pass
+        
+        try:
+            self._stop_obs_stream_worker()
+        except Exception:
+            pass
 
         # Stop background capture workers
         if getattr(self, "_cap_running", False):
@@ -769,6 +797,12 @@ class CrowdInterface():
             s = self._latest_jpeg.get(name)
             if s is not None:
                 out[name] = s
+
+        # Include latest observation camera previews if available
+        for name in ("obs_main", "obs_wrist"):
+            s = self._latest_obs_jpeg.get(name)
+            if s is not None:
+                out[name] = s
         return out
 
     def _get_views_np(self) -> dict[str, np.ndarray]:
@@ -834,6 +868,84 @@ class CrowdInterface():
         b64 = base64.b64encode(buf).decode("ascii")
         return f"data:image/jpeg;base64,{b64}"
     
+    # --- Observation image streaming (background encoder) ---
+    def _start_obs_stream_worker(self):
+        if self._obs_img_running:
+            return
+        self._obs_img_running = True
+        self._obs_img_thread = Thread(target=self._obs_stream_worker, daemon=True)
+        self._obs_img_thread.start()
+
+    def _stop_obs_stream_worker(self):
+        if not self._obs_img_running:
+            return
+        self._obs_img_running = False
+        try:
+            self._obs_img_queue.put_nowait(None)
+        except Exception:
+            pass
+        t = self._obs_img_thread
+        if t and t.is_alive():
+            t.join(timeout=1.5)
+        self._obs_img_thread = None
+
+    def _to_uint8_rgb(self, arr) -> np.ndarray | None:
+        if arr is None:
+            return None
+        if isinstance(arr, torch.Tensor):
+            arr = arr.detach().to("cpu").numpy()
+        if not isinstance(arr, np.ndarray):
+            return None
+        # Accept HxWx3 or 3xHxW
+        if arr.ndim != 3:
+            return None
+        if arr.shape[0] == 3 and arr.shape[2] != 3:
+            arr = np.transpose(arr, (1, 2, 0))
+        if arr.dtype != np.uint8:
+            try:
+                maxv = float(np.nanmax(arr))
+            except Exception:
+                maxv = 255.0
+            if arr.dtype.kind in "fc" and maxv <= 1.0:
+                arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+            else:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+        if not arr.flags["C_CONTIGUOUS"]:
+            arr = np.ascontiguousarray(arr)
+        # Expect RGB already; do not swap channels here.
+        return arr if arr.shape[2] == 3 else None
+
+    def _obs_stream_worker(self):
+        while self._obs_img_running and not self._shutting_down:
+            try:
+                item = self._obs_img_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            try:
+                name, img = item
+                rgb = self._to_uint8_rgb(img)
+                if rgb is not None:
+                    self._latest_obs_jpeg[name] = self._encode_jpeg_base64(rgb)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self._obs_img_queue.task_done()
+                except Exception:
+                    pass
+
+    def _push_obs_view(self, name: str, img):
+        """Enqueue an observation image for background JPEG encoding; drop if queue is full."""
+        if img is None:
+            return
+        try:
+            self._obs_img_queue.put_nowait((name, img))
+        except queue.Full:
+            # Drop frame to avoid backpressure on add_state
+            pass
+    
     def _global_max_pending_state_id(self) -> int | None:
         """Return newest state_id across all episodes (pending only); None if none."""
         max_id = None
@@ -877,6 +989,14 @@ class CrowdInterface():
         try:
             view_paths = self._persist_views_to_disk(episode_id, state_id, self._snapshot_latest_views())
         except Exception: view_paths = {}
+
+        # Non-blocking: enqueue obs camera previews for background JPEG encoding
+        try:
+            if obs_dict is not None:
+                self._push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
+                self._push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+        except Exception:
+            pass
         
         # Deep copy obs_dict tensors (necessary for correctness) and spill to disk
         obs_dict_deep_copy = {}
@@ -1180,13 +1300,35 @@ class CrowdInterface():
             # Extract joint positions and gripper action from response
             joint_positions = response_data.get("joint_positions", {})
             gripper_action = response_data.get("gripper", 0)
-            
-            # Check meaningfulness (always returns True but provides logging)
+
+            # NEW: fetch originals once (also used for gripper override logic below)
+            original_joints = state_info["state"].get("joint_positions", {})
+            original_gripper = state_info["state"].get("gripper", 0)
+
+            # Keep the existing meaningfulness logging as-is
             if not response_data.get("task_already_completed", False):
-                original_joints = state_info["state"].get("joint_positions", {})
-                original_gripper = state_info["state"].get("gripper", 0)
                 self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
             
+            # NEW: If this submission moves *any* joint, ignore the gripper change.
+            MOVE_EPS = 1e-4  # small tolerance to avoid float noise
+            has_joint_move = False
+            for jn in JOINT_NAMES[:-1]:  # exclude the gripper slot
+                if jn in joint_positions and jn in original_joints:
+                    sub = joint_positions[jn]
+                    sub = sub[0] if isinstance(sub, (list, tuple)) and len(sub) > 0 else sub
+                    orig = original_joints[jn]
+                    orig = orig[0] if isinstance(orig, (list, tuple)) and len(orig) > 0 else orig
+                    if abs(float(sub) - float(orig)) > MOVE_EPS:
+                        has_joint_move = True
+                        break
+
+            effective_gripper = original_gripper if has_joint_move else gripper_action
+            if has_joint_move and gripper_action != effective_gripper:
+                print("✋ Ignoring gripper change in submission with joint movement; keeping original gripper.")
+
+            # Ensure both execution (latest_goal) and recording see the sanitized gripper value
+            response_data["gripper"] = effective_gripper            
+
             # Set as goal only if this is the exact state last served to THIS session,
             # and no newer state has been added since serving (no TTL).
             if state_info["responses_received"] == 0 and state_info["served_during_stationary"] is True:
@@ -1221,11 +1363,25 @@ class CrowdInterface():
                 else:
                     goal_positions.append(float(joint_value))
             
-            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+            goal_positions[-1] = 0.044 if effective_gripper > 0 else 0.0
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
             state_info["actions"].append(goal_positions)
 
-            print(f"🔔 Response recorded for state {state_id} in episode {found_episode} ({state_info['responses_received']}/{required_responses})")
+            print(f"🔔 Response recorded for state {state_id} in episode {found_episode} "
+                  f"({state_info['responses_received']}/{required_responses})")
+
+            # --- Progressive autofill for IMPORTANT states ---
+            if state_info.get("important", False) and self.autofill_important_states:
+                # Per submission, total filled should advance by `num_autofill_actions`
+                # (1 real submission already counted above, plus (N-1) clones).
+                remaining = max(0, required_responses - state_info["responses_received"])
+                clones_to_add = max(0, min(self.num_autofill_actions - 1, remaining))
+                for _ in range(clones_to_add):
+                    state_info["actions"].append(goal_positions.clone())
+                state_info["responses_received"] += clones_to_add
+                if clones_to_add > 0:
+                    print(f"🤖 Autofill: added {clones_to_add} clone(s) on state {state_id} → "
+                          f"{state_info['responses_received']}/{required_responses}")
             
             # Check if state is complete
             if state_info["responses_received"] >= required_responses:

@@ -109,7 +109,7 @@
         .camera-views {
             width: 100%;
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             grid-template-rows: repeat(2, 1fr);
             gap: 12px;
             height: 400px;
@@ -573,6 +573,12 @@
                     <div class="camera-view" id="camera-perspective">
                         <div class="camera-placeholder">No image</div>
                     </div>
+                    <div class="camera-view" id="camera-obs_main">
+                        <div class="camera-placeholder">No image</div>
+                    </div>
+                    <div class="camera-view" id="camera-obs_wrist">
+                        <div class="camera-placeholder">No image</div>
+                    </div>
                 </div>
             </div>
             
@@ -714,7 +720,7 @@
         let pendingInfoInFlight = false;
 
         // Track per-camera last update to avoid churn
-        const lastCamUpdate = { front: 0, left: 0, right: 0, perspective: 0 };
+        const lastCamUpdate = { front: 0, left: 0, right: 0, perspective: 0, obs_main: 0, obs_wrist: 0 };
         // Double-buffer state per camera (created on first frame)
         const cameraBuffers = {};          // cameraName -> { imgs: [img0, img1], active: 0/1, lastSrc: '', initialized: bool }
         const camSwapInFlight = {};        // cameraName -> boolean (prevents overlapping swaps)
@@ -739,7 +745,9 @@
             front: document.getElementById('camera-front'),
             left: document.getElementById('camera-left'),
             right: document.getElementById('camera-right'),
-            perspective: document.getElementById('camera-perspective')
+            perspective: document.getElementById('camera-perspective'),
+            obs_main: document.getElementById('camera-obs_main'),
+            obs_wrist: document.getElementById('camera-obs_wrist')
         };
         
         // Episode charts management
