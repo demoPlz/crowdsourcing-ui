@@ -1568,6 +1568,124 @@ loader.load(
     marker.quaternion.copy  ( startQuat );
     scene.add( marker );
 
+    // Make the dot easy to pick: invisible, larger hit target
+    const pickProxy = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 16, 16), // ~2cm radius hit area
+      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
+    );
+    pickProxy.name = 'marker_pick_proxy';
+    marker.add(pickProxy);
+
+    // ===== Rotation wheels (roll/pitch/yaw) — helpers & state =====
+    const rotationWheels = {};        // { roll:{group, segments:Mesh[]}, pitch:{...}, yaw:{...} }
+    let rotationPickables = [];       // flat list of all wheel segment meshes for raycasting
+
+    // Visual states for wheels
+    const WHEEL_OPACITY = {
+      idle:   { even: 0.44, odd: 0.24 },
+      hover:  { even: 0.64, odd: 0.44 },
+      active: { even: 0.84, odd: 0.64 },
+    };
+
+    // Build one wheel (striped annulus) for an axis
+    function makeWheel(axisName, colorHex, innerR=0.065, outerR=0.085, strips=48) {
+      const group = new THREE.Group();
+      group.name = `wheel_${axisName}`;
+      group.userData.axis = axisName;
+      group.renderOrder = 999; // draw above everything
+      const segments = [];
+
+      const segAngle = (Math.PI * 2) / strips;
+      const gap = segAngle * 0.08;               // subtle gaps between strips
+      const thetaLen = segAngle - gap;
+
+      for (let i = 0; i < strips; i++) {
+        const thetaStart = i * segAngle + gap * 0.5;
+        const geom = new THREE.RingGeometry(innerR, outerR, 18, 1, thetaStart, thetaLen);
+        const mat = new THREE.MeshBasicMaterial({
+          color: colorHex,
+          transparent: true,
+          opacity: (i % 2 === 0 ? WHEEL_OPACITY.idle.even : WHEEL_OPACITY.idle.odd),
+          side: THREE.DoubleSide,
+          depthTest: false,   // always visible
+        });
+        const seg = new THREE.Mesh(geom, mat);
+        seg.userData.axis = axisName; // so picking any segment knows its axis
+        group.add(seg);
+        segments.push(seg);
+      }
+
+      return { group, segments };
+    }
+
+    function setWheelState(axis, state /* idle|hover|active */) {
+      const w = rotationWheels[axis]; if (!w) return;
+      const cfg = WHEEL_OPACITY[state] || WHEEL_OPACITY.idle;
+      w.segments.forEach((seg, i) => {
+        seg.material.opacity = (i % 2 === 0 ? cfg.even : cfg.odd);
+        seg.material.needsUpdate = true;
+      });
+    }
+    function resetAllWheelStates() {
+      ['roll','pitch','yaw'].forEach(a => setWheelState(a, 'idle'));
+    }
+
+    // Build and mount all wheels that are enabled by activeControls
+    function buildRotationWheels() {
+      rotationPickables.length = 0;
+      // pleasant, readable axis colors
+      const colorFor = { roll: 0xff5b5b, pitch: 0x22cc88, yaw: 0x4f8cff };
+
+      ['roll','pitch','yaw'].forEach(axis => {
+        if (!activeControls.includes(axis)) return;
+        const { group, segments } = makeWheel(axis, colorFor[axis]);
+        scene.add(group);
+        rotationWheels[axis] = { group, segments };
+        rotationPickables.push(...segments);
+      });
+
+      resetAllWheelStates();
+    }
+
+    // World-space local axes from the marker’s orientation
+    function localAxesWorld() {
+      const q = marker.quaternion;
+      return {
+        xW: new THREE.Vector3(1,0,0).applyQuaternion(q).normalize(),
+        yW: new THREE.Vector3(0,1,0).applyQuaternion(q).normalize(),
+        zW: new THREE.Vector3(0,0,1).applyQuaternion(q).normalize(),
+      };
+    }
+
+    // For a given axis name, return plane normal n and in-plane orthonormal basis u,v
+    function planeBasisForAxis(axis) {
+      const { xW, yW, zW } = localAxesWorld();
+      if (axis === 'roll')   return { n: xW, u: yW, v: zW }; // rotate about local X → YZ plane
+      if (axis === 'pitch')  return { n: yW, u: zW, v: xW }; // rotate about local Y → XZ plane
+      /* yaw */              return { n: zW, u: xW, v: yW }; // rotate about local Z → XY plane
+    }
+    function alignRingToNormal(group, n) {
+      const from = new THREE.Vector3(0,0,1); // RingGeometry faces +Z by default
+      const q = new THREE.Quaternion().setFromUnitVectors(from, n);
+      group.quaternion.copy(q);
+      group.updateMatrixWorld(true);
+    }
+
+    function angleOnPlaneFromPoint(p, center, u, v) {
+      const r = p.clone().sub(center);
+      return Math.atan2(r.dot(v), r.dot(u));
+    }
+    function normalizeAngle(a) {
+      while (a >  Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    }
+
+    // Build wheels now that the marker exists
+    buildRotationWheels();
+    // ===== Rotation wheels — helpers & state (end) =====
+
+
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
     const params = {
@@ -1627,6 +1745,198 @@ loader.load(
 
       updateGripperInteractivity();
     }
+
+    // ---------- Drag helpers ----------
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+
+    const DRAG_SPECS = {
+      front:       { axes: ['y','z'], normal: new THREE.Vector3(1,0,0) }, // lock X → move on YZ
+      left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → move on XZ
+      right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → move on XZ
+      perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → move on XY
+    };
+
+    function specForView(name){
+      return DRAG_SPECS[name] || DRAG_SPECS.perspective;
+    }
+
+    function setNDCFromPointerEvent(evt, renderer){
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x =  ( (evt.clientX - rect.left) / rect.width ) * 2 - 1;
+      ndc.y = -( (evt.clientY - rect.top)  / rect.height) * 2 + 1;
+    }
+
+    function clampToSlider(axis, v){
+      const r = sliderRanges[axis];
+      if (!r) return v;
+      return Math.min(r.max, Math.max(r.min, v));
+    }
+
+    function updateSlidersDisplay(axes){
+      axes.forEach(a => sliderCtrls[a]?.updateDisplay());
+    }
+
+    // Single shared drag state
+    // Single shared drag state (translation or rotation)
+    const dragState = {
+      active: false,
+      mode: null,                // 'translate' | 'rotate'
+      view: null,
+      plane: new THREE.Plane(),  // used both for translate & rotate
+      axes: /** @type {('x'|'y'|'z')[]} */([]), // translation axes (two on a plane)
+      axis: /** @type {'roll'|'pitch'|'yaw'|null} */(null), // rotation axis
+      pointerId: null,
+
+      // rotation-specific
+      u: new THREE.Vector3(),
+      v: new THREE.Vector3(),
+      angle0: 0,
+      param0: 0,
+    };
+
+
+    function attachDragHandlersToView(view){
+      const el = view.renderer.domElement;
+
+      function pickAll(evt) {
+        setNDCFromPointerEvent(evt, view.renderer);
+        raycaster.setFromCamera(ndc, view.camera);
+        // Highest priority: wheel segments, then the dot proxy, then the dot itself
+        const targets = [
+          ...rotationPickables,
+          marker.getObjectByName('marker_pick_proxy'),
+          marker
+        ].filter(Boolean);
+        return raycaster.intersectObjects(targets, true);
+      }
+
+      // Hover: cursor + wheel highlight
+      el.addEventListener('pointermove', (evt) => {
+        if (dragState.active || calibrationMode) return;
+
+        const hits = pickAll(evt);
+        const wheelHit = hits.find(h => h.object?.userData?.axis);
+        const dotHit   = hits.find(h => (h.object === marker) || (h.object?.name === 'marker_pick_proxy'));
+
+        // Visual: highlight hovered wheel (others idle)
+        resetAllWheelStates();
+        if (wheelHit) {
+          setWheelState(wheelHit.object.userData.axis, 'hover');
+          el.style.cursor = 'grab';
+        } else if (dotHit) {
+          el.style.cursor = 'grab';
+        } else {
+          el.style.cursor = 'default';
+        }
+      });
+
+      el.addEventListener('pointerdown', (evt) => {
+        if (calibrationMode) return;
+
+        const hits = pickAll(evt);
+        if (!hits.length) return;
+
+        // Decide mode by topmost hit
+        const top = hits[0];
+        const hitAxis = top.object?.userData?.axis || null;
+
+        dragState.active    = true;
+        dragState.view      = view;
+        dragState.pointerId = evt.pointerId;
+        el.setPointerCapture(dragState.pointerId);
+        el.style.cursor = 'grabbing';
+
+        currentViewName = view.name; // keep other UI in sync
+        updateGripArrowVisibility();
+
+        if (hitAxis) {
+          // === ROTATION DRAG ===
+          dragState.mode = 'rotate';
+          dragState.axis = /** @type {'roll'|'pitch'|'yaw'} */(hitAxis);
+
+          const { n, u, v } = planeBasisForAxis(dragState.axis);
+          dragState.u.copy(u); dragState.v.copy(v);
+          dragState.plane.setFromNormalAndCoplanarPoint(n, marker.position);
+
+          const hitPt = new THREE.Vector3();
+          raycaster.ray.intersectPlane(dragState.plane, hitPt);
+          dragState.angle0 = angleOnPlaneFromPoint(hitPt, marker.position, dragState.u, dragState.v);
+          dragState.param0 = params[dragState.axis];
+
+          resetAllWheelStates();
+          setWheelState(dragState.axis, 'active');
+        } else {
+          // === TRANSLATION DRAG === (dot)
+          dragState.mode = 'translate';
+
+          const spec = specForView(view.name);       // which axes to move in this view
+          dragState.axes = spec.axes;
+          dragState.plane.setFromNormalAndCoplanarPoint(spec.normal, marker.position);
+        }
+
+        evt.preventDefault();
+      });
+
+      el.addEventListener('pointermove', (evt) => {
+        if (!dragState.active || dragState.view !== view) return;
+
+        setNDCFromPointerEvent(evt, view.renderer);
+        raycaster.setFromCamera(ndc, view.camera);
+
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(dragState.plane, hitPoint)) return;
+
+        if (dragState.mode === 'translate') {
+          // Move the two allowed axes directly
+          dragState.axes.forEach(axis => {
+            const v = axis === 'x' ? hitPoint.x : axis === 'y' ? hitPoint.y : hitPoint.z;
+            params[axis] = clampToSlider(axis, v);
+          });
+          updateGoal();
+          updateSlidersDisplay(dragState.axes);
+        } else if (dragState.mode === 'rotate' && dragState.axis) {
+          // Angle delta on plane
+          const ang1 = angleOnPlaneFromPoint(hitPoint, marker.position, dragState.u, dragState.v);
+          const dAng = normalizeAngle(ang1 - dragState.angle0);
+          let newVal = dragState.param0 + dAng;
+          newVal = clampToSlider(dragState.axis, newVal);
+
+          params[dragState.axis] = newVal;
+          updateGoal();
+          sliderCtrls[dragState.axis]?.updateDisplay();
+        }
+
+        evt.preventDefault();
+      });
+
+      function endDrag(){
+        if (!dragState.active) return;
+        try { el.releasePointerCapture(dragState.pointerId); } catch(_) {}
+        dragState.active = false;
+        const endedAxis = dragState.axis;
+        dragState.mode  = null;
+        dragState.axis  = null;
+        dragState.view  = null;
+        dragState.axes  = [];
+        el.style.cursor = 'default';
+
+        // After drag, leave hover highlight if still under cursor
+        const fakeEvt = { clientX: window._lastMouseX ?? 0, clientY: window._lastMouseY ?? 0 };
+        // best-effort hover restore
+        resetAllWheelStates();
+        if (endedAxis) setWheelState(endedAxis, 'hover');
+      }
+
+      // Track mouse position globally to re-evaluate hover after drag end
+      el.addEventListener('pointermove', (e)=> { window._lastMouseX = e.clientX; window._lastMouseY = e.clientY; });
+
+      el.addEventListener('pointerup',       endDrag);
+      el.addEventListener('pointercancel',   endDrag);
+      el.addEventListener('pointerleave',    (e)=>{ if (dragState.active) endDrag(); });
+    }
+
+
 
     /* ---------- camera-view buttons --------------------------- */
     function poseToMatrix(mat){
@@ -1693,6 +2003,7 @@ loader.load(
       // Create views
       availableViews.forEach((viewInfo, index) => {
         const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
+        attachDragHandlersToView(view);
         
         // Set up camera pose and projection
         updateViewCamera(view, viewInfo.pose);
@@ -1844,16 +2155,26 @@ loader.load(
       ['yaw',   0.81],
     ];
 
+    // Keep references so dragging can clamp to slider ranges & update displays
+    const sliderCtrls   = {};  // axis -> lil-gui controller
+    const sliderCenters = {};  // axis -> center value
+    const sliderRanges  = {};  // axis -> {min, max}
+
     spanDefs.forEach(([key, span])=>{
       if (!activeControls.includes(key)) return;
       const center = params[key];          // start-pose value
-      const slider = gui.add(params, key, center - span, center + span)
-         .onChange(updateGoal);
-      
+      const controller = gui.add(params, key, center - span, center + span)
+        .onChange(updateGoal);
+
+      // Save references for drag interaction
+      sliderCtrls[key]   = controller;
+      sliderCenters[key] = center;
+      sliderRanges[key]  = { min: center - span, max: center + span };
+
       // Add reset button to each slider
       setTimeout(() => {
-        const controller = slider.domElement;
-        if (controller) {
+        const controllerEl = controller.domElement;
+        if (controllerEl) {
           const resetBtn = document.createElement('button');
           resetBtn.textContent = '⟲';
           resetBtn.className = 'reset-btn';
@@ -1862,13 +2183,14 @@ loader.load(
             e.preventDefault();
             e.stopPropagation();
             params[key] = center; // Reset to initial center value
-            slider.updateDisplay();
+            controller.updateDisplay();
             updateGoal();
           };
-          controller.appendChild(resetBtn);
+          controllerEl.appendChild(resetBtn);
         }
       }, 0);
     });
+
 
     // Add gripper buttons after sliders
     if (gripperButtonsContainer) {
@@ -2037,6 +2359,24 @@ loader.load(
       
       // Update gripper arrow visibility based on current view
       updateGripArrowVisibility();
+
+      (function updateWheels(){
+        const pos = marker.position;
+        const { xW, yW, zW } = localAxesWorld();
+
+        if (rotationWheels.roll) {
+          rotationWheels.roll.group.position.copy(pos);
+          alignRingToNormal(rotationWheels.roll.group, xW);
+        }
+        if (rotationWheels.pitch) {
+          rotationWheels.pitch.group.position.copy(pos);
+          alignRingToNormal(rotationWheels.pitch.group, yW);
+        }
+        if (rotationWheels.yaw) {
+          rotationWheels.yaw.group.position.copy(pos);
+          alignRingToNormal(rotationWheels.yaw.group, zW);
+        }
+      })();
       
       // Render all views
       views.forEach(view => {
