@@ -1051,10 +1051,12 @@ loader.load(
       gripArrows.forEach(a => scene.remove(a));
       gripArrows.length = 0;
 
-      gripDir = dir || 0;     // remember last request
+      if (dir !== undefined && dir !== null) {
+        gripDir = dir;     // remember last request only if dir is explicitly provided
+      }
       
-      // Always create arrows, use default direction if none specified
-      const effectiveDir = dir || 1; // default to open arrows if no direction specified
+      // Always create arrows, use current gripDir if no direction specified
+      const effectiveDir = (dir !== undefined && dir !== null) ? dir : gripDir || 1; // default to open arrows if no direction available
       const colour   = effectiveDir > 0 ? 0x00ff00 : 0xff0000;
       const len      = 0.04, headLen = 0.02;
       const shaftLen = len - headLen, shaftRad = 0.005, offset = 0.00;
@@ -1135,12 +1137,9 @@ loader.load(
       if (gripDir > 0) { // Open
         openBtn.classList.add('active');
         closeBtn.classList.add('inactive');
-      } else if (gripDir < 0) { // Close
+      } else { // Close
         openBtn.classList.add('inactive');
         closeBtn.classList.add('active');
-      } else { // Neutral/Default - both inactive
-        openBtn.classList.add('inactive');
-        closeBtn.classList.add('inactive');
       }
     }
 
@@ -1217,6 +1216,7 @@ loader.load(
     
     
     function onGripperChange(newDir) {
+      gripDir = newDir; // Update the current gripper direction
       drawGripArrows(newDir);
       updateGripArrowVisibility();
       updateGripperButtonStates();
@@ -1243,18 +1243,14 @@ loader.load(
       openBtn.textContent = 'Open';
       openBtn.className = 'open-btn';
       openBtn.onclick = () => {
-        // Toggle: +1 → 0 (neutral), anything else → +1
-        const newDir = (gripDir === +1) ? 0 : +1;
-        onGripperChange(newDir);
+        onGripperChange(+1);
       };
       
       closeBtn = document.createElement('button');
       closeBtn.textContent = 'Close';
       closeBtn.className = 'close-btn';
       closeBtn.onclick = () => {
-        // Toggle: -1 → 0 (neutral), anything else → -1
-        const newDir = (gripDir === -1) ? 0 : -1;
-        onGripperChange(newDir);
+        onGripperChange(-1);
       };
       
       buttonsContainer.appendChild(openBtn);
@@ -1604,56 +1600,69 @@ loader.load(
     goal.setPosition   ( startPos.x, startPos.y, startPos.z );
     goal.setQuaternion ( startQuat.x, startQuat.y, startQuat.z, startQuat.w );
 
-    const baseQuat = startQuat.clone();
-    // NEW: track accumulated orientation and last slider values (for incremental deltas)
-    let currentQuat = baseQuat.clone();
-    let lastAngles = { roll: 0, pitch: 0, yaw: 0 };
-
     /* ===== Animate button + loop state ===== */
     const animState = {
       enabled: false,
-      t: 0,             // normalized 0 → 1
-      dir: 1,           // +1 forward, -1 backward
-      duration: 2000,   // one-way time in ms
-      lastTs: 0
+      t: 0,
+      duration: 2000,     // ms start → target
+      lastTs: 0,
+      phase: 'forward',   // 'forward' | 'hold'
+      holdMs: 250,        // 0.25 s at goal
+      holdElapsed: 0
     };
+
+    // Reusable temporaries for interpolation (avoid per‑frame allocations)
+    const _interpPos  = new THREE.Vector3();
+    const _interpQuat = new THREE.Quaternion();
 
     // Compute the *target* pose from current user params.
     // We purposely derive orientation from baseQuat + (roll,pitch,yaw)
     // instead of reusing currentQuat to avoid drift.
-    function computeTargetPose() {
-      const pos = new THREE.Vector3(params.x, params.y, params.z);
-      const dQ  = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(params.roll, params.pitch, params.yaw, 'XYZ')
-      );
-      const quat = baseQuat.clone().multiply(dQ).normalize();
-      return { pos, quat };
-    }
-
-    // Snap the solver goal to the current user-specified target.
-    function applyCurrentTargetToGoal() {
-      const { pos, quat } = computeTargetPose();
-      goal.setPosition(pos.x, pos.y, pos.z);
-      goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
+    function getTargetPose() {
+      // Always return the latest interactive target (local-frame orientation)
+      return { pos: targetPose.pos, quat: targetPose.quat };
     }
 
     // Toggle animation ON/OFF.
     function toggleAnimation() {
       animState.enabled = !animState.enabled;
+
       if (animState.enabled) {
-        // reveal robot if hidden
+        // Reset the arm to the initial joint configuration (the "initial positions" you have)
+        // so the animation starts exactly from there.
+        if (initialJointPositions) {
+          for (const [name, val] of Object.entries(initialJointPositions)) {
+            robot.setJointValue(name, val);
+          }
+          robot.updateMatrixWorld(true);
+          // Resample the initial EE pose in case anything drifted
+          eeVis.getWorldPosition(startPos);
+          eeVis.getWorldQuaternion(startQuat);
+        }
+
+        // Start timeline
+        animState.t = 0;
+        animState.lastTs = performance.now();
+        animateBtn.classList.add('active');
+        animState.phase = 'forward';
+        animState.holdElapsed = 0;
+
+        // Snap goal to the initial pose (no first-frame lag)
+        goal.setPosition(startPos.x, startPos.y, startPos.z);
+        goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
+
+        // Make sure robot is visible
         if (!robotVisible) {
           robotVisible = true;
           robot.visible = true;
           if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
         }
-        animState.t = 0;      // start from initial pose
-        animState.dir = 1;    // go forward first
-        animState.lastTs = performance.now();
-        animateBtn.classList.add('active');
       } else {
         animateBtn.classList.remove('active');
-        applyCurrentTargetToGoal();       // snap to target when stopping
+        // If stopped mid-way, snap directly to the current target
+        const { pos, quat } = getTargetPose();
+        goal.setPosition(pos.x, pos.y, pos.z);
+        goal.setQuaternion(quat.x, quat.y, quat.z, quat.w);
       }
     }
 
@@ -1838,6 +1847,11 @@ loader.load(
 
     /* 2) build lil-GUI sliders ----------------------------------- */
     const startEuler = new THREE.Euler().setFromQuaternion(startQuat, 'XYZ');
+    // --- interactive target pose (driven by sliders/marker) ---
+    const targetPose = {
+      pos: startPos.clone(),
+      quat: startQuat.clone()
+    };
     const params = {
       x: startPos.x, y: startPos.y, z: startPos.z,
       // roll:  startEuler.x,
@@ -1846,6 +1860,13 @@ loader.load(
       roll:  0.0,
       pitch: 0.0,
       yaw:   0.0
+    };
+
+    // Keep last angles so we can apply *incremental* local rotations
+    const prevAngles = {
+      roll:  params.roll,
+      pitch: params.pitch,
+      yaw:   params.yaw
     };
 
     // Record the starting values once; used to detect "pose unchanged"
@@ -1867,32 +1888,39 @@ loader.load(
     function slidersAtDefault(){ return getChangedAxes().length === 0; }
 
     function updateGoal() {
-      /* position (marker always follows params immediately) */
-      marker.position.set(params.x, params.y, params.z);
+      // 1) Absolute position from sliders/drag
+      targetPose.pos.set(params.x, params.y, params.z);
 
-      /* orientation accumulation for marker/target */
-      const dRoll  = params.roll  - lastAngles.roll;
-      const dPitch = params.pitch - lastAngles.pitch;
-      const dYaw   = params.yaw   - lastAngles.yaw;
+      // 2) Orientation: compose *incremental* rotation in the gripper's local frame
+      const dRoll  = params.roll  - prevAngles.roll;
+      const dPitch = params.pitch - prevAngles.pitch;
+      const dYaw   = params.yaw   - prevAngles.yaw;
 
-      if (dRoll !== 0 || dPitch !== 0 || dYaw !== 0) {
-        const inc = new THREE.Quaternion().setFromEuler(
+      if (Math.abs(dRoll) > EPS || Math.abs(dPitch) > EPS || Math.abs(dYaw) > EPS) {
+        const dQ = new THREE.Quaternion().setFromEuler(
           new THREE.Euler(dRoll, dPitch, dYaw, 'XYZ')
         );
-        currentQuat.multiply(inc).normalize();
-        lastAngles.roll  = params.roll;
-        lastAngles.pitch = params.pitch;
-        lastAngles.yaw   = params.yaw;
-      }
-      marker.quaternion.copy(currentQuat);
+        // local-frame: post-multiply onto the current target orientation
+        targetPose.quat.multiply(dQ).normalize();
 
-      // Only push to IK solver immediately when not animating.
+        prevAngles.roll  = params.roll;
+        prevAngles.pitch = params.pitch;
+        prevAngles.yaw   = params.yaw;
+      }
+
+      // 3) Marker always shows the desired target immediately
+      marker.position.copy(targetPose.pos);
+      marker.quaternion.copy(targetPose.quat);
+
+      // 4) Push to IK only when NOT animating
       if (!animState.enabled) {
-        goal.setPosition(params.x, params.y, params.z);
-        goal.setQuaternion(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
+        goal.setPosition(targetPose.pos.x, targetPose.pos.y, targetPose.pos.z);
+        goal.setQuaternion(
+          targetPose.quat.x, targetPose.quat.y, targetPose.quat.z, targetPose.quat.w
+        );
       }
 
-      // First interaction reveals the robot
+      // Existing reveal/locking UI
       if (!robotVisible) {
         robotVisible = true;
         robot.visible = true;
@@ -1901,6 +1929,7 @@ loader.load(
       if (!slidersLocked) recordLastGood();
       updateGripperInteractivity();
     }
+
 
 
     // ---------- Drag helpers ----------
@@ -2268,18 +2297,23 @@ loader.load(
 
     confirmBtn.onclick = async () => {
       /* gather current joint values (radians / metres) */
+      /* gather current joint values (radians / metres), but
+        make `gripper` authoritative by excluding gripper joints */
       const jointMap = {};
       Object.entries(robot.joints).forEach(([name, joint]) => {
         jointMap[name] = joint.jointValue;
       });
 
-      /* gather current end-effector pose (world frame) */
-      robot.updateMatrixWorld(true);             // ensure transforms are fresh
-      const eePos  = new THREE.Vector3();
-      const eeQuat = new THREE.Quaternion();
-      eeVis.getWorldPosition   (eePos);
-      eeVis.getWorldQuaternion (eeQuat);
-      const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat, "XYZ");
+      /* gather the intended target end-effector pose (world frame),
+        not the currently-rendered interpolated pose */
+      const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
+      const eePos   = tgtPos.clone();
+      const eeEuler = new THREE.Euler().setFromQuaternion(tgtQuat, "XYZ");
+
+      // NEW: capture whether sliders are truly back at their defaults
+      const poseResetToDefault = slidersAtDefault();
+      // (Optional: can help debug; safe to include)
+      const slidersChangedAxes = getChangedAxes();
 
       try {
         const response = await apiFetch(`/api/submit-goal`, {
@@ -2295,7 +2329,10 @@ loader.load(
               rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
             },
             state_id: state.state_id,                // include state_id for tracking
-            episode_id: state.episode_id             // include episode_id for proper routing
+            episode_id: state.episode_id,            // include episode_id for proper routing
+            // NEW: unambiguously communicate that the pose was reset
+            pose_reset_to_default: poseResetToDefault,
+            sliders_changed_axes: slidersChangedAxes
           })
         });
         
@@ -2472,24 +2509,51 @@ loader.load(
     function animate(now) {
       requestAnimationFrame(animate);
 
-      // If Animate is ON, set the IK goal to the interpolated pose for this frame.
+      // If Animate is ON: forward (start→target) → hold at target → restart.
       if (animState.enabled) {
         if (!animState.lastTs) animState.lastTs = now;
-        const dt = Math.min(100, now - animState.lastTs); // clamp to avoid huge jumps on tab restore
+        const dt = Math.min(100, now - animState.lastTs); // clamp spikes
         animState.lastTs = now;
 
-        // Advance normalized time and ping-pong at the ends
-        animState.t += (dt / animState.duration);
-        if (animState.t > 1) animState.t = 0;
+        // Always sample the *current* target from sliders/drags
+        const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
 
-        const { pos: tgtPos, quat: tgtQuat } = computeTargetPose();
+        if (animState.phase === 'forward') {
+          animState.t += (dt / animState.duration);
+          if (animState.t >= 1) {
+            animState.t = 1;
+            animState.phase = 'hold';
+            animState.holdElapsed = 0;
+          }
+          _interpPos.copy(startPos).lerp(tgtPos, animState.t);
+          _interpQuat.copy(startQuat).slerp(tgtQuat, animState.t);
+          goal.setPosition  (_interpPos.x,  _interpPos.y,  _interpPos.z);
+          goal.setQuaternion(_interpQuat.x, _interpQuat.y, _interpQuat.z, _interpQuat.w);
+        } else { // 'hold'
+          animState.holdElapsed += dt;
+          // Stay exactly at the (live) goal during the hold window
+          goal.setPosition  (tgtPos.x,  tgtPos.y,  tgtPos.z);
+          goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
+          if (animState.holdElapsed >= animState.holdMs) {
+            // Teleport robot back to the *initial joint configuration*
+            if (initialJointPositions) {
+              for (const [name, val] of Object.entries(initialJointPositions)) {
+                robot.setJointValue(name, val);
+              }
+              robot.updateMatrixWorld(true);
+            }
 
-        // Interpolate pose: linear for pos, slerp for orientation
-        const interpPos  = new THREE.Vector3().copy(startPos).lerp(tgtPos,  animState.t);
-        const interpQuat = new THREE.Quaternion().copy(startQuat).slerp(tgtQuat, animState.t);
+            // Reset the IK goal to the original EE pose (start)
+            goal.setPosition(startPos.x, startPos.y, startPos.z);
+            goal.setQuaternion(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
 
-        goal.setPosition(interpPos.x, interpPos.y, interpPos.z);
-        goal.setQuaternion(interpQuat.x, interpQuat.y, interpQuat.z, interpQuat.w);
+            // Begin a fresh forward pass
+            animState.phase = 'forward';
+            animState.t = 0;
+            animState.holdElapsed = 0;
+          }
+
+        }
       }
 
       // Solve IK for this frame

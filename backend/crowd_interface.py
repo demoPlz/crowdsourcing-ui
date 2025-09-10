@@ -1313,18 +1313,25 @@ class CrowdInterface():
             if not response_data.get("task_already_completed", False):
                 self._is_submission_meaningful(joint_positions, original_joints, gripper_action, original_gripper)
             
-            # NEW: If this submission moves *any* joint, ignore the gripper change.
-            MOVE_EPS = 1e-4  # small tolerance to avoid float noise
-            has_joint_move = False
-            for jn in JOINT_NAMES[:-1]:  # exclude the gripper slot
-                if jn in joint_positions and jn in original_joints:
-                    sub = joint_positions[jn]
-                    sub = sub[0] if isinstance(sub, (list, tuple)) and len(sub) > 0 else sub
-                    orig = original_joints[jn]
-                    orig = orig[0] if isinstance(orig, (list, tuple)) and len(orig) > 0 else orig
-                    if abs(float(sub) - float(orig)) > MOVE_EPS:
-                        has_joint_move = True
-                        break
+            # NEW: If the frontend says the pose sliders were reset to their initial values,
+            # treat this as *no pose movement* regardless of tiny IK/joint discrepancies.
+            pose_reset_to_default = bool(response_data.get("pose_reset_to_default", False))
+
+            # If not explicitly reset, fall back to joint-delta detection
+            if pose_reset_to_default:
+                has_joint_move = False
+            else:
+                MOVE_EPS = 1e-4  # small tolerance to avoid float noise
+                has_joint_move = False
+                for jn in JOINT_NAMES[:-1]:  # exclude the gripper slot
+                    if jn in joint_positions and jn in original_joints:
+                        sub = joint_positions[jn]
+                        sub = sub[0] if isinstance(sub, (list, tuple)) and len(sub) > 0 else sub
+                        orig = original_joints[jn]
+                        orig = orig[0] if isinstance(orig, (list, tuple)) and len(orig) > 0 else orig
+                        if abs(float(sub) - float(orig)) > MOVE_EPS:
+                            has_joint_move = True
+                            break
 
             effective_gripper = original_gripper if has_joint_move else gripper_action
             if has_joint_move and gripper_action != effective_gripper:
