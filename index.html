@@ -498,7 +498,21 @@
     box-shadow: 0 0 0 3px rgba(124, 58, 237, .25), 0 8px 18px rgba(0,0,0,.18);
     opacity: 1;
   }
-  
+
+  /* --- disabled slider look --- */
+  .controls-container .lil-gui .controller input[type="range"]:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .controls-container .lil-gui .controller .reset-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .controls-container .lil-gui.locked {
+    opacity: 0.75;
+  }
+    
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
@@ -761,6 +775,9 @@ const views = new Map(); // viewName -> {camera, renderer, container, name}
 let currentViewName = null;
 let calibrationMode = false; // Calibration mode (UI & per-camera params)
 const mount = document.getElementById('viewport');
+
+// When true, pose sliders + scene dragging are locked (after gripper changed)
+let slidersLocked = false;
 
 // Create the prompt text first
 const promptText = document.createElement('div');
@@ -1095,9 +1112,13 @@ loader.load(
     drawGripArrows(state.gripper ?? 0);        // render initial arrows from server
     updateGripArrowVisibility();               // set initial visibility based on current view
 
+    const initialGripDir = gripDir;
+
     const gui = new GUI({ container: controlsContainer });
     gui.domElement.style.position = 'static'; // Remove absolute positioning
     gui.domElement.style.width = '100%';
+
+    let guiShield = null;  // invisible overlay to block pointer input on lil-gui
     
     // Create gripper controls container (will be added after sliders)
     let gripperButtonsContainer = null;
@@ -1151,6 +1172,60 @@ loader.load(
         updateGripperButtonStates();
       }
     }
+
+    function setSlidersLocked(locked) {
+      slidersLocked = locked;
+
+      // Disable lil-gui range + number inputs (if visible in dev mode)
+      const ranges  = controlsContainer.querySelectorAll('.lil-gui input[type="range"]');
+      const numbers = controlsContainer.querySelectorAll('.lil-gui input[type="number"]');
+      ranges.forEach(el  => { el.disabled = locked; });
+      numbers.forEach(el => { el.disabled = locked; });
+
+      // Disable the tiny reset buttons we append to each controller
+      const resetBtns = controlsContainer.querySelectorAll('.lil-gui .reset-btn');
+      resetBtns.forEach(btn => { btn.disabled = locked; });
+
+      // Dim the panel
+      if (gui && gui.domElement) {
+        gui.domElement.classList.toggle('locked', locked);
+
+        // Create an invisible shield that catches all pointer events
+        if (!guiShield) {
+          guiShield = document.createElement('div');
+          Object.assign(guiShield.style, {
+            position: 'absolute',
+            inset: '0',
+            zIndex: '2',
+            cursor: 'not-allowed',
+            background: 'transparent',
+            display: 'none',
+          });
+          // Ensure the lil-gui container is positioned for absolute child
+          const s = gui.domElement.style;
+          if (!s.position || s.position === 'static') s.position = 'relative';
+          gui.domElement.appendChild(guiShield);
+        }
+        guiShield.style.display = locked ? 'block' : 'none';
+      }
+
+      // Panel tooltip
+      controlsContainer.title = locked
+        ? 'Pose sliders are locked because the gripper state was changed.'
+        : '';
+    }
+    
+    
+    function onGripperChange(newDir) {
+      drawGripArrows(newDir);
+      updateGripArrowVisibility();
+      updateGripperButtonStates();
+      // Unlock if we've returned to the original server-provided state; otherwise lock
+      setSlidersLocked(newDir !== initialGripDir);
+      // Optional: refresh tooltips/disabled state on the gripper buttons
+      updateGripperInteractivity();
+    }
+
     
     if (activeControls.includes('gripper')) {
       gripperButtonsContainer = document.createElement('div');
@@ -1168,18 +1243,18 @@ loader.load(
       openBtn.textContent = 'Open';
       openBtn.className = 'open-btn';
       openBtn.onclick = () => {
-        drawGripArrows(+1);
-        updateGripArrowVisibility();
-        updateGripperButtonStates();
+        // Toggle: +1 → 0 (neutral), anything else → +1
+        const newDir = (gripDir === +1) ? 0 : +1;
+        onGripperChange(newDir);
       };
       
       closeBtn = document.createElement('button');
       closeBtn.textContent = 'Close';
       closeBtn.className = 'close-btn';
       closeBtn.onclick = () => {
-        drawGripArrows(-1);
-        updateGripArrowVisibility();
-        updateGripperButtonStates();
+        // Toggle: -1 → 0 (neutral), anything else → -1
+        const newDir = (gripDir === -1) ? 0 : -1;
+        onGripperChange(newDir);
       };
       
       buttonsContainer.appendChild(openBtn);
@@ -1778,6 +1853,12 @@ loader.load(
       x: params.x, y: params.y, z: params.z,
       roll: params.roll, pitch: params.pitch, yaw: params.yaw
     };
+
+    const lastGoodParams = { ...params };
+    function recordLastGood(keys = poseAxes) {
+      keys.forEach(k => { lastGoodParams[k] = params[k]; });
+    }
+
     // Only check the controls that are present
     const poseAxes = ['x','y','z','roll','pitch','yaw'].filter(k => activeControls.includes(k));
     const EPS = 1e-6; // tolerance for float comparisons
@@ -1817,7 +1898,7 @@ loader.load(
         robot.visible = true;
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
       }
-
+      if (!slidersLocked) recordLastGood();
       updateGripperInteractivity();
     }
 
@@ -1889,6 +1970,10 @@ loader.load(
 
       // Hover: cursor + wheel highlight
       el.addEventListener('pointermove', (evt) => {
+        if (slidersLocked) {                // ← block hover affordances while locked
+          el.style.cursor = 'not-allowed';
+          return;
+        }
         if (dragState.active || calibrationMode) return;
 
         const hits = pickAll(evt);
@@ -1908,6 +1993,10 @@ loader.load(
       });
 
       el.addEventListener('pointerdown', (evt) => {
+        if (slidersLocked) {                // ← block starting a drag while locked
+          el.style.cursor = 'not-allowed';
+          return;
+        }
         if (calibrationMode) return;
 
         const hits = pickAll(evt);
@@ -2245,8 +2334,16 @@ loader.load(
     spanDefs.forEach(([key, span])=>{
       if (!activeControls.includes(key)) return;
       const center = params[key];          // start-pose value
-      const controller = gui.add(params, key, center - span, center + span)
-        .onChange(updateGoal);
+      const controller = gui.add(params, key, center - span, center + span);
+      controller.onChange(() => {
+        if (slidersLocked) {
+          // Revert the bound value and refresh the UI; do not push to IK
+          params[key] = lastGoodParams[key];
+          controller.updateDisplay();
+          return;
+        }
+        updateGoal();
+      });
 
       // Save references for drag interaction
       sliderCtrls[key]   = controller;
@@ -2273,6 +2370,7 @@ loader.load(
       }, 0);
     });
 
+    setSlidersLocked(false);
 
     // Add gripper buttons after sliders
     if (gripperButtonsContainer) {
