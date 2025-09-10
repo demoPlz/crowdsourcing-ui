@@ -463,6 +463,15 @@
     display: inline-block;
     animation: pulse 1s ease-in-out infinite;
   }
+
+  /* Disabled gripper buttons look inert + show not-allowed cursor */
+  .controls-container .gripper-buttons button:disabled {
+    background: #e5e7eb;
+    color: #9ca3af;
+    border: 2px dashed #d1d5db;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
   
   @keyframes pulse {
     0%, 100% { opacity: 1; }
@@ -951,6 +960,36 @@ loader.load(
 
     const initialJointPositions = state.joint_positions ?? {};
     const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
+
+    /* ---------- gripper finger-tip calibration (load + state) ---------- */
+    const TIP_CAL_LS_KEY = 'wxai_gripper_tip_calib';
+
+    function loadTipCalibFromLS() {
+      try { const txt = localStorage.getItem(TIP_CAL_LS_KEY); return txt ? JSON.parse(txt) : null; } catch { return null; }
+    }
+    function saveTipCalibToLS(obj) {
+      try { localStorage.setItem(TIP_CAL_LS_KEY, JSON.stringify(obj)); } catch {}
+    }
+
+    // Server-provided values take priority, then localStorage, then defaults
+    let tipCalib = (state.gripper_tip_calib && state.gripper_tip_calib.left && state.gripper_tip_calib.right)
+      ? JSON.parse(JSON.stringify(state.gripper_tip_calib))
+      : (loadTipCalibFromLS() ?? {
+          left:  { x: 0.03, y: 0.00, z: 0.00 },
+          right: { x: 0.03, y: 0.00, z: 0.00 }
+        });
+
+    saveTipCalibToLS(tipCalib); // mirror locally so it's never lost client‑side
+
+    // Calibratable local offsets (per finger) that the renderer uses
+    const fingerTipLocalLeft  = new THREE.Vector3(tipCalib.left.x,  tipCalib.left.y,  tipCalib.left.z);
+    const fingerTipLocalRight = new THREE.Vector3(tipCalib.right.x, tipCalib.right.y, tipCalib.right.z);
+
+    function applyTipCalibToVectors(){
+      fingerTipLocalLeft.set (tipCalib.left.x,  tipCalib.left.y,  tipCalib.left.z);
+      fingerTipLocalRight.set(tipCalib.right.x, tipCalib.right.y, tipCalib.right.z);
+    }
+
     
     // Update prompt text from server state
     const promptFromServer = state.prompt || 'Pick up the red block.';
@@ -1055,6 +1094,35 @@ loader.load(
       } else { // Neutral/Default - both inactive
         openBtn.classList.add('inactive');
         closeBtn.classList.add('inactive');
+      }
+    }
+
+    function updateGripperInteractivity() {
+      const atDefault = slidersAtDefault();
+      if (!openBtn || !closeBtn) return;
+
+      openBtn.disabled = !atDefault;
+      closeBtn.disabled = !atDefault;
+
+      // Build a clear hover message
+      const changed = getChangedAxes();
+      const hoverMsg = atDefault
+        ? 'You can change the gripper state.'
+        : `Gripper locked: pose sliders changed (${changed.join(', ')}). Reset sliders to their starting values to change the gripper.`;
+
+      openBtn.title = hoverMsg;
+      closeBtn.title = hoverMsg;
+
+      // Also put the explanation on the label if present
+      const label = document.querySelector('.gripper-label');
+      if (label) label.title = hoverMsg;
+
+      // Visually reflect disabled state via existing classes
+      if (!atDefault) {
+        openBtn.classList.add('inactive'); openBtn.classList.remove('active');
+        closeBtn.classList.add('inactive'); closeBtn.classList.remove('active');
+      } else {
+        updateGripperButtonStates();
       }
     }
     
@@ -1336,9 +1404,70 @@ loader.load(
       };
       calibGUI.add(actions, 'save_calibration').name('Save calibration');
 
+      /* --------- Gripper tip calibration (dev panel) --------- */
+      // Working copy for sliders
+      const tipDev = JSON.parse(JSON.stringify(tipCalib));
+
+      // When sliders move: commit to live calib, update vectors, persist locally
+      function onTipDevChange(){
+        tipCalib.left.x  = tipDev.left.x;  tipCalib.left.y  = tipDev.left.y;  tipCalib.left.z  = tipDev.left.z;
+        tipCalib.right.x = tipDev.right.x; tipCalib.right.y = tipDev.right.y; tipCalib.right.z = tipDev.right.z;
+        applyTipCalibToVectors();
+        saveTipCalibToLS(tipCalib);
+      }
+
+      const tipFolderDev = calibGUI.addFolder('gripper tips');
+      const rng = [-0.10, 0.10], step = 0.0005; // 0.5 mm step; widen if needed
+
+      tipFolderDev.add(tipDev.left,  'x', rng[0], rng[1], step).name('left x (m)').onChange(onTipDevChange);
+      tipFolderDev.add(tipDev.left,  'y', rng[0], rng[1], step).name('left y (m)').onChange(onTipDevChange);
+      tipFolderDev.add(tipDev.left,  'z', rng[0], rng[1], step).name('left z (m)').onChange(onTipDevChange);
+
+      tipFolderDev.add(tipDev.right, 'x', rng[0], rng[1], step).name('right x (m)').onChange(onTipDevChange);
+      tipFolderDev.add(tipDev.right, 'y', rng[0], rng[1], step).name('right y (m)').onChange(onTipDevChange);
+      tipFolderDev.add(tipDev.right, 'z', rng[0], rng[1], step).name('right z (m)').onChange(onTipDevChange);
+
+      // Save to backend (same pattern as camera)
+      const tipActions = {
+        async save_gripper_tips(){
+          const payload = {
+            gripper_tip_calib: tipCalib,
+            state_id: state.state_id,
+            episode_id: state.episode_id
+          };
+          try {
+            // Prefer a generic calibration endpoint (like cameras)
+            let resp = await apiFetch(`/api/save-calibration`, {
+              method: 'POST',
+              headers: { 'Content-Type':'application/json' },
+              body: JSON.stringify({ type: 'gripper_tips', ...payload })
+            });
+
+            // Fallback: dedicated route if your backend uses one
+            if (!resp.ok) {
+              resp = await apiFetch(`/api/save-gripper-tips`, {
+                method: 'POST',
+                headers: { 'Content-Type':'application/json' },
+                body: JSON.stringify(payload)
+              });
+            }
+
+            const out = await resp.json();
+            if (!resp.ok) throw new Error(out?.error || 'save failed');
+            console.log('✅ saved gripper tip calibration', out);
+            alert(`Saved gripper tip calibration${out.path ? ` to ${out.path}` : ''}.`);
+          } catch (err) {
+            console.error('❌ failed to save gripper tip calibration', err);
+            alert('Saved locally. Server save failed (check console).');
+          }
+        }
+      };
+      tipFolderDev.add(tipActions, 'save_gripper_tips').name('Save gripper tips');
+
       // Initial apply so the matrices reflect slider defaults
       applyIntrinsicsFromParams(currentViewName);
       applyExtrinsicsFromParams(currentViewName);
+
     }
 
     function exitCalibration() {
@@ -1398,6 +1527,38 @@ loader.load(
     const bottomPad   = 0.0005;   // tiny lift to avoid z-fighting
     const _eePosTmp   = new THREE.Vector3();
 
+    /* ---------- two yellow drop lines from gripper finger tips ---------- */
+
+    // If you want the lines to end at exactly z=0, keep this at 0.0.
+    // If you see z-fighting flicker, bump it up slightly (e.g., 0.0005).
+    const fingerBottomPad = 0.0;
+
+    // Shared yellow material (semi‑transparent)
+    const fingerLineMat = new THREE.MeshBasicMaterial({
+      color: 0xffcc00, transparent: true, opacity: 0.8
+    });
+
+    // Helper to build a vertical cylinder whose local Y maps to world Z (like the green line)
+    function makeDownLine(material){
+      const m = new THREE.Mesh(
+        new THREE.CylinderGeometry(lineRad, lineRad, lineLen, 8, 1, true),
+        material
+      );
+      m.rotation.x = Math.PI / 2;   // align cylinder Y → world Z
+      m.visible = false;
+      scene.add(m);
+      return m;
+    }
+
+    const leftFingerLine  = makeDownLine(fingerLineMat);
+    const rightFingerLine = makeDownLine(fingerLineMat);
+
+    // Cache references to the finger links in the URDF
+    // (Rename here if your URDF uses different link names)
+    const leftFingerLink  = robot.getObjectByName('gripper_left');
+    const rightFingerLink = robot.getObjectByName('gripper_right');
+
+
     /* ---- red sphere exactly at that pose ---------------------- */
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry( 0.005, 16, 16 ),
@@ -1418,6 +1579,18 @@ loader.load(
       pitch: 0.0,
       yaw:   0.0
     };
+
+    // Record the starting values once; used to detect "pose unchanged"
+    const initialParams = {
+      x: params.x, y: params.y, z: params.z,
+      roll: params.roll, pitch: params.pitch, yaw: params.yaw
+    };
+    // Only check the controls that are present
+    const poseAxes = ['x','y','z','roll','pitch','yaw'].filter(k => activeControls.includes(k));
+    const EPS = 1e-6; // tolerance for float comparisons
+    function approximatelyEqual(a,b,eps=EPS){ return Math.abs(a - b) <= eps; }
+    function getChangedAxes(){ return poseAxes.filter(k => !approximatelyEqual(params[k], initialParams[k])); }
+    function slidersAtDefault(){ return getChangedAxes().length === 0; }
 
     function updateGoal() {
       /* position */
@@ -1451,6 +1624,8 @@ loader.load(
         robot.visible = true;
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
       }
+
+      updateGripperInteractivity();
     }
 
     /* ---------- camera-view buttons --------------------------- */
@@ -1701,6 +1876,9 @@ loader.load(
       updateGripperButtonStates(); // Set initial button states
     }
 
+    // Evaluate initial interactivity (usually enabled because sliders = defaults)
+    updateGripperInteractivity();
+
     // Add confirm button at the bottom
     controlsContainer.appendChild(confirmBtn);
 
@@ -1808,6 +1986,34 @@ loader.load(
         const midZ = (floorZ + bottomPad) + 0.5 * len;
         line.position.set(_eePosTmp.x + lineOffX, _eePosTmp.y, midZ);
       }
+
+      function updateFingerLine(link, lineMesh, localTipVec){
+        if (!link) { lineMesh.visible = false; return; }
+
+        link.updateMatrixWorld(true);
+
+        // World-space tip position from the calibrated local offset
+        const tipWorld = localTipVec.clone().applyMatrix4(link.matrixWorld);
+
+        const lenToFloor = tipWorld.z - (floorZ + fingerBottomPad);
+        if (lenToFloor <= 0) {
+          lineMesh.visible = false;
+          return;
+        }
+
+        lineMesh.visible = true;
+        lineMesh.scale.y = lenToFloor / baseLineLen;
+        const midZ = (floorZ + fingerBottomPad) + 0.5 * lenToFloor;
+
+        // Place directly under each finger tip
+        lineMesh.position.set(tipWorld.x, tipWorld.y, midZ);
+      }
+
+      // Update both finger lines each frame
+      updateFingerLine(leftFingerLink,  leftFingerLine,  fingerTipLocalLeft);
+      updateFingerLine(rightFingerLink, rightFingerLine, fingerTipLocalRight);
+
+
       
       // Update gripper arrow positions based on robot link positions
       gripArrows.forEach(arrow => {

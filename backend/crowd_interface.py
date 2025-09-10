@@ -29,8 +29,8 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        8,
-    "right":       16,
+    "left":        4,
+    "right":       2,
     "perspective": 0,
 }
 
@@ -184,6 +184,9 @@ class CrowdInterface():
         self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._camera_models: dict[str, dict] = {}
         self._camera_poses = self._load_calibrations()
+        # ---- Gripper tip calibration (left/right {x,y,z}) ----
+        self._calib_lock = Lock()
+        self._gripper_tip_calib = self._load_gripper_tip_calibration()  # {"left":{x,y,z},"right":{x,y,z}}
 
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
@@ -850,6 +853,7 @@ class CrowdInterface():
         out["views"] = views
         out["camera_poses"] = self._camera_poses
         out["camera_models"] = self._camera_models
+        out["gripper_tip_calib"] = self._gripper_tip_calib
         
         return out
     
@@ -1744,6 +1748,61 @@ class CrowdInterface():
                 print(f"⚠️  failed to apply manual calibration for '{name}': {e}")
 
         return poses
+    
+    def _calib_dir(self) -> Path:
+        base_dir = Path(__file__).resolve().parent
+        return (base_dir / ".." / "calib").resolve()
+
+    def _load_gripper_tip_calibration(self) -> dict:
+        """
+        Load manual gripper tip calibration from ../calib/manual_gripper_tips.json
+        Returns {"left":{"x":..,"y":..,"z":..}, "right":{...}}; falls back to defaults.
+        """
+        try:
+            p = self._calib_dir() / "manual_gripper_tips.json"
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                # Minimal validation and float casting
+                def _clean(side):
+                    s = (data.get(side) or {})
+                    return {
+                        "x": float(s.get("x", 0.03)),
+                        "y": float(s.get("y", 0.0)),
+                        "z": float(s.get("z", 0.0)),
+                    }
+                return {"left": _clean("left"), "right": _clean("right")}
+        except Exception as e:
+            print(f"⚠️  failed to load manual_gripper_tips.json: {e}")
+        # Defaults if missing
+        return {"left": {"x": 0.03, "y": 0.0, "z": 0.0},
+                "right":{"x": 0.03, "y": 0.0, "z": 0.0}}
+
+    def save_gripper_tip_calibration(self, calib: dict) -> str:
+        """
+        Save {"left":{"x","y","z"},"right":{"x","y","z"}} to ../calib/manual_gripper_tips.json
+        Update in-memory self._gripper_tip_calib so the next /api/get-state reflects it.
+        Returns the written path as a string.
+        """
+        # sanitize + cast
+        def _want(side):
+            s = (calib.get(side) or {})
+            return {"x": float(s["x"]), "y": float(s["y"]), "z": float(s["z"])}
+        try:
+            cleaned = {"left": _want("left"), "right": _want("right")}
+        except Exception as e:
+            raise ValueError(f"invalid gripper_tip_calib payload: {e}")
+        p = self._calib_dir()
+        p.mkdir(parents=True, exist_ok=True)
+        path = p / "manual_gripper_tips.json"
+        with self._calib_lock:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(cleaned, f, indent=2)
+                self._gripper_tip_calib = cleaned  # live update
+            except Exception as e:
+                raise IOError(f"failed to write {path}: {e}")
+        return str(path)
 
     def is_recording(self):
         """Check if there are any pending states across all episodes or episodes being completed"""
@@ -1982,7 +2041,19 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
           "extrinsics": {"T_three": [[...4x4...]]}
         }
         """
+         # Allow multiplexing to gripper tip handler
         data = request.get_json(force=True, silent=True) or {}
+        typ = (data.get("type") or "").strip().lower()
+        if typ == "gripper_tips":
+            calib = data.get("gripper_tip_calib") or {}
+            # minimal validation
+            if not isinstance(calib, dict) or "left" not in calib or "right" not in calib:
+                return jsonify({"error": "gripper_tip_calib must include 'left' and 'right' {x,y,z}"}), 400
+            try:
+                out_path = crowd_interface.save_gripper_tip_calibration(calib)
+                return jsonify({"status": "ok", "path": out_path})
+            except (ValueError, IOError) as e:
+                return jsonify({"error": str(e)}), 400
         cam = data.get("camera")
         intr = data.get("intrinsics") or {}
         extr = data.get("extrinsics") or {}
@@ -2108,5 +2179,21 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ Error in task-already-completed: {e}")
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
+        
+    @app.route("/api/save-gripper-tips", methods=["POST"])
+    def save_gripper_tips():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            calib = data.get("gripper_tip_calib") or {}
+            if not isinstance(calib, dict) or "left" not in calib or "right" not in calib:
+                return jsonify({"error": "gripper_tip_calib must include 'left' and 'right' {x,y,z}"}), 400
+            out_path = crowd_interface.save_gripper_tip_calibration(calib)
+            return jsonify({"status": "ok", "path": out_path})
+        except (ValueError, IOError) as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": f"unexpected error: {e}"}), 500
     
     return app
