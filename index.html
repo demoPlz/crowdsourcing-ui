@@ -1729,7 +1729,7 @@ loader.load(
 
     // Make the dot easy to pick: invisible, larger hit target
     const pickProxy = new THREE.Mesh(
-      new THREE.SphereGeometry(0.08, 16, 16), // ~4cm radius hit area
+      new THREE.SphereGeometry(0.04, 16, 16), // ~4cm radius hit area
       new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
     );
     pickProxy.name = 'marker_pick_proxy';

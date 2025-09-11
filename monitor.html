@@ -1202,18 +1202,30 @@
                     }
                     
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
-                    console.log('No pending states available');
+                    // No pending states, but we may be in RESET; still render robot/reset UI.
                     currentStateId.textContent = 'No states';
                     stateType.textContent = '--';
                     stateResponses.textContent = '--';
                     pendingStatesCount.textContent = '0';
-                    
-                    // Clear camera views
-                    for (const cameraName of Object.keys(cameraViews)) {
-                        updateCameraView(cameraName, null);
+
+                    // Show reset / async / motion state even when there are no states.
+                    updateRobotState(
+                        data.robot_moving,
+                        data.is_resetting,
+                        data.reset_countdown,
+                        data.is_async_collection
+                    );
+                    // Flip "Next Episode" ↔ "Start Episode" based on reset flag.
+                    updateControlButtons(data.is_resetting);
+
+                    // Keep showing the latest camera snapshots if provided.
+                    if (data.views) {
+                        for (const [cameraName, imageDataUrl] of Object.entries(data.views)) {
+                            updateCameraView(cameraName, imageDataUrl);
+                        }
                     }
                 }
-                
+
             } catch (error) {
                 console.error('Error fetching latest state:', error);
                 updateServerStatus(false);
