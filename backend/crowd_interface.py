@@ -17,7 +17,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from flask import request, make_response
 from pathlib import Path
-from threading import Thread, Lock
+from threading import Thread, Lock, Timer
 from collections import deque
 from math import cos, sin
 
@@ -188,6 +188,10 @@ class CrowdInterface():
         self._calib_lock = Lock()
         self._gripper_tip_calib = self._load_gripper_tip_calibration()  # {"left":{x,y,z},"right":{x,y,z}}
 
+        # Debounced episode finalization
+        self.episode_finalize_grace_s = float(os.getenv("EPISODE_FINALIZE_GRACE_S", "2"))
+        self._episode_finalize_timers: dict[str, Timer] = {}
+
 
         # Precompute immutable views and camera poses to avoid per-tick allocations
         H, W = 64, 64
@@ -219,6 +223,13 @@ class CrowdInterface():
             pass
         # Flush any remaining buffered states before shutdown
         self._flush_remaining_buffered_states()
+
+        # Cancel any outstanding deferred finalizations
+        with self.state_lock:
+            for ep, t in list(self._episode_finalize_timers.items()):
+                try: t.cancel()
+                except Exception: pass
+            self._episode_finalize_timers.clear()
     
     def _flush_remaining_buffered_states(self):
         """Flush any states remaining in the buffer, useful during shutdown"""
@@ -546,6 +557,105 @@ class CrowdInterface():
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
         self.events = events
+
+    def _schedule_episode_finalize_after_grace_locked(self, episode_id: str):
+        """
+        Schedule a deferred finalize for an empty episode.
+        Assumes self.state_lock is already held.
+        """
+        if self._shutting_down:
+            return
+        # Cancel any existing timer first
+        t = self._episode_finalize_timers.get(episode_id)
+        if t:
+            try: 
+                t.cancel()
+            except Exception:
+                pass
+
+        delay = self.episode_finalize_grace_s
+        timer = Timer(delay, self._finalize_episode_if_still_empty, args=(episode_id,))
+        timer.daemon = True
+        self._episode_finalize_timers[episode_id] = timer
+        timer.start()
+        print(f"⏳ Scheduled deferred finalize for episode {episode_id} in {delay:.2f}s")
+
+    def _cancel_episode_finalize_timer_locked(self, episode_id: str):
+        """
+        Cancel a pending finalize timer for an episode.
+        Assumes self.state_lock is already held.
+        """
+        t = self._episode_finalize_timers.pop(episode_id, None)
+        if t:
+            try:
+                t.cancel()
+                print(f"↩️  Canceled deferred finalize for episode {episode_id}")
+            except Exception:
+                pass
+
+    def _finalize_episode_if_still_empty(self, episode_id: str):
+        """
+        Timer callback: finalize the episode iff it remained empty through the grace period.
+        Runs without holding the lock initially; acquires it to re-check and finalize.
+        """
+        if self._shutting_down:
+            return
+
+        with self.state_lock:
+            # Clear this timer slot
+            self._episode_finalize_timers.pop(episode_id, None)
+
+            # Abort if the episode is no longer empty
+            if self.pending_states_by_episode.get(episode_id):
+                print(f"🛑 Finalize aborted for episode {episode_id} — new states arrived.")
+                return
+
+            # Proceed with your existing inline finalize logic (kept under lock for correctness)
+            self.episodes_being_completed.add(episode_id)
+            print(f"🎬 Episode {episode_id} completed (after grace). Saving episode to dataset...")
+
+            try:
+                if episode_id in self.completed_states_buffer_by_episode:
+                    buffered_states = self.completed_states_buffer_by_episode[episode_id]
+                    for sid in sorted(buffered_states.keys()):
+                        entry = buffered_states[sid]
+                        if isinstance(entry, dict) and entry.get("_manifest"):
+                            obs = self._load_obs_from_disk(entry.get("obs_path"))
+                            frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                            self.dataset.add_frame(frame)
+                            self._delete_obs_from_disk(entry.get("obs_path"))
+                        else:
+                            self.dataset.add_frame(entry)
+                    print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
+                    del self.completed_states_buffer_by_episode[episode_id]
+                    self._purge_episode_cache(episode_id)
+
+                self.episodes_completed.add(episode_id)
+                self.dataset.save_episode()
+
+                # Clean up episode data structures
+                if episode_id in self.pending_states_by_episode:
+                    del self.pending_states_by_episode[episode_id]
+                if episode_id in self.served_states_by_episode:
+                    del self.served_states_by_episode[episode_id]
+                if episode_id in self.completed_states_by_episode:
+                    del self.completed_states_by_episode[episode_id]
+                print(f"🧹 Dropped completed episode {episode_id} from monitor memory")
+
+                # Advance serving pointer
+                if self.current_serving_episode == episode_id:
+                    available_episodes = [ep_id for ep_id in self.pending_states_by_episode.keys()
+                                        if ep_id not in self.episodes_completed and
+                                            self.pending_states_by_episode[ep_id] and ep_id is not None]
+                    if available_episodes:
+                        self.current_serving_episode = min(available_episodes)
+                        print(f"🎬 Now serving next episode {self.current_serving_episode}")
+                    else:
+                        self.current_serving_episode = None
+                        print("🏁 All episodes completed, no more episodes to serve")
+            finally:
+                self.episodes_being_completed.discard(episode_id)
+
     
     ### ---Dataset Management---
     def init_dataset(self, 
@@ -1041,6 +1151,8 @@ class CrowdInterface():
             # Set current serving episode if none set
             if self.current_serving_episode is None:
                 self.current_serving_episode = episode_id
+
+            self._cancel_episode_finalize_timer_locked(episode_id)
         
         print(f"🟢 State {state_id} added to episode {episode_id}. Pending: {len(self.pending_states_by_episode.get(episode_id, {}))}")
 
@@ -1076,6 +1188,8 @@ class CrowdInterface():
     def clear_episode_data(self, episode_id: str):
         """Clear all episode-related data for a specific episode (used when rerecording)"""
         with self.state_lock:
+
+            self._cancel_episode_finalize_timer_locked(episode_id)
             
             # Clear pending states
             if episode_id in self.pending_states_by_episode:
@@ -1434,63 +1548,9 @@ class CrowdInterface():
                 
                 # Check if episode is complete
                 if not self.pending_states_by_episode[found_episode]:
-                    # Mark episode as being completed to prevent race conditions with is_recording()
-                    self.episodes_being_completed.add(found_episode)
-                    print(f"🎬 Episode {found_episode} completed! Saving episode to dataset...")
-                    
-                    try:
-                        # Add buffered states to dataset in chronological order
-                        if found_episode in self.completed_states_buffer_by_episode:
-                            buffered_states = self.completed_states_buffer_by_episode[found_episode]
-                            # Sort states by state_id to ensure chronological order
-                            for sid in sorted(buffered_states.keys()):
-                                entry = buffered_states[sid]
-                                if isinstance(entry, dict) and entry.get("_manifest"):
-                                    obs = self._load_obs_from_disk(entry.get("obs_path"))
-                                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                                    self.dataset.add_frame(frame)
-                                    # Delete obs file once it's committed to dataset
-                                    self._delete_obs_from_disk(entry.get("obs_path"))
-                                else:
-                                    # Backward-compat: already materialized dict
-                                    self.dataset.add_frame(entry)
-                            print(f"📚 Added {len(buffered_states)} states to dataset in chronological order")
-                            # Clean up buffer
-                            del self.completed_states_buffer_by_episode[found_episode]
-                            # Purge any leftover cache directory for the episode
-                            self._purge_episode_cache(found_episode)
-                        
-                        self.episodes_completed.add(found_episode)
-                        self.dataset.save_episode()
-                        
-                        # Clean up episode data structures  
-                        del self.pending_states_by_episode[found_episode]
-                        if found_episode in self.served_states_by_episode:
-                            del self.served_states_by_episode[found_episode]
-
-                        # NEW: drop completed episode from monitor memory so it won't be transferred to the frontend
-                        # This removes the (potentially large) completed-state bookkeeping for this episode.
-                        if found_episode in self.completed_states_by_episode:
-                            del self.completed_states_by_episode[found_episode]
-                            print(f"🧹 Dropped completed episode {found_episode} from monitor memory")
-                        
-                        # Update current_serving_episode if this was the current one
-                        if self.current_serving_episode == found_episode:
-                            # Find next episode to serve
-                            available_episodes = [ep_id for ep_id in self.pending_states_by_episode.keys() 
-                                                if ep_id not in self.episodes_completed and 
-                                                self.pending_states_by_episode[ep_id] and
-                                                ep_id is not None]
-                            
-                            if available_episodes:
-                                self.current_serving_episode = min(available_episodes)
-                                print(f"🎬 Now serving next episode {self.current_serving_episode}")
-                            else:
-                                self.current_serving_episode = None
-                                print(f"🏁 All episodes completed, no more episodes to serve")
-                    finally:
-                        # Always remove from being_completed set, even if there's an error
-                        self.episodes_being_completed.discard(found_episode)
+                    self._schedule_episode_finalize_after_grace_locked(found_episode)
+                    print(f"⏳ Episode {found_episode} currently empty; finalize scheduled after "
+                        f"{self.episode_finalize_grace_s:.2f}s grace.")
                 
                 print(f"✅ State {state_id} completed in episode {found_episode}")
                 return True
