@@ -2296,57 +2296,66 @@ loader.load(
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
-      /* gather current joint values (radians / metres) */
-      /* gather current joint values (radians / metres), but
-        make `gripper` authoritative by excluding gripper joints */
-      const jointMap = {};
-      Object.entries(robot.joints).forEach(([name, joint]) => {
-        jointMap[name] = joint.jointValue;
+    // 0) Freeze any ongoing animation so we don't sample a mid-trajectory pose
+    if (animState.enabled) {
+      animState.enabled = false;
+      if (animateBtn) animateBtn.classList.remove('active');
+    }
+
+    // 1) Use the *intended* goal pose (not the currently rendered interpolated pose)
+    const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
+
+    // 2) Snap the IK goal to that target and explicitly solve to it *now*
+    goal.setPosition(tgtPos.x, tgtPos.y, tgtPos.z);
+    goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
+
+    // Drive IK to convergence so the joints we read are the goal joints
+    setIKFromUrdf(ikRoot, robot);
+    for (let i = 0; i < 25; i++) solver.solve();  // a few extra passes for good measure
+    setUrdfFromIK(robot, ikRoot);
+
+    // 3) Now read the joints — these reflect the solved goal configuration
+    const jointMap = {};
+    Object.entries(robot.joints).forEach(([name, joint]) => {
+      jointMap[name] = joint.jointValue;
+    });
+
+    // 4) Build ee_pose from the goal (not from the rendered state)
+    const eeEuler = new THREE.Euler().setFromQuaternion(tgtQuat, "XYZ");
+
+    // Keep your existing flags; useful for logging/routing
+    const poseResetToDefault = slidersAtDefault();
+    const slidersChangedAxes = getChangedAxes();
+
+    try {
+      const response = await apiFetch(`/api/submit-goal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          joint_positions: jointMap,
+          gripper: gripDir,                         // -1 / +1 / 0
+          ee_pose: {
+            position: [tgtPos.x, tgtPos.y, tgtPos.z],
+            rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
+          },
+          state_id: state.state_id,
+          episode_id: state.episode_id,
+          pose_reset_to_default: poseResetToDefault,
+          sliders_changed_axes: slidersChangedAxes
+        })
       });
 
-      /* gather the intended target end-effector pose (world frame),
-        not the currently-rendered interpolated pose */
-      const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
-      const eePos   = tgtPos.clone();
-      const eeEuler = new THREE.Euler().setFromQuaternion(tgtQuat, "XYZ");
-
-      // NEW: capture whether sliders are truly back at their defaults
-      const poseResetToDefault = slidersAtDefault();
-      // (Optional: can help debug; safe to include)
-      const slidersChangedAxes = getChangedAxes();
-
-      try {
-        const response = await apiFetch(`/api/submit-goal`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            joint_positions: jointMap,
-            gripper:         gripDir,                // -1 / +1 / 0
-            ee_pose: {                               // added  ⤵
-              position:   [eePos.x,  eePos.y,  eePos.z],
-              rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
-            },
-            state_id: state.state_id,                // include state_id for tracking
-            episode_id: state.episode_id,            // include episode_id for proper routing
-            // NEW: unambiguously communicate that the pose was reset
-            pose_reset_to_default: poseResetToDefault,
-            sliders_changed_axes: slidersChangedAxes
-          })
-        });
-        
-        if (response.ok) {
-          console.log('✅ goal sent');
-          // Start 5-second countdown with progress bar before refreshing
-          delayedRefresh(5000);
-        } else {
-          console.error('❌ failed to send goal - server error:', response.status);
-        }
-      } catch (err) {
-        console.error('❌ failed to send goal', err);
+      if (response.ok) {
+        console.log('✅ goal sent (final goal joints)');
+        delayedRefresh(5000);
+      } else {
+        console.error('❌ failed to send goal - server error:', response.status);
       }
-    };
+    } catch (err) {
+      console.error('❌ failed to send goal', err);
+    }
+  };
+
 
     // Animate toggle button (appears above Confirm)
     const animateBtn = document.createElement('button');
