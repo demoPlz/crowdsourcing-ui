@@ -1705,7 +1705,7 @@ loader.load(
 
     // Shared yellow material (semi‑transparent)
     const fingerLineMat = new THREE.MeshBasicMaterial({
-      color: 0xffcc00, transparent: true, opacity: 0.8
+      color: 0xffcc00, transparent: true, opacity: 0.95
     });
 
     // Helper to build a vertical cylinder whose local Y maps to world Z (like the green line)
@@ -1729,18 +1729,42 @@ loader.load(
     const rightFingerLink = robot.getObjectByName('gripper_right');
 
 
-    /* ---- red sphere exactly at that pose ---------------------- */
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry( 0.005, 16, 16 ),
-      new THREE.MeshStandardMaterial( { color: 0xff0000 } )
-    );
-    marker.position.copy    ( startPos  );
-    marker.quaternion.copy  ( startQuat );
-    scene.add( marker );
+    /* ---- XY cross at the target pose (keeps the same drag proxy) --------- */
+    // Transform anchor (acts like the old marker mesh, but is now a Group)
+    const marker = new THREE.Group();
+    marker.position.copy(startPos);
+    marker.quaternion.copy(startQuat);
+    scene.add(marker);
 
-    // Make the dot easy to pick: invisible, larger hit target
+    // Visible cross (two thin bars along local X and Y)
+    const CROSS_LEN   = 0.1;  // 10 cm total length; tweak if you want bigger/smaller
+    const CROSS_THICK = 0.005; // 5 mm thickness
+    const crossMat = new THREE.MeshBasicMaterial({
+      color: 0xff0000,       // same red as before; change if you prefer
+      transparent: true,
+      opacity: 0.85,
+      depthTest: false,      // always draw on top of the camera texture
+      depthWrite: false
+    });
+
+    // X bar: length along local X, thin in Y/Z
+    const xBar = new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_THICK, CROSS_LEN), crossMat);
+    // Y bar: length along local Y, thin in X/Z
+    const yBar = new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_LEN, CROSS_THICK), crossMat);
+
+    // Make the cross purely visual (do not participate in picking)
+    // This ensures the existing proxy remains the only drag target.
+    xBar.raycast = () => {};
+    yBar.raycast = () => {};
+
+    const crossGroup = new THREE.Group();
+    crossGroup.name = 'marker_cross';
+    crossGroup.add(xBar, yBar);
+    marker.add(crossGroup);
+
+    // Keep the exact same drag proxy (unchanged)
     const pickProxy = new THREE.Mesh(
-      new THREE.SphereGeometry(0.04, 16, 16), // ~4cm radius hit area
+      new THREE.SphereGeometry(0.04, 16, 16), // ~4 cm radius hit area
       new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
     );
     pickProxy.name = 'marker_pick_proxy';
