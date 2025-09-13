@@ -1,7 +1,7 @@
 <!-- wxai_min.html  –  minimal translate-only IK demo -->
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8" />
-<title>WidowX AI — position IK only</title>
+<title>WidowX AI - position IK only</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#f5f5f5}
   /* Multi-view container wrapper with blue background */
@@ -353,7 +353,7 @@
     align-self: flex-start;
   }
 
-  /* Task Already Completed — explicit inactive/active states (parity with gripper buttons) */
+  /* Task Already Completed - explicit inactive/active states (parity with gripper buttons) */
   .controls-container .task-completed-button {
     background: #fbbf24;        /* lighter orange when NOT selected */
     color: #ffffff;
@@ -1251,7 +1251,7 @@ loader.load(
           const parts = [];
           if (changed.length) parts.push(`slider changes: ${changed.join(', ')}`);
           if (gripperChanged) parts.push('gripper changed');
-          taskCompletedBtn.title = `Blocked — ${parts.join(' & ')}. Reset sliders and gripper to enable.`;
+          taskCompletedBtn.title = `Blocked - ${parts.join(' & ')}. Reset sliders and gripper to enable.`;
         }else{
           taskCompletedBtn.title = taskCompletedSelected
             ? 'Selected--task already completed--press Confirm to submit'
@@ -1867,7 +1867,7 @@ loader.load(
     pickProxy.name = 'marker_pick_proxy';
     marker.add(pickProxy);
 
-    // ===== Rotation wheels (roll/pitch/yaw) — helpers & state =====
+    // ===== Rotation wheels (roll/pitch/yaw) - helpers & state =====
     const rotationWheels = {};        // { roll:{group, segments:Mesh[]}, pitch:{...}, yaw:{...} }
     let rotationPickables = [];       // flat list of all wheel segment meshes for raycasting
 
@@ -1974,7 +1974,7 @@ loader.load(
 
     // Build wheels now that the marker exists
     buildRotationWheels();
-    // ===== Rotation wheels — helpers & state (end) =====
+    // ===== Rotation wheels - helpers & state (end) =====
 
     // --- helper to show/hide pose gizmos (red dot + rotation wheels) ---
     function setPoseGizmosVisible(visible) {
