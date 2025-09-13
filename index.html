@@ -353,28 +353,59 @@
     align-self: flex-start;
   }
 
-  .task-completed-button {
-    background: #f59e0b;
-    color: white;
+  /* Task Already Completed — explicit inactive/active states (parity with gripper buttons) */
+  .controls-container .task-completed-button {
+    background: #fbbf24;        /* lighter orange when NOT selected */
+    color: #ffffff;
     width: 100%;
+    box-sizing: border-box;      /* borders won't change width/height */
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
     padding: 10px 16px;
-    border: none;
     border-radius: 6px;
+    border: 2px solid transparent;  /* reserve space in ALL states */
     cursor: pointer;
-    transition: all 0.2s ease;
+    opacity: .85;
+    transition: all .15s ease;
+    margin-bottom: 12px;
   }
 
-  .task-completed-button:hover {
-    background: #d97706;
+  /* Hover (unchanged) */
+  .controls-container .task-completed-button:hover {
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.30);
+    opacity: 1;
   }
 
-  .task-completed-button:active {
-    transform: translateY(0);
+  /* Selected */
+  .controls-container .task-completed-button.active {
+    background: #f59e0b;
+    /* keep the same 2px border thickness so size doesn't change */
+    border-color: transparent;
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25), 0 8px 18px rgba(0,0,0,.18);
+    opacity: 1;
   }
+
+  /* Explicit unselected */
+  .controls-container .task-completed-button.inactive {
+    background: #fbbf24;
+    color: #ffffff;
+    border-color: transparent;   /* DO NOT remove the border */
+    box-shadow: none;
+    opacity: .85;
+  }
+
+  /* Disabled / blocked */
+  .controls-container .task-completed-button:disabled {
+    background: #e5e7eb;
+    color: #9ca3af;
+    border: 2px dashed #d1d5db;  /* same thickness as base → same size */
+    cursor: not-allowed;
+    box-shadow: none;
+    transform: none;
+    opacity: 1;
+  }
+
 
   .controls-container button:hover {
     transform: translateY(-1px);
@@ -513,6 +544,11 @@
     background: #ed3a3a; /* brighter while active */
     box-shadow: 0 0 0 3px rgba(124, 58, 237, .25), 0 8px 18px rgba(0,0,0,.18);
     opacity: 1;
+  }
+
+  .controls-container .task-completed-button { 
+    margin-bottom: 12px; /* matches .animate-button’s bottom margin */
+    font-weight: 600;
   }
 
   /* --- disabled slider look --- */
@@ -1160,13 +1196,25 @@ loader.load(
     }
 
     function updateGripperInteractivity() {
-      const atDefault = slidersAtDefault();
       if (!openBtn || !closeBtn) return;
 
+      if (taskCompletedSelected) {
+        openBtn.disabled = true;
+        closeBtn.disabled = true;
+
+        const msg = 'Gripper disabled: "Task Already Completed" is selected.';
+        openBtn.title = msg;
+        closeBtn.title = msg;
+
+        openBtn.classList.add('inactive'); openBtn.classList.remove('active');
+        closeBtn.classList.add('inactive'); closeBtn.classList.remove('active');
+        return;
+      }
+
+      const atDefault = slidersAtDefault();
       openBtn.disabled = !atDefault;
       closeBtn.disabled = !atDefault;
 
-      // Build a clear hover message
       const changed = getChangedAxes();
       const hoverMsg = atDefault
         ? 'You can change the gripper state.'
@@ -1175,11 +1223,9 @@ loader.load(
       openBtn.title = hoverMsg;
       closeBtn.title = hoverMsg;
 
-      // Also put the explanation on the label if present
       const label = document.querySelector('.gripper-label');
       if (label) label.title = hoverMsg;
 
-      // Visually reflect disabled state via existing classes
       if (!atDefault) {
         openBtn.classList.add('inactive'); openBtn.classList.remove('active');
         closeBtn.classList.add('inactive'); closeBtn.classList.remove('active');
@@ -1187,6 +1233,55 @@ loader.load(
         updateGripperButtonStates();
       }
     }
+
+
+    // --- Task Already Completed availability + global lock orchestration ---
+    let taskCompletedBlocked = false;  // becomes true if any slider or gripper is changed
+
+    function setTaskCompletedBlocked(blocked){
+      taskCompletedBlocked = blocked;
+      if (taskCompletedBtn){
+        taskCompletedBtn.disabled = blocked;
+        taskCompletedBtn.classList.toggle('blocked', blocked);
+
+        // Update hover/title text to explain why it’s blocked/available
+        const changed = getChangedAxes();
+        const gripperChanged = (gripDir !== initialGripDir);
+        if (blocked){
+          const parts = [];
+          if (changed.length) parts.push(`slider changes: ${changed.join(', ')}`);
+          if (gripperChanged) parts.push('gripper changed');
+          taskCompletedBtn.title = `Blocked — ${parts.join(' & ')}. Reset sliders and gripper to enable.`;
+        }else{
+          taskCompletedBtn.title = taskCompletedSelected
+            ? 'Selected--task already completed--press Confirm to submit'
+            : 'Not selected. Press to select, then press Confirm to submit.';
+        }
+      }
+    }
+
+    function updateTaskCompletedAvailability(){
+      // Block if any user change from the original state
+      const shouldBlock = !slidersAtDefault() || (gripDir !== initialGripDir);
+      setTaskCompletedBlocked(shouldBlock);
+    }
+
+    function recomputeLocks(){
+      // Sliders are locked if TAC is selected OR the gripper is not at its original state
+      const lock = taskCompletedSelected || (gripDir !== initialGripDir);
+      setSlidersLocked(lock);
+
+      // Explain why the panel is locked
+      if (controlsContainer){
+        controlsContainer.title = taskCompletedSelected
+          ? 'Pose sliders are locked because “Task Already Completed” is selected.'
+          : (gripDir !== initialGripDir ? 'Pose sliders are locked because the gripper state was changed.' : '');
+      }
+
+      // Gripper buttons disabled when TAC is selected (regardless of sliders)
+      updateGripperInteractivity();
+    }
+
 
     function setSlidersLocked(locked) {
       slidersLocked = locked;
@@ -1232,14 +1327,16 @@ loader.load(
     
     
     function onGripperChange(newDir) {
-      gripDir = newDir; // Update the current gripper direction
+      gripDir = newDir;                         // Update the current gripper direction
       drawGripArrows(newDir);
       updateGripArrowVisibility();
       updateGripperButtonStates();
-      // Unlock if we've returned to the original server-provided state; otherwise lock
-      setSlidersLocked(newDir !== initialGripDir);
-      // Optional: refresh tooltips/disabled state on the gripper buttons
-      updateGripperInteractivity();
+
+      // Any gripper change blocks "Task Already Completed" until reset
+      updateTaskCompletedAvailability();
+
+      // Lock/unlock sliders considering both gripper change and TAC selection
+      recomputeLocks();
     }
 
     
@@ -2386,6 +2483,8 @@ loader.load(
       toggleRobotBtn.textContent = 'show robot model';
     }
 
+    let taskCompletedSelected = false;
+
     /* ---------- confirm button (lower-right corner) ------------------- */
 
     // Initialize the multi-view system
@@ -2399,67 +2498,95 @@ loader.load(
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
-    // 0) Freeze any ongoing animation so we don't sample a mid-trajectory pose
-    if (animState.enabled) {
-      animState.enabled = false;
-      if (animateBtn) animateBtn.classList.remove('active');
-      // Restore gizmos when leaving animation via Confirm
-      setPoseGizmosVisible(true);
-    }
+      // 0) Freeze any ongoing animation (unchanged)
+      if (animState.enabled) {
+        animState.enabled = false;
+        if (animateBtn) animateBtn.classList.remove('active');
+        setPoseGizmosVisible(true);
+      }
 
-    // 1) Use the *intended* goal pose (not the currently rendered interpolated pose)
-    const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
+      // NEW: If "Task Already Completed" is selected, POST that and exit early.
+      if (taskCompletedSelected) {
+        try {
+          const response = await apiFetch(`/api/task-already-completed`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              state_id: state.state_id,
+              episode_id: state.episode_id,
+              task_already_completed: true
+            })
+          });
 
-    // 2) Snap the IK goal to that target and explicitly solve to it *now*
-    goal.setPosition(tgtPos.x, tgtPos.y, tgtPos.z);
-    goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
+          if (response.ok) {
+            console.log('✅ Task already completed response sent');
+            delayedRefresh(5000);
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            console.error('❌ Failed to send task already completed response:', errorData);
+            alert('Failed to submit response. Please try again.');
+          }
+        } catch (err) {
+          console.error('❌ Failed to send task already completed response', err);
+          alert('Failed to submit response. Please try again.');
+        }
+        return; // IMPORTANT: do NOT run the normal submit-goal flow.
+      }
 
-    // Drive IK to convergence so the joints we read are the goal joints
-    setIKFromUrdf(ikRoot, robot);
-    for (let i = 0; i < 25; i++) solver.solve();  // a few extra passes for good measure
-    setUrdfFromIK(robot, ikRoot);
+      // ===== Normal submit-goal flow (unchanged below) =====
 
-    // 3) Now read the joints — these reflect the solved goal configuration
-    const jointMap = {};
-    Object.entries(robot.joints).forEach(([name, joint]) => {
-      jointMap[name] = joint.jointValue;
-    });
+      // 1) Use the intended goal pose
+      const { pos: tgtPos, quat: tgtQuat } = getTargetPose();
 
-    // 4) Build ee_pose from the goal (not from the rendered state)
-    const eeEuler = new THREE.Euler().setFromQuaternion(tgtQuat, "XYZ");
+      // 2) Snap the IK goal to that target and explicitly solve to it now
+      goal.setPosition(tgtPos.x, tgtPos.y, tgtPos.z);
+      goal.setQuaternion(tgtQuat.x, tgtQuat.y, tgtQuat.z, tgtQuat.w);
 
-    // Keep your existing flags; useful for logging/routing
-    const poseResetToDefault = slidersAtDefault();
-    const slidersChangedAxes = getChangedAxes();
+      setIKFromUrdf(ikRoot, robot);
+      for (let i = 0; i < 25; i++) solver.solve();
+      setUrdfFromIK(robot, ikRoot);
 
-    try {
-      const response = await apiFetch(`/api/submit-goal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          joint_positions: jointMap,
-          gripper: gripDir,                         // -1 / +1 / 0
-          ee_pose: {
-            position: [tgtPos.x, tgtPos.y, tgtPos.z],
-            rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
-          },
-          state_id: state.state_id,
-          episode_id: state.episode_id,
-          pose_reset_to_default: poseResetToDefault,
-          sliders_changed_axes: slidersChangedAxes
-        })
+      // 3) Read joints
+      const jointMap = {};
+      Object.entries(robot.joints).forEach(([name, joint]) => {
+        jointMap[name] = joint.jointValue;
       });
 
-      if (response.ok) {
-        console.log('✅ goal sent (final goal joints)');
-        delayedRefresh(5000);
-      } else {
-        console.error('❌ failed to send goal - server error:', response.status);
+      // 4) Build ee_pose
+      const eeEuler = new THREE.Euler().setFromQuaternion(tgtQuat, "XYZ");
+
+      const poseResetToDefault = slidersAtDefault();
+      const slidersChangedAxes = getChangedAxes();
+
+      try {
+        const response = await apiFetch(`/api/submit-goal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            joint_positions: jointMap,
+            gripper: gripDir,
+            ee_pose: {
+              position: [tgtPos.x, tgtPos.y, tgtPos.z],
+              rpy: [eeEuler.x, eeEuler.y, eeEuler.z]
+            },
+            state_id: state.state_id,
+            episode_id: state.episode_id,
+            pose_reset_to_default: poseResetToDefault,
+            sliders_changed_axes: slidersChangedAxes
+          })
+        });
+
+        if (response.ok) {
+          console.log('✅ goal sent (final goal joints)');
+          delayedRefresh(5000);
+        } else {
+          console.error('❌ failed to send goal - server error:', response.status);
+        }
+      } catch (err) {
+        console.error('❌ failed to send goal', err);
       }
-    } catch (err) {
-      console.error('❌ failed to send goal', err);
-    }
-  };
+    };
+
 
 
     // Animate toggle button (appears above Confirm)
@@ -2507,6 +2634,7 @@ loader.load(
           params[key] = clampToSlider(key, params[key]); // (track ∩ ABS)
         }
         updateGoal();
+        updateTaskCompletedAvailability();
         updateSliderDecor(key);
       });
 
@@ -2531,6 +2659,7 @@ loader.load(
             params[key] = sliderCenters[key];
             controller.updateDisplay();
             updateGoal();
+            updateTaskCompletedAvailability();
             updateSliderDecor(key);
           };
           controllerEl.appendChild(resetBtn);
@@ -2575,64 +2704,50 @@ loader.load(
     const taskCompletedBtn = document.createElement('button');
     taskCompletedBtn.textContent = 'Task Already Completed';
     taskCompletedBtn.className = 'task-completed-button';
+    taskCompletedBtn.setAttribute('aria-pressed', 'false');
+    taskCompletedBtn.title = "Task not selected. Press to select, then press Confirm.";
+    
+    taskCompletedBtn.classList.add('inactive');
 
-    taskCompletedBtn.onclick = async () => {
-      try {
-        const response = await apiFetch(`/api/task-already-completed`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            state_id: state.state_id,  // Send the current state_id
-            episode_id: state.episode_id,  // Send the current episode_id
-            task_already_completed: true
-          })
-        });
-        
-        if (response.ok) {
-          console.log('✅ Task already completed response sent');
-          // Start 5-second countdown with progress bar before refreshing
-          delayedRefresh(5000);
-        } else {
-          const errorData = await response.json();
-          console.error('❌ Failed to send task already completed response:', errorData);
-          alert('Failed to submit response. Please try again.');
-        }
-      } catch (err) {
-        console.error('❌ Failed to send task already completed response', err);
-        alert('Failed to submit response. Please try again.');
-      }
+    // Toggle-only behavior (no network request)
+    taskCompletedBtn.onclick = () => {
+      if (taskCompletedBlocked) return; // safety (disabled also prevents clicks)
+
+      taskCompletedSelected = !taskCompletedSelected;
+      taskCompletedBtn.classList.toggle('active', taskCompletedSelected);
+      taskCompletedBtn.classList.toggle('inactive', !taskCompletedSelected);   // NEW
+      taskCompletedBtn.setAttribute('aria-pressed', String(taskCompletedSelected));
+      
+      // When selected: block sliders + gripper; when deselected: re-evaluate
+      recomputeLocks();
+
+      // Keep the title consistent with current state
+      setTaskCompletedBlocked(taskCompletedBlocked);
+
     };
 
-    taskCompletedContainer.appendChild(taskCompletedTitle);
-    taskCompletedContainer.appendChild(taskCompletedBtn);
-    controlsWrapper.appendChild(taskCompletedContainer);
+    // Keep the placement between Animate and Confirm
+    controlsContainer.insertBefore(taskCompletedBtn, confirmBtn);
+
+    updateTaskCompletedAvailability();
 
     // Update layout based on number of active controls
     function updateControlsLayout() {
       const numSliders = activeControls.filter(ctrl => ['x', 'y', 'z', 'roll', 'pitch', 'yaw'].includes(ctrl)).length;
       const hasGripper = activeControls.includes('gripper');
       const totalControls = numSliders + (hasGripper ? 1 : 0) + 1; // +1 for confirm button
-      
-      if (totalControls > 1) { // Always show if we have sliders + confirm
+
+      if (totalControls > 1) {
         controlsContainer.style.display = 'block';
         controlsWrapper.style.display = 'flex';
-        taskCompletedContainer.style.display = 'block';
-        
-        if (totalControls === 2 && numSliders === 1) { // 1 slider + confirm
-          mount.className = 'single-slider';
-        } else {
-          mount.className = 'multiple-sliders';
-        }
+        mount.className = (totalControls === 2 && numSliders === 1) ? 'single-slider' : 'multiple-sliders';
       } else {
         controlsContainer.style.display = 'none';
         controlsWrapper.style.display = 'none';
-        taskCompletedContainer.style.display = 'none';
         mount.className = '';
       }
     }
-    
+
     updateControlsLayout();
 
 
