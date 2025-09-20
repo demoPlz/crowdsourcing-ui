@@ -728,6 +728,118 @@
     box-shadow:none;
   }
 
+  /* Compact workbar anchored to the views */
+  #viewport .workbar {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: rgba(255,255,255,0.85);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 10px;
+    padding: 8px 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    backdrop-filter: blur(6px);
+    z-index: 9;
+  }
+
+  /* Secondary compact buttons for workbar */
+  .workbar .btn-compact {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid #d1d5db;
+    background: #ffffff;
+    color: #374151;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial;
+    cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+  }
+  .workbar .btn-compact:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+  .workbar .btn-compact:active { transform: translateY(0); }
+
+  .workbar .btn-compact[disabled] {
+    background: #f3f4f6;
+    color: #9ca3af;
+    border-style: dashed;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  /* Visual states that match your existing theme */
+  .workbar .btn-animate.active { border-color: #dc2626; box-shadow: 0 0 0 3px rgba(239,68,68,.18); }
+  .workbar .btn-reset { border-color: #16a34a; }
+
+  /* Icon / label behavior for tight screens */
+  .workbar .icon { font-size: 14px; }
+  .workbar .label { white-space: nowrap; }
+  @media (max-width: 900px) {
+    .workbar .label { display: none; }
+    .workbar .btn-compact { padding: 8px; }
+  }
+
+  /* Keep Confirm prominent; pin it lower-right in the controls column */
+  .controls-container .confirm-button {
+    position: sticky;   /* stays visible at the end of the column */
+    bottom: 0;
+  }
+
+  /* TAC next to Confirm: compact pill */
+  .controls-container .tac-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0 6px 0;
+  }
+  .controls-container .tac-toggle {
+    background: #fbbf24;
+    color: #fff;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    padding: 8px 12px;
+    font: 700 13px/1 system-ui, -apple-system, Segoe UI, Roboto;
+    cursor: pointer;
+    transition: box-shadow .15s ease, transform .12s ease;
+  }
+  .controls-container .tac-toggle.active {
+    background: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245,158,11,.25);
+  }
+  .controls-container .tac-toggle:disabled {
+    background: #e5e7eb; color: #9ca3af; border-style: dashed; cursor: not-allowed;
+  }
+
+  /* Confirm bar under the views (lower-right) */
+  #viewport .confirm-bar{
+    display:flex;
+    justify-content:flex-end;
+  }
+
+  #viewport .confirm-bar .confirm-button{
+    background:#3b82f6;
+    color:#fff;
+    border:none;
+    border-radius:6px;
+    padding:12px 16px;
+    font-size:16px;
+    font-weight:600;
+    cursor:pointer;
+    transition:all .2s ease;
+  }
+
+  #viewport .confirm-bar .confirm-button:hover{
+    transform:translateY(-1px);
+    box-shadow:0 2px 8px rgba(0,0,0,.15);
+  }
+
+  #viewport .confirm-bar .confirm-button:active{
+    transform:translateY(0);
+  }
+
 </style>
 
 <!-- Polyfill so the import-map works everywhere -->
@@ -1003,6 +1115,14 @@ mount.appendChild(promptText);
 const contentContainer = document.createElement('div');
 contentContainer.className = 'content-container';
 mount.appendChild(contentContainer);
+
+const workbar = document.createElement('div');
+workbar.className = 'workbar';
+mount.appendChild(workbar);
+
+const confirmBar = document.createElement('div');
+confirmBar.className = 'confirm-bar';
+mount.appendChild(confirmBar);
 
 // Create the views grid container
 const viewsGrid = document.createElement('div');
@@ -3108,6 +3228,7 @@ loader.load(
     }
 
     let taskCompletedSelected = false;
+    let taskCompletedBtn = null;
 
     /* ---------- confirm button (lower-right corner) ------------------- */
 
@@ -3217,8 +3338,8 @@ loader.load(
 
     // Animate toggle button (appears above Confirm)
     const animateBtn = document.createElement('button');
-    animateBtn.textContent = 'Animate';
-    animateBtn.className = 'animate-button';
+    animateBtn.className = 'btn-compact btn-animate';
+    animateBtn.innerHTML = '<span class="icon">⏯</span><span class="label">Animate</span>';
     animateBtn.onclick = toggleAnimation;
 
     // --- cancel helper + global listeners ---------------------------------
@@ -3252,8 +3373,8 @@ loader.load(
     }, { capture: true });
 
     const resetAllBtn = document.createElement('button');
-    resetAllBtn.textContent = 'Reset all';
-    resetAllBtn.className = 'reset-all-button';
+    resetAllBtn.className = 'btn-compact btn-reset';
+    resetAllBtn.innerHTML = '<span class="icon">↺</span><span class="label">Reset</span>';
 
     resetAllBtn.onclick = () => {
       // Stop any animation and show gizmos again
@@ -3424,79 +3545,46 @@ loader.load(
     // Evaluate initial interactivity (usually enabled because sliders = defaults)
     updateGripperInteractivity();
 
-    controlsContainer.appendChild(animateBtn);
+    workbar.appendChild(animateBtn);
 
-    controlsContainer.appendChild(resetAllBtn);
+    workbar.appendChild(resetAllBtn);
 
     // Add confirm button at the bottom
-    controlsContainer.appendChild(confirmBtn);
+    confirmBar.appendChild(confirmBtn);
 
-    // Create "Task Already Completed" button in a separate container
-    const taskCompletedContainer = document.createElement('div');
-    taskCompletedContainer.className = 'task-completed-container';
+    /* === NEW: keep workbar buttons in sync with TAC / locks === */
+    function reflectWorkbarInteractivity(){
+      const tacOn = taskCompletedSelected === true;
+      if (animateBtn) {
+        animateBtn.disabled = tacOn;         // disable Animate when TAC is on
+        if (tacOn) animateBtn.classList.remove('active');
+      }
+      if (resetAllBtn) resetAllBtn.disabled = false; // Reset stays enabled
+    }
 
-    // Add title/label above the button
-    const taskCompletedTitle = document.createElement('div');
-    taskCompletedTitle.textContent = 'In fact, no need to move because...';
-    taskCompletedTitle.style.fontSize = '14px';
-    taskCompletedTitle.style.fontWeight = '500';
-    taskCompletedTitle.style.color = '#374151';
-    taskCompletedTitle.style.marginBottom = '8px';
-    taskCompletedTitle.style.textAlign = 'left';
-    taskCompletedTitle.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans"';
+    // Patch recomputeLocks to also update the workbar
+    (function patchRecomputeLocks(){
+      const _recomputeLocks = recomputeLocks;
+      recomputeLocks = function(){
+        _recomputeLocks();
+        reflectWorkbarInteractivity();
+      };
+      reflectWorkbarInteractivity(); // initialize once
+    })();
 
-    let taskCompletedBtn = null;
-    taskCompletedBtn = document.createElement('button');
-    taskCompletedBtn.textContent = 'Task Already Completed';
-    taskCompletedBtn.className = 'task-completed-button';
-    taskCompletedBtn.setAttribute('aria-pressed', 'false');
-    taskCompletedBtn.title = "Task not selected. Press to select, then press Confirm.";
-    
-    taskCompletedBtn.classList.add('inactive');
-
-    // Toggle-only behavior (no network request)
-    taskCompletedBtn.onclick = () => {
-      if (taskCompletedBlocked) return; // safety (disabled also prevents clicks)
-
-      taskCompletedSelected = !taskCompletedSelected;
-      taskCompletedBtn.classList.toggle('active', taskCompletedSelected);
-      taskCompletedBtn.classList.toggle('inactive', !taskCompletedSelected);   // NEW
-      taskCompletedBtn.setAttribute('aria-pressed', String(taskCompletedSelected));
-      
-      // When selected: block sliders + gripper; when deselected: re-evaluate
-      recomputeLocks();
-
-      updateGripHUDState();
-      updateGripHUDInteractivity();
-
-      // Keep the title consistent with current state
-      setTaskCompletedBlocked(taskCompletedBlocked);
-
-    };
-
-    // Keep the placement between Animate and Confirm
-    controlsContainer.insertBefore(taskCompletedBtn, confirmBtn);
 
     updateTaskCompletedAvailability();
 
     // Update layout based on number of active controls
     function updateControlsLayout() {
-      const numSliders = (devMode && gui)
-      ? activeControls.filter(ctrl => ['x','y','z','roll','pitch','yaw'].includes(ctrl)).length
-      : 0;
-      const hasGripper = activeControls.includes('gripper');
-      const totalControls = numSliders + (hasGripper ? 1 : 0) + 1; // +1 for confirm button
+      // We’re not showing a right column anymore.
+      controlsContainer.style.display = 'none';
+      controlsWrapper.style.display = 'none';
 
-      if (totalControls > 1) {
-        controlsContainer.style.display = 'block';
-        controlsWrapper.style.display = 'flex';
-        mount.className = (totalControls === 2 && numSliders === 1) ? 'single-slider' : 'multiple-sliders';
-      } else {
-        controlsContainer.style.display = 'none';
-        controlsWrapper.style.display = 'none';
-        mount.className = '';
-      }
+      // Remove layout classing meant for slider columns.
+      mount.classList.remove('single-slider', 'multiple-sliders');
     }
+
 
     updateControlsLayout();
 
