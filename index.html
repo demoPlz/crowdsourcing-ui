@@ -4,19 +4,28 @@
 <title>WidowX AI - position IK only</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#f5f5f5}
-  /* Multi-view container wrapper with blue background */
+  /* Multi-view container wrapper – white card */
   #viewport{
     position:fixed; 
     top:50%; left:50%; 
     transform:translate(-50%, -50%);
-    background: #3b82f6;
+    background: #ffffff;                 /* ⬅️ was #3b82f6 */
     border-radius: 12px;
     padding: 20px;
     box-shadow:0 4px 20px rgba(0,0,0,0.15);
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;                            /* a touch tighter spacing */
   }
+
+  /* Blue prompt bar at the top */
+  #viewport .prompt-bar{
+    background: #3b82f6;                 /* blue */
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+
   
   /* Text prompt area */
   #viewport .prompt-text{
@@ -1100,16 +1109,22 @@ const VIEW_SCALE = 0.8;
 const views = new Map(); // viewName -> {camera, renderer, container, name}
 let currentViewName = null;
 let calibrationMode = false; // Calibration mode (UI & per-camera params)
-const mount = document.getElementById('viewport');
 
 // When true, pose sliders + scene dragging are locked (after gripper changed)
 let slidersLocked = false;
 
-// Create the prompt text first
+const mount = document.getElementById('viewport');
+
+// Create a blue prompt bar that contains the prompt text
+const promptBar = document.createElement('div');
+promptBar.className = 'prompt-bar';
+
 const promptText = document.createElement('div');
 promptText.className = 'prompt-text';
 promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
-mount.appendChild(promptText);
+
+promptBar.appendChild(promptText);
+mount.appendChild(promptBar);
 
 // Create the content container for views and controls
 const contentContainer = document.createElement('div');
