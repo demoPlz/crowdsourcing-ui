@@ -29,7 +29,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        10,
+    "left":        4,
     "right":       2,
     "perspective": 0,
 }
@@ -1114,7 +1114,8 @@ class CrowdInterface():
                   joint_positions: dict, 
                   gripper_motion: int = None, 
                   obs_dict: dict[str, torch.Tensor] = None,
-                  episode_id: str = None):
+                  episode_id: str = None,
+                  left_carriage_external_force: float | None = None):
         # Fix: Ensure episode_id is never None to prevent None key in dictionary
         if episode_id is None:
             episode_id = "0"  # Default episode ID
@@ -1130,6 +1131,9 @@ class CrowdInterface():
             "joint_positions": jp,
             "gripper": self._gripper_motion,
             "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
+            "left_carriage_external_force": (
+                float(left_carriage_external_force) if left_carriage_external_force is not None else None
+            )
         }
         
         # Episode-based state management - fast path to minimize latency

@@ -1029,6 +1029,8 @@ loader.load(
 
     scene.add(robot);
 
+    showOnlySpecifiedLinks(robot, ['link_6', 'gripper_left', 'gripper_right']);
+
     let robotVisible = false; // toggle visibility of the robot model
     robot.visible = false;     // hide arm until user moves a slider
     let toggleRobotBtn = null;
@@ -1685,6 +1687,31 @@ loader.load(
       calibrationMode = false;
     }
 
+    function showOnlySpecifiedLinks(robot, keepNames /* array of link names */) {
+      const keep = new Set(keepNames);
+
+      // 1) Hide every mesh under the robot (visual + collision)
+      robot.traverse(o => {
+        if (o.isMesh) o.visible = false;
+      });
+
+      // 2) Re‑enable meshes that live under the allowed link groups
+      keep.forEach(name => {
+        const link = robot.getObjectByName(name);
+        if (!link) {
+          console.warn(`[showOnlySpecifiedLinks] link "${name}" not found`);
+          return;
+        }
+        link.traverse(o => {
+          if (o.isMesh) o.visible = true;
+        });
+      });
+
+      // Important: DO NOT set .visible=false on any parent links in the chain.
+      // We only hide their meshes so children (e.g., link_6 → carriages → grippers)
+      // still receive correct transforms from the kinematics.
+    }
+
     setIKFromUrdf(ikRoot, robot);
     ikRoot.updateMatrixWorld(true);
 
@@ -1990,7 +2017,7 @@ loader.load(
     const ABS_LIMITS = {
       x:     { min: 0.10,  max: 0.43  },
       y:     { min: -0.15, max: 0.15  },
-      z:     { min: 0.015, max: 0.30  },
+      z:     { min: 0.005, max: 0.30  },
       roll:  { min: -1.00, max: 1.00  },
       pitch: { min: -0.60, max: 0.75  },
       yaw:   { min: -0.81, max: 0.81  },
