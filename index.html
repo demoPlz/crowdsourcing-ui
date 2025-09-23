@@ -945,6 +945,23 @@
     transform-origin: 0 0;      /* predictable transform origin for scaling */
   }
 
+  /* Layering: camera bg < segmentation < WebGL < HUD */
+  .view-container { position: relative; }
+
+  .view-container .seg-overlay {
+    z-index: 1;            /* below the canvas */
+  }
+
+  .view-container canvas {
+    position: relative;    /* z-index needs positioned element */
+    z-index: 2;            /* above the segmentation */
+  }
+
+  /* Keep HUD above everything */
+  .view-container .grip-hud {
+    z-index: 3 !important; /* bump over the canvas */
+  }
+
 
 </style>
 
@@ -1268,19 +1285,24 @@ function calculateGridLayout(numViews) {
 
 function setupViewportGrid(numViews) {
   const { rows, cols } = calculateGridLayout(numViews);
-  viewsGrid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  viewsGrid.style.gridTemplateRowsz = `repeat(${rows}, 1fr)`;
   viewsGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
 }
 
-function createViewRenderer(viewName, cameraModel, texture) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+function createViewRenderer(viewName, cameraModel, texture, imageSrc) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(devicePixelRatio);
+  renderer.setClearColor(0x000000, 0); // fully transparent canvas
   
   const camera = templateCamera.clone();
   
   const container = document.createElement('div');
   container.className = 'view-container';
   container.dataset.viewName = viewName;
+  // Camera feed as CSS background, centered and cropped like the canvas
+  if (imageSrc) {
+    container.style.background = `center / cover no-repeat url("${imageSrc}")`;
+  }
   
   container.appendChild(renderer.domElement);
   viewsGrid.appendChild(container);
@@ -2595,6 +2617,7 @@ loader.load(
 
     const crossGroup = new THREE.Group();
     crossGroup.name = 'marker_cross';
+    crossGroup.renderOrder = 1001; // above wheels (999) and arrows (1000)
     crossGroup.add(xBar, yBar);
     marker.add(crossGroup);
 
@@ -3400,8 +3423,9 @@ loader.load(
         if (viewTextures[viewName] && cameraModels[viewName]) {
           availableViews.push({
             name: viewName,
-            poseKey: poseKey,
-            texture: viewTextures[viewName],
+            poseKey,
+            texture: viewTextures[viewName],      // keep if you need size/aspect
+            imageSrc: state.views?.[viewName],     // <— add the base64 JPEG for CSS bg
             model: cameraModels[viewName],
             pose: camPoses[poseKey]
           });
@@ -3417,7 +3441,12 @@ loader.load(
       
       // Create views
       availableViews.forEach((viewInfo, index) => {
-        const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
+        const view = createViewRenderer(
+          viewInfo.name,
+          viewInfo.model,
+          viewInfo.texture,
+          viewInfo.imageSrc
+        );
         attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
         createGripHUDForView(view);
 
@@ -4005,7 +4034,7 @@ loader.load(
         updateSegOverlayForView(view);
 
         // 2) Render this view
-        scene.background = view.texture ?? defaultBg;
+        scene.background = null; // canvas stays transparent; camera is the CSS bg
         view.renderer.render(scene, view.camera);
       });
     }

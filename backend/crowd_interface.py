@@ -259,8 +259,8 @@ class CrowdInterface():
         self._segmentation_paths_by_episode: dict[str, dict[int, dict[str, str]]] = {}
 
         # segmentation tunables
-        self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "3"))     # px
-        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "55.0"))  # 0..255
+        self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "10"))     # px
+        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "25.0"))  # 0..255
 
         # --- NEW: "flat gray" guard (RGB in [min,max] and channels nearly equal) ---
         self._seg_gray_patch_radius = int(os.getenv("SEG_GRAY_PATCH_RADIUS", str(self._seg_dark_patch_radius)))
