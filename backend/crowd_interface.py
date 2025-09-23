@@ -19,6 +19,21 @@ from flask import request, make_response
 from pathlib import Path
 from threading import Thread, Lock, Timer
 from math import cos, sin
+import math
+
+# --- URDF FK & SAM2 segmentation ---
+from PIL import Image
+
+try:
+    from urdfpy import URDF
+except Exception:
+    URDF = None
+
+try:
+    from transformers import Sam2Processor, Sam2Model
+except Exception:
+    Sam2Processor = None
+    Sam2Model = None
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
@@ -202,6 +217,67 @@ class CrowdInterface():
 
         self._active_episode_id = None
         self._start_obs_stream_worker()
+
+        # --- URDF model / FK for backend gripper center (same link as frontend) ---
+        self._urdf_model = None
+        self._urdf_joint_names = set()
+        # default path mirrors your frontend URDF; override with env URDF_PATH if different on backend
+        self._urdf_path = os.getenv(
+            "URDF_PATH",
+            str((Path(__file__).resolve().parent / ".." / "public" / "assets" / "trossen_arm_description" /
+                 "urdf" / "generated" / "wxai" / "wxai_base.urdf").resolve())
+        )
+        self._urdf_package_name = os.getenv("URDF_PACKAGE_NAME", "trossen_arm_description")
+        # Default root: walk up from the URDF file to the '<package_name>' folder
+        urdf_file = Path(self._urdf_path).resolve()
+        default_pkg_root = None
+        for anc in urdf_file.parents:
+            if anc.name == self._urdf_package_name:
+                default_pkg_root = str(anc)
+                break
+        if default_pkg_root is None:
+            # Fallback guess: .../trossen_arm_description/urdf/generated/wxai/wxai_base.urdf → parents[3]
+            try:
+                default_pkg_root = str(urdf_file.parents[3])
+            except Exception:
+                default_pkg_root = str(urdf_file.parent)
+
+        self._urdf_package_root = os.getenv(
+            "URDF_PACKAGE_ROOT",
+            default_pkg_root
+        )
+        self._urdf_ee_link_name = os.getenv("EE_LINK_NAME", "ee_gripper_link")
+        self._load_urdf_model()
+
+        # --- SAM2 segmentation (views-only) ---
+        self._sam2_model = None
+        self._sam2_processor = None
+        self._sam2_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._sam2_model_id = os.getenv("SAM2_MODEL_ID", "facebook/sam2.1-hiera-tiny")
+
+        # track masks on disk: episode_id -> { state_id -> {view_name -> mask_path_png} }
+        self._segmentation_paths_by_episode: dict[str, dict[int, dict[str, str]]] = {}
+
+        # segmentation tunables
+        self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "3"))     # px
+        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "55.0"))  # 0..255
+
+        # --- NEW: "flat gray" guard (RGB in [min,max] and channels nearly equal) ---
+        self._seg_gray_patch_radius = int(os.getenv("SEG_GRAY_PATCH_RADIUS", str(self._seg_dark_patch_radius)))
+        self._seg_gray_min          = float(os.getenv("SEG_GRAY_MIN", "161.0"))
+        self._seg_gray_max          = float(os.getenv("SEG_GRAY_MAX", "200.0"))
+        self._seg_gray_delta        = float(os.getenv("SEG_GRAY_DELTA", "10.0"))
+
+        # --- Segmentation gating: only segment when gripper is "grasped" ---
+        # Absolute force threshold in Newtons; if not available, we skip segmentation.
+        self._grasp_force_thresh_N = float(os.getenv("SEG_GRASP_FORCE_THRESH_N", "50.0"))
+        # Common telemetry keys to look for (first present numeric is used)
+        self._grip_force_keys = (
+            "left_carriage_external_force",
+            "right_carriage_external_force",
+            "gripper_force_n",
+            "gripper_force",
+        )
 
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
@@ -872,7 +948,7 @@ class CrowdInterface():
             t.start()
             self._cap_threads[name] = t
 
-    def _snapshot_latest_views(self) -> dict[str, np.ndarray]:
+    def _snapshot_latest_views(self) -> dict[str, str]:
         """
         Snapshot the latest **JPEG base64 strings** for each camera.
         We copy dict entries to avoid referencing a dict being mutated by workers.
@@ -912,6 +988,19 @@ class CrowdInterface():
         out["camera_poses"] = self._camera_poses
         out["camera_models"] = self._camera_models
         out["gripper_tip_calib"] = self._gripper_tip_calib
+        
+        # --- NEW: attach segmentation masks as base64 PNGs ---
+        segs = {}
+        seg_paths = out.pop("segmentation_paths", None)
+        if isinstance(seg_paths, dict):
+            for cam, p in seg_paths.items():
+                try:
+                    with open(p, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                    segs[cam] = f"data:image/png;base64,{b64}"
+                except Exception:
+                    pass
+        out["segments"] = segs
         
         return out
     
@@ -1111,7 +1200,10 @@ class CrowdInterface():
             "timestamp": time.time(),
             "served_during_stationary": None,
             "important": False,
-            "episode_id": episode_id
+            "episode_id": episode_id,
+            # NEW: segmentation bookkeeping
+            "segmentation_ready": True,   # normal states don't block serving
+            "segmentation_paths": {}      # view_name -> png path (filled if marked important)
         }
         
         # Quick episode-based assignment with minimal lock time
@@ -1157,8 +1249,54 @@ class CrowdInterface():
                 self.pending_states_by_episode[latest_episode_id][latest_state_id]['important'] = True
                 print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
                 
+                # --- NEW: compute VIEWS-only segmentation BEFORE serving this state ---
+                # mark as not ready to prevent get_latest_state from serving it
+                self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_ready"] = False
+
+                # ---- NEW: gate segmentation on "grasped" status ----
+                st_obj = self.pending_states_by_episode[latest_episode_id][latest_state_id]["state"]
+                if not self._gripper_is_grasped(st_obj):
+                    # Skip segmentation entirely (no masks), but mark ready so we don't block serving.
+                    self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_paths"] = {}
+                    self.pending_states_by_episode[latest_episode_id][latest_state_id]["segmentation_ready"] = True
+                    force_val = self._extract_grip_force_N(st_obj)
+                    print(f"⛔️ Skipping segmentation for important state {latest_state_id} "
+                          f"(episode {latest_episode_id}) — gripper not grasped "
+                          f"(force={force_val!r}, thresh={self._grasp_force_thresh_N} N)")
+                    return
+                
                 # Trigger auto-labeling for states in the same episode
                 self.auto_label_previous_states(latest_state_id)
+
+                # Snapshot what we need for segmentation, then release the lock
+                episode_id_local = latest_episode_id
+                state_id_local = latest_state_id
+                view_paths_local = dict(self.pending_states_by_episode[latest_episode_id][latest_state_id].get("view_paths", {}))
+                joints_local = dict(self.pending_states_by_episode[latest_episode_id][latest_state_id]["state"].get("joint_positions", {}))
+        # unlock before heavy work
+        # (close the with self.state_lock: block here)
+        # -------------------------------------------------------------
+        # IMPORTANT: this 'with' ends here, then we do segmentation, then re-acquire to store
+        # -------------------------------------------------------------
+        try:
+            seg_paths = self._segment_views_for_state(
+                episode_id_local, state_id_local, view_paths_local, joints_local
+            )
+        except Exception as e:
+            print(f"⚠️ segmentation failed for state {state_id_local}: {e}")
+            seg_paths = {}
+
+        # Write results atomically
+        with self.state_lock:
+            ep_states = self.pending_states_by_episode.get(episode_id_local, {})
+            info = ep_states.get(state_id_local)
+            if info is not None:
+                info["segmentation_paths"] = seg_paths
+                info["segmentation_ready"] = True
+                # also mirror into global book for future serving
+                self._segmentation_paths_by_episode.setdefault(episode_id_local, {})
+                self._segmentation_paths_by_episode[episode_id_local][state_id_local] = seg_paths
+                print(f"✅ segmentation ready for important state {state_id_local} in episode {episode_id_local}")
             else:
                 print("⚠️  No pending states found to mark as important")
 
@@ -1270,6 +1408,27 @@ class CrowdInterface():
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
             
+            # --- NEW: do not serve important states until segmentation is ready ---
+            if state_info.get("important", False) and not state_info.get("segmentation_ready", False):
+                # Try to find another candidate that is either not important or already segmented.
+                best_sid = None
+                best_ep = None
+                best_ts = -1.0
+                for ep_id, ep_states in self.pending_states_by_episode.items():
+                    for sid, si in ep_states.items():
+                        if si.get("important", False) and not si.get("segmentation_ready", False):
+                            continue  # skip unready important states
+                        ts = si.get("timestamp", 0.0)
+                        if ts > best_ts:
+                            best_ts, best_sid, best_ep, best_si = ts, sid, ep_id, si
+                if best_sid is None:
+                    # Nothing else to serve right now
+                    return {}
+                # switch to this best candidate
+                state_info = best_si
+                latest_state_id = best_sid
+                episode_states = self.pending_states_by_episode[best_ep]
+            
             # Mark state as served
             if state_info["served_during_stationary"] is None:
                 state_info["served_during_stationary"] = not (self.robot_is_moving or self.is_async_collection)
@@ -1299,6 +1458,11 @@ class CrowdInterface():
             vp = state_info.get("view_paths")
             if vp:
                 state["view_paths"] = vp
+            
+            # Attach segmentation paths (if any) so _state_to_json can embed images
+            segp = state_info.get("segmentation_paths")
+            if segp:
+                state["segmentation_paths"] = segp
             
             if self.is_async_collection:
                 status = "async_collection"
@@ -1788,6 +1952,343 @@ class CrowdInterface():
             except Exception as e:
                 raise IOError(f"failed to write {path}: {e}")
         return str(path)
+
+    def _extract_grip_force_N(self, frontend_state: dict) -> float | None:
+        """Return grip force in Newtons if available and numeric; otherwise None."""
+        if not isinstance(frontend_state, dict):
+            return None
+        for k in self._grip_force_keys:
+            v = frontend_state.get(k, None)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+                if math.isfinite(fv):
+                    return fv
+            except Exception:
+                continue
+        return None
+
+    def _gripper_is_grasped(self, frontend_state: dict) -> bool:
+        """
+        Define 'grasped' as |force| >= threshold. If force is missing/invalid, treat as NOT grasped.
+        """
+        f = self._extract_grip_force_N(frontend_state)
+        return (f is not None) and (abs(f) >= self._grasp_force_thresh_N)
+
+    # =================== URDF FK & SAM2 helpers ===================
+
+    def _load_urdf_model(self):
+        if URDF is None:
+            print("⚠️  urdfpy not installed; set `pip install urdfpy` to enable backend FK.")
+            return
+        try:
+            if not os.path.exists(self._urdf_path):
+                print(f"⚠️  URDF file not found at: {self._urdf_path}")
+                return
+
+            # 1) Try with package_map so 'package://<pkg>/' resolves to the real folder
+            package_map = {self._urdf_package_name: self._urdf_package_root}
+            print(f"🔎 Loading URDF with package_map: {package_map}")
+            try:
+                self._urdf_model = URDF.load(self._urdf_path, package_map=package_map)
+            except TypeError:
+                # Older urdfpy might not accept package_map kw; try from_xml_file with it:
+                self._urdf_model = URDF.from_xml_file(self._urdf_path, package_map=package_map)
+
+        except Exception as e1:
+            # 2) Fallback: rewrite package:// URIs to absolute paths in a temp file
+            try:
+                prefix = f"package://{self._urdf_package_name}/"
+                with open(self._urdf_path, "r", encoding="utf-8") as f:
+                    xml = f.read()
+                if prefix in xml:
+                    resolved_root = self._urdf_package_root.rstrip("/") + "/"
+                    xml_resolved = xml.replace(prefix, resolved_root)
+                    tmp_path = Path(tempfile.gettempdir()) / ("resolved_" + Path(self._urdf_path).name)
+                    with open(tmp_path, "w", encoding="utf-8") as g:
+                        g.write(xml_resolved)
+                    print(f"🧩 Rewrote package URIs → {tmp_path}")
+                    self._urdf_model = URDF.load(str(tmp_path))
+                else:
+                    raise  # No package:// in file; re-raise original
+            except Exception as e2:
+                print(f"⚠️  failed to load URDF even after rewrite: {e2}")
+                print(f"    original error: {e1}")
+                self._urdf_model = None
+                return
+
+        # Success path: record joint names, sanity logs
+        try:
+            self._urdf_joint_names = {j.name for j in self._urdf_model.joints}
+        except Exception:
+            self._urdf_joint_names = set()
+        print(
+            f"✓ URDF loaded from {self._urdf_path}\n"
+            f"  package '{self._urdf_package_name}' → {self._urdf_package_root}\n"
+            f"  joints detected: {len(self._urdf_joint_names)}"
+        )
+
+
+    def _gripper_center_from_joints(self, joint_positions: dict) -> np.ndarray | None:
+        """
+        Compute ee world position using URDF FK at the time the state was captured.
+        Uses the link name 'ee_gripper_link' by default (same as frontend).
+        World frame is the robot base frame (assumed aligned with Three.js world).
+        """
+        if self._urdf_model is None:
+            return None
+        try:
+            # Build FK config with available joint entries; others default to 0
+            cfg = {}
+            for name, v in (joint_positions or {}).items():
+                # incoming values might be scalars or [scalar]
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    vv = float(v[0])
+                else:
+                    vv = float(v)
+                if name in self._urdf_joint_names:
+                    cfg[name] = vv
+
+            fk_all = self._urdf_model.link_fk(cfg=cfg)  # dict: Link -> 4x4
+            target_link = None
+            for L in self._urdf_model.links:
+                if L.name == self._urdf_ee_link_name:
+                    target_link = L
+                    break
+            if target_link is None:
+                print(f"⚠️  URDF link '{self._urdf_ee_link_name}' not found")
+                return None
+            T = fk_all.get(target_link)
+            if T is None:
+                return None
+            pos = np.asarray(T, dtype=np.float64)[:3, 3]
+            return pos
+        except Exception as e:
+            print(f"⚠️  FK error: {e}")
+            return None
+
+    def _ensure_sam2(self):
+        if self._sam2_model is not None and self._sam2_processor is not None:
+            return
+        if Sam2Model is None or Sam2Processor is None:
+            raise RuntimeError("transformers Sam2Model/Sam2Processor not installed.")
+        print(f"🧠 Loading SAM2 '{self._sam2_model_id}' on {self._sam2_device} ...")
+        try:
+            self._sam2_model = Sam2Model.from_pretrained(self._sam2_model_id).to(self._sam2_device)
+        except Exception as e:
+            # Fallback to a commonly-available ID
+            fallback_id = "facebook/sam2-hiera-tiny"
+            if self._sam2_model_id != fallback_id:
+                print(f"⚠️  Failed to load {self._sam2_model_id}: {e}. Falling back to '{fallback_id}'.")
+                self._sam2_model = Sam2Model.from_pretrained(fallback_id).to(self._sam2_device)
+            else:
+                raise
+        self._sam2_model.eval()
+        self._sam2_processor = Sam2Processor.from_pretrained(self._sam2_model_id)
+        print("✅ SAM2 ready.")
+
+    @staticmethod
+    def _load_rgb_image_from_file(path: str) -> np.ndarray | None:
+        if not path or not os.path.exists(path):
+            return None
+        bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return None
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    def _episode_seg_dir(self, episode_id: str) -> Path:
+        d = self._episode_cache_dir(episode_id) / "segments"
+        try: d.mkdir(parents=True, exist_ok=True)
+        except Exception: pass
+        return d
+
+    def _save_mask_png(self, episode_id: str, state_id: int, view_name: str,
+                       mask_bool: np.ndarray, img_rgb: np.ndarray) -> str:
+        """
+        Save a PNG whose RGB are the source view *under the mask*, and whose
+        alpha is the mask (opaque where mask==True, transparent elsewhere).
+
+        This overlays perfectly on the background view and can be translated as 1 unit.
+        """
+        # Ensure we have matching sizes
+        ih, iw = img_rgb.shape[:2]
+        mh, mw = mask_bool.shape[:2]
+        if (mh, mw) != (ih, iw):
+            # Safety: resize mask to image size with nearest-neighbor (no blur)
+            mask_bool = cv2.resize(mask_bool.astype(np.uint8), (iw, ih),
+                                   interpolation=cv2.INTER_NEAREST) > 0
+
+        # Compose BGRA where alpha = 255 inside mask
+        m = mask_bool.astype(np.uint8)
+        bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)  # cv2 expects BGR/BGRA
+
+        out = np.zeros((ih, iw, 4), dtype=np.uint8)
+        out[..., 0] = bgr[..., 0] * m  # B
+        out[..., 1] = bgr[..., 1] * m  # G
+        out[..., 2] = bgr[..., 2] * m  # R
+        out[..., 3] = m * 255          # A
+
+        out_path = self._episode_seg_dir(episode_id) / f"{state_id}_{view_name}.png"
+        cv2.imwrite(str(out_path), out)
+        return str(out_path)
+
+    @staticmethod
+    def _patch_dark_mean(img_rgb: np.ndarray, u: int, v: int, r: int) -> float:
+        H, W, _ = img_rgb.shape
+        x0 = max(0, u - r); x1 = min(W, u + r + 1)
+        y0 = max(0, v - r); y1 = min(H, v + r + 1)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        gray = cv2.cvtColor(img_rgb[y0:y1, x0:x1], cv2.COLOR_RGB2GRAY)
+        return float(gray.mean())
+
+    @staticmethod
+    def _patch_rgb_mean(img_rgb: np.ndarray, u: int, v: int, r: int) -> tuple[float, float, float]:
+        """
+        Mean R,G,B over a (2r+1)x(2r+1) patch centered at (u,v).
+        Returns (R,G,B) in 0..255 (float32).
+        """
+        H, W, _ = img_rgb.shape
+        x0 = max(0, u - r); x1 = min(W, u + r + 1)
+        y0 = max(0, v - r); y1 = min(H, v + r + 1)
+        if x1 <= x0 or y1 <= y0:
+            return (0.0, 0.0, 0.0)
+        patch = img_rgb[y0:y1, x0:x1]  # RGB
+        mean_rgb = patch.reshape(-1, 3).mean(axis=0).astype(np.float32)
+        return float(mean_rgb[0]), float(mean_rgb[1]), float(mean_rgb[2])
+
+    def _is_flat_gray_seed(self, mean_rgb: tuple[float, float, float]) -> bool:
+        """
+        True if each channel is within [gray_min, gray_max] and
+        max(R,G,B)-min(R,G,B) <= gray_delta (≈achromatic/neutral gray).
+        """
+        r, g, b = mean_rgb
+        if not (self._seg_gray_min <= r <= self._seg_gray_max): return False
+        if not (self._seg_gray_min <= g <= self._seg_gray_max): return False
+        if not (self._seg_gray_min <= b <= self._seg_gray_max): return False
+        return (max(r, g, b) - min(r, g, b)) <= self._seg_gray_delta
+
+    def _project_world_to_pixel(self, view_name: str, Pw: np.ndarray) -> tuple[int, int] | None:
+        """
+        Project world point Pw (x,y,z in meters) into pixel (u,v) for 'view_name'
+        using current T_three (camera pose) and Knew (intrinsics).
+        """
+        pose_key = f"{view_name}_pose"
+        M = self._camera_poses.get(pose_key)
+        model = self._camera_models.get(view_name)
+        if M is None or model is None or "Knew" not in model:
+            return None
+
+        M = np.asarray(M, dtype=np.float64)  # 4x4 (Three.js world matrix)
+        R_three = M[:3, :3]
+        t_world = M[:3, 3]
+
+        # world → three-camera coords (camera looks along -Z)
+        Xc_three = R_three.T @ (np.asarray(Pw).reshape(3,) - t_world)
+
+        # three-camera → OpenCV camera (+Z forward)
+        Rflip = np.diag([1.0, -1.0, -1.0])
+        Xc_cv = Rflip @ Xc_three
+        Z = Xc_cv[2]
+        if Z <= 0:
+            return None
+
+        K = np.asarray(model["Knew"], dtype=np.float64)
+        u = int(round(K[0, 0] * (Xc_cv[0] / Z) + K[0, 2]))
+        v = int(round(K[1, 1] * (Xc_cv[1] / Z) + K[1, 2]))
+        return (u, v)
+
+    def _sam2_segment_point(self, img_rgb: np.ndarray, u: int, v: int, multimask_output: bool = False) -> np.ndarray | None:
+        self._ensure_sam2()
+        try:
+            inputs = self._sam2_processor(
+                images=Image.fromarray(img_rgb),
+                input_points=[[[[float(u), float(v)]]]],
+                input_labels=[[[1]]],
+                return_tensors="pt"
+            ).to(self._sam2_device)
+
+            with torch.no_grad():
+                outputs = self._sam2_model(**inputs, multimask_output=multimask_output)
+
+            masks = self._sam2_processor.post_process_masks(
+                outputs.pred_masks.detach().cpu(),
+                inputs["original_sizes"]
+            )[0]  # usually (N, H, W) but some builds emit (N,1,H,W)
+
+            if masks is None or masks.shape[0] == 0:
+                return None
+
+            m = masks[0].detach().cpu().numpy()  # first proposal
+            m = np.squeeze(m)                    # drop any singleton dims
+            # Final safety: if still >2D, take the last 2 dims as (H,W)
+            if m.ndim > 2:
+                m = m.reshape(m.shape[-2], m.shape[-1])
+            if m.ndim != 2:
+                raise ValueError(f"SAM2 mask has unexpected shape {m.shape}")
+
+            return (m >= 0.5)
+        except Exception as e:
+            print(f"❌ SAM2 inference failed: {e}")
+            return None
+        
+    def _segment_views_for_state(self, episode_id: str, state_id: int, view_paths: dict[str, str], joint_positions: dict) -> dict[str, str]:
+        """
+        Compute gripper center (URDF FK) → project to each calibrated view → run SAM2 if not dark.
+        Returns {view_name: mask_png_path}
+        """
+        out_paths: dict[str, str] = {}
+        # find state & its per-view files
+        if not view_paths:
+            print(f"⚠️ segmentation: no view_paths for state {state_id}")
+            return out_paths
+
+        # 1) FK → world gripper center
+        Pw = self._gripper_center_from_joints(joint_positions or {})
+        if Pw is None:
+            print(f"⚠️ segmentation: FK failed (no URDF or bad joints) for state {state_id}")
+            return out_paths
+
+        # 2) Iterate VIEWS only (skip obs_*); require current calibration
+        for view_name, img_path in view_paths.items():
+            if view_name not in self._camera_models:  # skip obs_main/obs_wrist, etc.
+                continue
+
+            img = self._load_rgb_image_from_file(img_path)
+            if img is None:
+                continue
+            H, W, _ = img.shape
+
+            uv = self._project_world_to_pixel(view_name, Pw)
+            if uv is None:
+                print(f"⚠️ projection failed for view '{view_name}' (state {state_id})")
+                continue
+            u, v = uv
+            if not (0 <= u < W and 0 <= v < H):
+                print(f"⚠️ seed ({u},{v}) outside image for '{view_name}'")
+                continue
+
+            # 3) occlusion/dark guard
+            mean_val = self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius)
+            if mean_val < self._seg_dark_mean_thresh:
+                print(f"⛔ view '{view_name}': dark patch at seed (mean={mean_val:.1f}) → skip")
+                continue
+
+            # 4) SAM2
+            mask = self._sam2_segment_point(img, u, v, multimask_output=False)
+            if mask is None:
+                print(f"❌ SAM2 mask None for '{view_name}'")
+                continue
+
+            # 5) save cut-out (RGB under mask + alpha), not a black silhouette
+            out_path = self._save_mask_png(episode_id, state_id, view_name, mask, img)
+            out_paths[view_name] = out_path
+            print(f"🎯 Segmented '{view_name}' → {out_path}")
+
+        return out_paths
+
+    # ============================================================
 
     def is_recording(self):
         """Check if there are any pending states across all episodes or episodes being completed"""

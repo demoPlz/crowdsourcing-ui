@@ -932,6 +932,19 @@
     border-radius: 999px !important;
   }
 
+  /* Segmentation overlay sits over the camera texture and moves with the gripper */
+  .view-container .seg-overlay{
+    position:absolute;
+    left: 0; top: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    user-select: none;
+    mix-blend-mode: normal;     /* ensure normal compositing */
+    will-change: transform;     /* smoother translate() updates */
+    image-rendering: auto;
+    transform-origin: 0 0;      /* predictable transform origin for scaling */
+  }
+
 
 </style>
 
@@ -1534,6 +1547,23 @@ loader.load(
       }
     }
 
+    function attachSegOverlay(view, maskDataUrl) {
+      const img = document.createElement('img');
+      img.className = 'seg-overlay';
+      img.src = maskDataUrl;
+      // Stretch to the renderer size (CSS handles scaling)
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.transform = 'translate(0px, 0px)';
+      view.container.appendChild(img);
+
+      // Keep per-view segmentation state
+      view.seg = {
+        el: img
+        // base position is implied (0,0) since mask was extracted on the snapshot itself
+      };
+    }
+
 
     /* --- build IK tree from URDF (limits copied automatically) --- */
     const ikRoot = urdfRobotToIKRoot(robot);          // :contentReference[oaicite:0]{index=0}
@@ -1554,6 +1584,9 @@ loader.load(
     for (const [key, dataUrl] of Object.entries(state.views ?? {})) {
       viewTextures[key] = await makeTextureFromDataURL(dataUrl);
     }
+
+    /* ---------- segmentation masks (data URLs) ---------------------- */
+    const segmentsByView = state.segments ?? {};  // { front: "data:image/png;base64,...", ... }
 
     const initialJointPositions = state.joint_positions ?? {};
     const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
@@ -1675,14 +1708,13 @@ loader.load(
       addArrow('gripper_right', -1);
     }
 
+    let animating = false;
+
     function updateGripArrowVisibility() {
-      // Show gripper arrows only for front and perspective cameras
-      const showArrows = currentViewName === 'front' || currentViewName === 'perspective';
-      console.log(`[DEBUG] updateGripArrowVisibility: currentViewName="${currentViewName}", showArrows=${showArrows}, gripArrows.length=${gripArrows.length}`);
+      // Visible unless we are animating
+      const showArrows = !animating;
       gripArrows.forEach(arrow => {
-        if (arrow && arrow.visible !== undefined) {
-          arrow.visible = showArrows;
-        }
+        if (arrow) arrow.visible = showArrows;
       });
     }
 
@@ -2427,6 +2459,9 @@ loader.load(
     function toggleAnimation() {
       animState.enabled = !animState.enabled;
 
+      animating = true;
+      updateGripArrowVisibility();
+
       if (animState.enabled) {
         // Reset the arm to the initial joint configuration (the "initial positions" you have)
         // so the animation starts exactly from there.
@@ -2474,6 +2509,9 @@ loader.load(
         setPoseGizmosVisible(true);
         setGhostMode(false);
         applyPostAnimationVisibility();
+
+        animating = false;
+        updateGripArrowVisibility();
 
         setHUDHiddenForAnimation(false);
       }
@@ -2523,30 +2561,35 @@ loader.load(
 
 
     /* ---- XY cross at the target pose (keeps the same drag proxy) --------- */
-    // Transform anchor (acts like the old marker mesh, but is now a Group)
-    const marker = new THREE.Group();
-    marker.position.copy(startPos);
-    marker.quaternion.copy(startQuat);
-    scene.add(marker);
+    // === CROSS MARKER (visual only; keeps your existing drag proxy) =============
 
-    // Visible cross (two thin bars along local X and Y)
-    const CROSS_LEN   = 0.1;  // 10 cm total length; tweak if you want bigger/smaller
-    const CROSS_THICK = 0.005; // 5 mm thickness
+    // Use your existing Group that represents the goal/marker. If you do not have
+    // one, create it and keep your existing drag "proxy" mesh as-is.
+    const marker = new THREE.Group();
+
+    // If you created a new one, ensure it's added and positioned at your initial target.
+    if (!marker.parent) {
+      marker.position.copy(startPos);        // <- replace with your initial
+      marker.quaternion.copy(startQuat);    // <- replace with your initial
+      scene.add(marker);
+    }
+
+    // Remove any old cross meshes if you had them:
+    const oldCross = marker.getObjectByName('marker_cross');
+    if (oldCross) oldCross.parent.remove(oldCross);
+
+    // New cross: two thin bars along local X and Y; always-on-top over camera textures
+    const CROSS_LEN   = 0.10;    // 10 cm total length
+    const CROSS_THICK = 0.005;   // 5 mm thickness
     const crossMat = new THREE.MeshBasicMaterial({
-      color: 0xff0000,       // same red as before; change if you prefer
-      transparent: true,
-      opacity: 0.85,
-      depthTest: false,      // always draw on top of the camera texture
-      depthWrite: false
+      color: 0xff0000, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false
     });
 
-    // X bar: length along local X, thin in Y/Z
     const xBar = new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_THICK, CROSS_LEN), crossMat);
-    // Y bar: length along local Y, thin in X/Z
-    const yBar = new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_LEN, CROSS_THICK), crossMat);
+    const yBar = new THREE.Mesh(new THREE.BoxGeometry(CROSS_THICK, CROSS_LEN,  CROSS_THICK), crossMat);
 
-    // Make the cross purely visual (do not participate in picking)
-    // This ensures the existing proxy remains the only drag target.
+    // IMPORTANT: Do not let the cross be pickable. Keep your existing invisible sphere/mesh as the
+    // drag "hit area" (proxy).
     xBar.raycast = () => {};
     yBar.raycast = () => {};
 
@@ -2555,49 +2598,52 @@ loader.load(
     crossGroup.add(xBar, yBar);
     marker.add(crossGroup);
 
-    // Keep the exact same drag proxy (unchanged)
-    const pickProxy = new THREE.Mesh(
-      new THREE.SphereGeometry(0.04, 16, 16), // ~4 cm radius hit area
-      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
-    );
-    pickProxy.name = 'marker_pick_proxy';
-    marker.add(pickProxy);
+    // Keep (or create) your pick proxy:
+    let pickProxy = marker.getObjectByName('marker_pick_proxy');
+    if (!pickProxy) {
+      pickProxy = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04, 16, 16), // ~4 cm hit radius
+        new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0, depthWrite: false })
+      );
+      pickProxy.name = 'marker_pick_proxy';
+      marker.add(pickProxy);
+    }
 
-    // ===== Rotation wheels (roll/pitch/yaw) - helpers & state =====
-    const rotationWheels = {};        // { roll:{group, segments:Mesh[]}, pitch:{...}, yaw:{...} }
-    let rotationPickables = [];       // flat list of all wheel segment meshes for raycasting
+    // === ROTATION WHEELS (world-space radii; scale visually with distance) =====
 
-    // Visual states for wheels
+    const rotationWheels = {};   // { roll:{group, segments:Mesh[]}, pitch:{...}, yaw:{...} }
+    let rotationPickables = [];  // flat array of the segment meshes for raycasting
+
+    // Opacity states for visual feedback
     const WHEEL_OPACITY = {
       idle:   { even: 0.44, odd: 0.24 },
       hover:  { even: 0.64, odd: 0.44 },
       active: { even: 0.84, odd: 0.64 },
     };
 
-    // Build one wheel (striped annulus) for an axis
-    function makeWheel(axisName, colorHex, innerR=0.085, outerR=0.105, strips=48) {
+    // Build one ring ("striped annulus") in world units (meters)
+    function makeWheel(axisName, colorHex, innerR = 0.085, outerR = 0.105, strips = 48) {
       const group = new THREE.Group();
       group.name = `wheel_${axisName}`;
       group.userData.axis = axisName;
-      group.renderOrder = 999; // draw above everything
-      const segments = [];
+      group.renderOrder = 999; // always on top
 
+      const segments = [];
       const segAngle = (Math.PI * 2) / strips;
-      const gap = segAngle * 0.08;               // subtle gaps between strips
+      const gap = segAngle * 0.08;
       const thetaLen = segAngle - gap;
 
       for (let i = 0; i < strips; i++) {
         const thetaStart = i * segAngle + gap * 0.5;
         const geom = new THREE.RingGeometry(innerR, outerR, 18, 1, thetaStart, thetaLen);
-        const mat = new THREE.MeshBasicMaterial({
-          color: colorHex,
-          transparent: true,
+        const mat  = new THREE.MeshBasicMaterial({
+          color: colorHex, transparent: true,
           opacity: (i % 2 === 0 ? WHEEL_OPACITY.idle.even : WHEEL_OPACITY.idle.odd),
           side: THREE.DoubleSide,
-          depthTest: false,   // always visible
+          depthTest: false
         });
         const seg = new THREE.Mesh(geom, mat);
-        seg.userData.axis = axisName; // so picking any segment knows its axis
+        seg.userData.axis = axisName;
         group.add(seg);
         segments.push(seg);
       }
@@ -2605,7 +2651,7 @@ loader.load(
       return { group, segments };
     }
 
-    function setWheelState(axis, state /* idle|hover|active */) {
+    function setWheelState(axis, state) {
       const w = rotationWheels[axis]; if (!w) return;
       const cfg = WHEEL_OPACITY[state] || WHEEL_OPACITY.idle;
       w.segments.forEach((seg, i) => {
@@ -2614,25 +2660,79 @@ loader.load(
       });
     }
     function resetAllWheelStates() {
-      ['roll','pitch','yaw'].forEach(a => setWheelState(a, 'idle'));
+      ['roll', 'pitch', 'yaw'].forEach(a => setWheelState(a, 'idle'));
     }
 
-    // Build and mount all wheels that are enabled by activeControls
+    // Build wheels for the controls you actually expose
     function buildRotationWheels() {
+      // Clear any existing wheels first
+      Object.values(rotationWheels).forEach(w => {
+        if (w && w.group && w.group.parent) {
+          w.group.parent.remove(w.group);
+        }
+      });
+      
+      // Reset the rotationWheels object
+      Object.keys(rotationWheels).forEach(key => delete rotationWheels[key]);
       rotationPickables.length = 0;
-      // pleasant, readable axis colors
+
+      // Feel free to reuse these axis colors
       const colorFor = { roll: 0xff5b5b, pitch: 0x22cc88, yaw: 0x4f8cff };
 
-      ['roll','pitch','yaw'].forEach(axis => {
-        if (!activeControls.includes(axis)) return;
+      // Only create wheels for rotation axes that are actually enabled
+      const rotationAxes = ['roll','pitch','yaw'].filter(axis => 
+        activeControls && activeControls.includes(axis)
+      );
+      
+      console.log('Building rotation wheels for axes:', rotationAxes);
+      
+      rotationAxes.forEach(axis => {
         const { group, segments } = makeWheel(axis, colorFor[axis]);
         scene.add(group);
         rotationWheels[axis] = { group, segments };
         rotationPickables.push(...segments);
+        console.log(`Created wheel for ${axis} with ${segments.length} segments`);
       });
 
       resetAllWheelStates();
     }
+
+    // === math helpers to align wheels to marker local axes ======================
+
+    function localAxesWorld(q /* THREE.Quaternion */) {
+      return {
+        xW: new THREE.Vector3(1,0,0).applyQuaternion(q).normalize(),
+        yW: new THREE.Vector3(0,1,0).applyQuaternion(q).normalize(),
+        zW: new THREE.Vector3(0,0,1).applyQuaternion(q).normalize(),
+      };
+    }
+
+    function planeBasisForAxis(axis /* 'roll'|'pitch'|'yaw' */, q) {
+      const { xW, yW, zW } = localAxesWorld(q || marker.quaternion);
+      if (axis === 'roll')   return { n: xW, u: yW, v: zW }; // rotate about local X → YZ plane
+      if (axis === 'pitch')  return { n: yW, u: zW, v: xW }; // rotate about local Y → XZ plane
+      /* yaw */              return { n: zW, u: xW, v: yW }; // rotate about local Z → XY plane
+    }
+
+    function alignRingToNormal(group, n) {
+      const from = new THREE.Vector3(0,0,1); // RingGeometry faces +Z by default
+      const q = new THREE.Quaternion().setFromUnitVectors(from, n);
+      group.quaternion.copy(q);
+      group.updateMatrixWorld(true);
+    }
+
+    function angleOnPlaneFromPoint(p, center, u, v) {
+      const r = p.clone().sub(center);
+      return Math.atan2(r.dot(v), r.dot(u));
+    }
+    function normalizeAngle(a) {
+      while (a >  Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    }
+
+    // Build them once, after the marker exists:
+    buildRotationWheels();
 
     function createGripHUDForView(view){
       const hud = document.createElement('div');
@@ -2716,10 +2816,87 @@ loader.load(
     const WHEEL_OUTER_RADIUS_M = 0.105; // keep in sync with makeWheel(... outerR=0.105 ...)
     const HUD_MARGIN_PX = 20;           // constant 2D gap above the wheel (increase/decrease as desired)
 
+    // Base geometry sizes you already use
+    const WHEEL_BASE_OUTER_RADIUS_M = 0.105;  // same value you pass to makeWheel(.. outerR)
+    const CROSS_BASE_LEN_M = 0.10;            // your CROSS_LEN
+
+    // Target pixel sizes (tune to taste)
+    const TARGET_WHEEL_RADIUS_PX = 64;        // wheel should appear ~64 px radius
+    const TARGET_CROSS_LEN_PX    = 24;        // long arm of the red cross ~24 px
+
     const _hudTmpA = new THREE.Vector3();
     const _hudTmpB = new THREE.Vector3();
     const _hudTmpC = new THREE.Vector3(); // NEW: for screen-right computations
     const _hudTmpD = new THREE.Vector3(); // NEW: for projected positions
+
+    function projectWorldToViewPx(view, worldVec3) {
+      const cam  = view.camera;
+      const rect = view.renderer.domElement.getBoundingClientRect();
+      const ndc  = worldVec3.clone().project(cam);
+      const visible = (ndc.z >= -1 && ndc.z <= 1);
+      return {
+        x: (ndc.x * 0.5 + 0.5) * rect.width,
+        y: (-ndc.y * 0.5 + 0.5) * rect.height,
+        visible
+      };
+    }
+
+    // Camera-space depth (|z|). Three's camera looks down -Z, so use abs().
+    function cameraDepth(view, worldPoint){
+      const p = worldPoint.clone().applyMatrix4(view.camera.matrixWorldInverse);
+      return Math.abs(p.z);
+    }
+
+    function pixelsPerMeterAt(view, worldPoint){
+      const cam  = view.camera;
+      const rect = view.renderer.domElement.getBoundingClientRect();
+      const M = 0.10; // 10 cm sampling baseline
+
+      const up    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion).normalize();
+      const right = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion).normalize();
+
+      const p0 = worldPoint.clone();
+      const p0N = p0.clone().project(cam);
+      if (p0N.z < -1 || p0N.z > 1) return null;
+
+      const x0 = (p0N.x * .5 + .5) * rect.width;
+      const y0 = (-p0N.y * .5 + .5) * rect.height;
+
+      const px = p0.clone().addScaledVector(right, M).project(cam);
+      const py = p0.clone().addScaledVector(up,    M).project(cam);
+
+      const x1 = (px.x * .5 + .5) * rect.width;
+      const y1 = (-py.y * .5 + .5) * rect.height;
+
+      const ppmX = Math.abs(x1 - x0) / M;
+      const ppmY = Math.abs(y1 - y0) / M;
+      return { mean: (ppmX + ppmY) * 0.5 };
+    }
+
+    function updateSegOverlayForView(view){
+      if (!view.seg || !view.seg.el) return;
+
+      // Project the original EE (startPos) and the current target (marker.position)
+      const base = projectWorldToViewPx(view, startPos);
+      const curr = projectWorldToViewPx(view, marker.position);
+      if (!base.visible || !curr.visible) return;
+
+      // 1) Translate: same as before
+      const dx = Math.round(curr.x - base.x);
+      const dy = Math.round(curr.y - base.y);
+
+      // 2) Scale: ratio of camera-space depth (f / z -> pixel scale)
+      const zBase = cameraDepth(view, startPos);
+      const zCurr = cameraDepth(view, marker.position);
+      const s = (zBase > 1e-9 && zCurr > 1e-9) ? (zBase / zCurr) : 1;
+
+      // Anchor scale around the original EE pixel so translation remains correct
+      view.seg.el.style.transformOrigin = `${Math.round(base.x)}px ${Math.round(base.y)}px`;
+
+      // Order matters: translate *after* scale so dx/dy aren't scaled
+      view.seg.el.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`;
+    }
+
     function positionGripHUDs(){
       gripHUDs.forEach(({ view, el }) => {
         const cam  = view.camera;
@@ -2759,10 +2936,11 @@ loader.load(
         const px1  = (sp1x.x * 0.5 + 0.5) * rect.width;
         const pxPerMeterX = Math.abs(px1 - baseX) / M || 0;
 
-        // wheel radius in pixels along each axis + a constant margin
-        const wheelPxRadiusY = pxPerMeterY * WHEEL_OUTER_RADIUS_M;
-        const wheelPxRadiusX = pxPerMeterX * WHEEL_OUTER_RADIUS_M;
-
+        // Use the same pixel radius we target for the wheels, so the HUD
+        // always sits just beyond the visible ring in the active view.
+        const wheelPxRadiusY = TARGET_WHEEL_RADIUS_PX;
+        const wheelPxRadiusX = TARGET_WHEEL_RADIUS_PX;
+        
         const offsetPxY = wheelPxRadiusY + HUD_MARGIN_PX; // up
         const offsetPxX = wheelPxRadiusX + HUD_MARGIN_PX; // right
 
@@ -2809,10 +2987,6 @@ loader.load(
       while (a < -Math.PI) a += Math.PI * 2;
       return a;
     }
-
-    // Build wheels now that the marker exists
-    buildRotationWheels();
-    // ===== Rotation wheels - helpers & state (end) =====
 
     // --- helper to show/hide pose gizmos (red dot + rotation wheels) ---
     function setPoseGizmosVisible(visible) {
@@ -2921,23 +3095,6 @@ loader.load(
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
 
-    const DRAG_SPECS = {
-      front:       { axes: ['y','z'], normal: new THREE.Vector3(1,0,0) }, // lock X → move on YZ
-      left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → move on XZ
-      right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → move on XZ
-      perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → move on XY
-    };
-
-    function specForView(name){
-      return DRAG_SPECS[name] || DRAG_SPECS.perspective;
-    }
-
-    function setNDCFromPointerEvent(evt, renderer){
-      const rect = renderer.domElement.getBoundingClientRect();
-      ndc.x =  ( (evt.clientX - rect.left) / rect.width ) * 2 - 1;
-      ndc.y = -( (evt.clientY - rect.top)  / rect.height) * 2 + 1;
-    }
-
     function clampToSlider(axis, v){
       // Clamp to the effective slider range (span∩ABS_LIMITS) and also
       // to the absolute limits for extra safety.
@@ -2999,14 +3156,13 @@ loader.load(
     }
 
     // Single shared drag state
-    // Single shared drag state (translation or rotation)
     const dragState = {
       active: false,
       mode: null,                // 'translate' | 'rotate'
-      view: null,
-      plane: new THREE.Plane(),  // used both for translate & rotate
-      axes: /** @type {('x'|'y'|'z')[]} */([]), // translation axes (two on a plane)
-      axis: /** @type {'roll'|'pitch'|'yaw'|null} */(null), // rotation axis
+      viewName: null,
+      plane: new THREE.Plane(),
+      axes: /** @type {('x'|'y'|'z')[]} */([]),          // for translation
+      axis: /** @type {'roll'|'pitch'|'yaw'|null} */(null), // for rotation
       pointerId: null,
 
       // rotation-specific
@@ -3016,18 +3172,41 @@ loader.load(
       param0: 0,
     };
 
+    // Utility: which 2D plane to drag for translation in a given view
+    const DRAG_SPECS = {
+      front:       { axes: ['y','z'], normal: new THREE.Vector3(1,0,0) }, // lock X → drag YZ
+      left:        { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) }, // lock Y → drag XZ
+      right:       { axes: ['x','z'], normal: new THREE.Vector3(0,1,0) },
+      perspective: { axes: ['x','y'], normal: new THREE.Vector3(0,0,1) }, // lock Z → drag XY
+    };
+    function specForView(name){ return DRAG_SPECS[name] || DRAG_SPECS.perspective; }
 
-    function attachDragHandlersToView(view){
-      const el = view.renderer.domElement;
+    // Helper used in both translate & rotate picking
+    function setNDCFromPointerEvent(evt, renderer){
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x =  ( (evt.clientX - rect.left) / rect.width ) * 2 - 1;
+      ndc.y = -( (evt.clientY - rect.top)  / rect.height) * 2 + 1;
+    }
+
+    // Clamp helpers (reuse your own ABS_LIMITS/sliderRanges if you have them)
+    function clampAngleToLimits(axis, val) {
+      return clampToSlider(axis, val);
+    }
+    function clampLinearToLimits(axis, val) {
+      return clampToSlider(axis, val);
+    }
+
+    // Attach to each view/canvas
+    function attachPoseGizmoHandlers(renderer, camera, viewName) {
+      const el = renderer.domElement;
 
       function pickAll(evt) {
-        setNDCFromPointerEvent(evt, view.renderer);
-        raycaster.setFromCamera(ndc, view.camera);
-        // Highest priority: wheel segments, then the dot proxy, then the dot itself
+        setNDCFromPointerEvent(evt, renderer);
+        raycaster.setFromCamera(ndc, camera);
         const targets = [
-          ...rotationPickables,
-          marker.getObjectByName('marker_pick_proxy'),
-          marker
+          ...rotationPickables,                            // wheel segments
+          marker.getObjectByName('marker_pick_proxy'),     // drag proxy
+          marker                                          // (fallback)
         ].filter(Boolean);
         return raycaster.intersectObjects(targets, true);
       }
@@ -3039,12 +3218,10 @@ loader.load(
           return;
         }
         if (dragState.active || calibrationMode) return;
-
         const hits = pickAll(evt);
         const wheelHit = hits.find(h => h.object?.userData?.axis);
         const dotHit   = hits.find(h => (h.object === marker) || (h.object?.name === 'marker_pick_proxy'));
 
-        // Visual: highlight hovered wheel (others idle)
         resetAllWheelStates();
         if (wheelHit) {
           setWheelState(wheelHit.object.userData.axis, 'hover');
@@ -3056,6 +3233,7 @@ loader.load(
         }
       });
 
+      // Press: start rotation or translation drag
       el.addEventListener('pointerdown', (evt) => {
         if (slidersLocked) {                // ← block starting a drag while locked
           el.style.cursor = 'not-allowed';
@@ -3068,25 +3246,25 @@ loader.load(
 
         cancelAnimationIfRunning('drag start');
 
-        // Decide mode by topmost hit
         const top = hits[0];
         const hitAxis = top.object?.userData?.axis || null;
 
         dragState.active    = true;
-        dragState.view      = view;
+        dragState.viewName  = viewName;
         dragState.pointerId = evt.pointerId;
         el.setPointerCapture(dragState.pointerId);
         el.style.cursor = 'grabbing';
 
-        currentViewName = view.name; // keep other UI in sync
+        // Update current view and gripper visibility
+        currentViewName = viewName;
         updateGripArrowVisibility();
 
         if (hitAxis) {
-          // === ROTATION DRAG ===
+          // ROTATION
           dragState.mode = 'rotate';
           dragState.axis = /** @type {'roll'|'pitch'|'yaw'} */(hitAxis);
 
-          const { n, u, v } = planeBasisForAxis(dragState.axis);
+          const { n, u, v } = planeBasisForAxis(dragState.axis, marker.quaternion);
           dragState.u.copy(u); dragState.v.copy(v);
           dragState.plane.setFromNormalAndCoplanarPoint(n, marker.position);
 
@@ -3098,10 +3276,9 @@ loader.load(
           resetAllWheelStates();
           setWheelState(dragState.axis, 'active');
         } else {
-          // === TRANSLATION DRAG === (dot)
+          // TRANSLATION
           dragState.mode = 'translate';
-
-          const spec = specForView(view.name);       // which axes to move in this view
+          const spec = specForView(viewName);
           dragState.axes = spec.axes;
           dragState.plane.setFromNormalAndCoplanarPoint(spec.normal, marker.position);
         }
@@ -3109,57 +3286,59 @@ loader.load(
         evt.preventDefault();
       });
 
+      // Dragging
       el.addEventListener('pointermove', (evt) => {
-        if (!dragState.active || dragState.view !== view) return;
+        if (!dragState.active || dragState.viewName !== viewName) return;
 
-        setNDCFromPointerEvent(evt, view.renderer);
-        raycaster.setFromCamera(ndc, view.camera);
+        setNDCFromPointerEvent(evt, renderer);
+        raycaster.setFromCamera(ndc, camera);
 
         const hitPoint = new THREE.Vector3();
         if (!raycaster.ray.intersectPlane(dragState.plane, hitPoint)) return;
 
         if (dragState.mode === 'translate') {
-          // Move the two allowed axes directly
           dragState.axes.forEach(axis => {
-            const v = axis === 'x' ? hitPoint.x : axis === 'y' ? hitPoint.y : hitPoint.z;
-            params[axis] = clampToSlider(axis, v);   // invisible ABS barrier
+            const v = (axis === 'x') ? hitPoint.x : (axis === 'y') ? hitPoint.y : hitPoint.z;
+            params[axis] = clampLinearToLimits(axis, v);
           });
+          updateGoal(); // your function that copies params → marker/goal
+          // Update sliders display and UI state
           revealMinimalRobotFromPose();
-          updateGoal();
           updateGripHUDInteractivity();
+          dragState.axes.forEach(axis => {
+            if (sliderCtrls[axis]) sliderCtrls[axis].updateDisplay();
+          });
           updateSlidersDisplay(dragState.axes);
         } else if (dragState.mode === 'rotate' && dragState.axis) {
-          // Angle delta on plane
           const ang1 = angleOnPlaneFromPoint(hitPoint, marker.position, dragState.u, dragState.v);
           const dAng = normalizeAngle(ang1 - dragState.angle0);
           let newVal = dragState.param0 + dAng;
-          newVal = clampToSlider(dragState.axis, newVal);
+          newVal = clampAngleToLimits(dragState.axis, newVal);
 
           params[dragState.axis] = newVal;
-          revealMinimalRobotFromPose();
           updateGoal();
+          // Update slider display and UI state
+          revealMinimalRobotFromPose();
           updateGripHUDInteractivity();
-          sliderCtrls[dragState.axis]?.updateDisplay();
+          if (sliderCtrls[dragState.axis]) sliderCtrls[dragState.axis].updateDisplay();
         }
-        
+
         updateTaskCompletedAvailability();
+
         evt.preventDefault();
       });
 
       function endDrag(){
         if (!dragState.active) return;
         try { el.releasePointerCapture(dragState.pointerId); } catch(_) {}
-        dragState.active = false;
-        const endedAxis = dragState.axis;
-        dragState.mode  = null;
-        dragState.axis  = null;
-        dragState.view  = null;
-        dragState.axes  = [];
-        el.style.cursor = 'default';
+        dragState.active   = false;
+        const endedAxis    = dragState.axis;
+        dragState.mode     = null;
+        dragState.axis     = null;
+        dragState.viewName = null;
+        dragState.axes     = [];
+        el.style.cursor    = 'default';
 
-        // After drag, leave hover highlight if still under cursor
-        const fakeEvt = { clientX: window._lastMouseX ?? 0, clientY: window._lastMouseY ?? 0 };
-        // best-effort hover restore
         resetAllWheelStates();
         if (endedAxis) setWheelState(endedAxis, 'hover');
       }
@@ -3167,12 +3346,12 @@ loader.load(
       // Track mouse position globally to re-evaluate hover after drag end
       el.addEventListener('pointermove', (e)=> { window._lastMouseX = e.clientX; window._lastMouseY = e.clientY; });
 
-      el.addEventListener('pointerup',       endDrag);
-      el.addEventListener('pointercancel',   endDrag);
-      el.addEventListener('pointerleave',    (e)=>{ if (dragState.active) endDrag(); });
+      el.addEventListener('pointerup',     endDrag);
+      el.addEventListener('pointercancel', endDrag);
+      el.addEventListener('pointerleave',  () => { if (dragState.active) endDrag(); });
     }
 
-
+    /* ---------- camera-view buttons --------------------------- */
 
     /* ---------- camera-view buttons --------------------------- */
     function poseToMatrix(mat){
@@ -3239,8 +3418,14 @@ loader.load(
       // Create views
       availableViews.forEach((viewInfo, index) => {
         const view = createViewRenderer(viewInfo.name, viewInfo.model, viewInfo.texture);
-        attachDragHandlersToView(view);
+        attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
         createGripHUDForView(view);
+
+        // --- NEW: if a mask exists for this view, mount the overlay ---
+        const segUrl = segmentsByView[viewInfo.name];
+        if (segUrl) {
+          attachSegOverlay(view, segUrl);
+        }
         
         // Set up camera pose and projection
         updateViewCamera(view, viewInfo.pose);
@@ -3334,6 +3519,13 @@ loader.load(
     // Initialize the multi-view system
     initializeViews();
 
+    // Keep canvas sizes and per-view projection matrices in sync
+    window.addEventListener('resize', () => {
+      updateViewSizes();
+      // Recompute projection for each view after its canvas size changes
+      views.forEach(v => applyProjectionFromK(v));
+    });
+
   /* ---------- confirm button (inside controls container) ------------------- */
 
     // Create confirm button to be added to controls container
@@ -3345,6 +3537,8 @@ loader.load(
       // 0) Freeze any ongoing animation (unchanged)
       if (animState.enabled) {
         animState.enabled = false;
+        animating = false;
+        updateGripArrowVisibility();
         if (animateBtn) animateBtn.classList.remove('active');
         setPoseGizmosVisible(true);
         setGhostMode(false);
@@ -3449,6 +3643,9 @@ loader.load(
       animState.enabled = false;
       animateBtn.classList.remove('active');
 
+      animating = false;
+      updateGripArrowVisibility();
+
       // Snap the goal to the current target to avoid jumps
       const { pos, quat } = getTargetPose();
       goal.setPosition(pos.x, pos.y, pos.z);
@@ -3480,6 +3677,8 @@ loader.load(
       if (animState.enabled) {
         animState.enabled = false;
         animateBtn.classList.remove('active');
+        animating = false;
+        updateGripArrowVisibility();
         setPoseGizmosVisible(true);
         setGhostMode(false);
         applyPostAnimationVisibility();
@@ -3802,6 +4001,10 @@ loader.load(
 
       // ----- render all views -----
       views.forEach(view => {
+        // 1) Move the segmentation with the gripper (unchanged)
+        updateSegOverlayForView(view);
+
+        // 2) Render this view
         scene.background = view.texture ?? defaultBg;
         view.renderer.render(scene, view.camera);
       });
@@ -3812,9 +4015,4 @@ loader.load(
   }
 );
 
-/* ---------- responsive canvas ---------- */
-addEventListener('resize', () => {
-  // Re-center the viewport and update view sizes
-  updateViewSizes();
-});
 </script></body></html>
