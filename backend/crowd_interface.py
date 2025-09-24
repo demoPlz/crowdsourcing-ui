@@ -43,7 +43,7 @@ REQUIRED_RESPONSES_PER_STATE = 1
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
-    "left":        4,
+    "left":        10,
     "right":       2,
     "perspective": 0,
 }
@@ -2045,10 +2045,11 @@ class CrowdInterface():
 
     def _gripper_is_grasped(self, frontend_state: dict) -> bool:
         """
-        Define 'grasped' as |force| >= threshold. If force is missing/invalid, treat as NOT grasped.
+        Define 'grasped' as force < -threshold (negative force indicates compression/grasping). 
+        If force is missing/invalid, treat as NOT grasped.
         """
         f = self._extract_grip_force_N(frontend_state)
-        return (f is not None) and (abs(f) >= self._grasp_force_thresh_N)
+        return (f is not None) and (f < -self._grasp_force_thresh_N)
 
     # =================== URDF FK & SAM2 helpers ===================
 

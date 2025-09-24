@@ -1839,9 +1839,9 @@ loader.load(
 
     // 4) Classification + 3D adornment
     function classifyGrip(forceN){
-      const f = Math.abs(forceN ?? 0);
+      const f = forceN ?? 0;
       if (!Number.isFinite(f)) return 'free';
-      return (f > GRASP_THRESHOLD_N) ? 'grasped' : 'free';
+      return (f < -GRASP_THRESHOLD_N) ? 'grasped' : 'free';
     }
 
     // Visuals: keep arrow color tied to commanded state (open/close).
@@ -3029,7 +3029,7 @@ loader.load(
     // ---- absolute hard limits (same for all users) ----
     const ABS_LIMITS = {
       x:     { min: 0.10,  max: 0.43  },
-      y:     { min: -0.15, max: 0.15  },
+      y:     { min: -0.30, max: 0.30  },
       z:     { min: 0.005, max: 0.30  },
       roll:  { min: -1.00, max: 1.00  },
       pitch: { min: -0.60, max: 0.75  },
@@ -3785,7 +3785,7 @@ loader.load(
 
     const spanDefs = [
       ['x',     0.20],   // meters
-      ['y',     0.20],
+      ['y',     0.40],
       ['z',     0.20],
       ['roll',  1.0],   // radians
       ['pitch', 0.81],
