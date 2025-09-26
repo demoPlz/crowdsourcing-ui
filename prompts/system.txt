@@ -1,0 +1,9 @@
+Context: Consider a system where states from a robot manipulation task are shown to remote users, who in turn provide action labels for corresponding states. Those action labels are in the form of the next-best-pose or gripper open/close, which the robot will move linearly to attain, i.e. move in a straight line and/or rotate in a linear fashion to achieve the pose specified by the label.
+
+Your job is, given a video of what has occurred in executing this manipulation task thus far, output a text prompt that describes what goal-pose or gripper-action the user should provide to advance the progress of the task. The text prompts take one of the following forms (** stands for parts you fill in, a/b indicates available wording options):
+
+1. Move gripper **, such that **, so that **.
+2. (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.
+3. Move gripper **, and (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.
+4. Open gripper to **.
+5. Close gripper to **.

@@ -12,6 +12,12 @@ import queue
 import json
 import traceback
 import datasets
+# --- VLM (Azure OpenAI GPT-5) integration ------------------------------------
+import mimetypes
+
+def _safe_int(v, default):
+    try: return int(v)
+    except Exception: return default
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -116,8 +122,12 @@ class CrowdInterface():
                  required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
                  required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
                  autofill_important_states: bool = False,
-                 num_autofill_actions: int | None = None):
+                 num_autofill_actions: int | None = None,
+                 use_vlm_prompt: bool = False):
 
+        # --- UI prompt mode (simple vs VLM) ---
+        self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
+        self._vlm_enabled = False  # becomes True only if VLM is requested AND configured
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
         self._obs_cache_root = Path(os.getenv("CROWD_OBS_CACHE", os.path.join(tempfile.gettempdir(), "crowd_obs_cache")))
@@ -219,6 +229,24 @@ class CrowdInterface():
         self._seg_worker_running = False
         self._start_segmentation_worker()
 
+        # --- VLM worker wiring (only if enabled) ---
+        self._vlm_queue = queue.Queue(maxsize=_safe_int(os.getenv("VLM_QUEUE_SIZE", "8"), 8))
+        self._vlm_worker_running = False
+        self._vlm_worker_thread = None
+        self._aoai_client = None
+        self._aoai_deployment = None
+        if self.use_vlm_prompt:
+            # Try to verify creds early; if unavailable, fall back to simple prompts.
+            if self._ensure_azure_openai_client() is not None:
+                self._vlm_enabled = True
+                self._start_vlm_worker()
+            else:
+                self._vlm_enabled = False
+                print("⚠️ VLM prompts requested but Azure OpenAI is not configured; "
+                      "falling back to simple task prompts.")
+        else:
+            print("🧪 VLM prompts disabled (use_vlm_prompt=False).")
+
         self._exec_gate_by_session: dict[str, dict] = {}
 
         self._active_episode_id = None
@@ -263,6 +291,9 @@ class CrowdInterface():
 
         # track masks on disk: episode_id -> { state_id -> {view_name -> mask_path_png} }
         self._segmentation_paths_by_episode: dict[str, dict[int, dict[str, str]]] = {}
+
+        # --- VLM text cache (state-specific): episode_id -> { state_id -> text }
+        self._vlm_text_by_episode: dict[str, dict[int, str]] = {}
 
         # segmentation tunables
         self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "10"))     # px
@@ -316,6 +347,10 @@ class CrowdInterface():
             pass
         try:
             self._stop_segmentation_worker()
+        except Exception:
+            pass
+        try:
+            self._stop_vlm_worker()
         except Exception:
             pass
         # Flush any remaining buffered states before shutdown
@@ -736,6 +771,389 @@ class CrowdInterface():
             except Exception:
                 pass
     
+    # ---------- VLM worker plumbing ----------
+    def _start_vlm_worker(self):
+        if self._vlm_worker_thread is not None and self._vlm_worker_thread.is_alive():
+            return
+        self._vlm_worker_running = True
+        self._vlm_worker_thread = Thread(target=self._vlm_worker, daemon=True, name="vlm-worker")
+        self._vlm_worker_thread.start()
+        print("🧵 Started VLM worker")
+
+    def _stop_vlm_worker(self):
+        t = getattr(self, "_vlm_worker_thread", None)
+        if not t:
+            return
+        self._vlm_worker_running = False
+        try: self._vlm_queue.put_nowait(None)
+        except Exception: pass
+        if t.is_alive():
+            t.join(timeout=2.0)
+        self._vlm_worker_thread = None
+        try:
+            with self._vlm_queue.mutex:
+                self._vlm_queue.queue.clear()
+        except Exception:
+            pass
+        print("🛑 Stopped VLM worker")
+
+    def _enqueue_vlm_job(self, episode_id: str, state_id: int, view_paths: dict[str, str]):
+        """Queue a VLM job for (episode, important_state)."""
+        try:
+            self._vlm_queue.put_nowait((episode_id, state_id, dict(view_paths or {})))
+            print(f"🗂️ Queued VLM job ep={episode_id} sid={state_id}")
+        except queue.Full:
+            print(f"⚠️ VLM queue full; skipping ep={episode_id} sid={state_id}")
+
+    # ---------- Azure OpenAI client ----------
+    def _ensure_azure_openai_client(self):
+        """Lazy-init Azure OpenAI client from env; returns None if not configured."""
+        if self._aoai_client is not None:
+            return self._aoai_client
+        try:
+            from openai import AzureOpenAI
+        except Exception:
+            print("⚠️ AzureOpenAI SDK not installed. Run: pip install openai")
+            return None
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")  # your Azure *deployment name* for GPT-5
+        if not endpoint or not api_key or not deployment:
+            print("⚠️ Missing Azure OpenAI env (AZURE_OPENAI_ENDPOINT/API_KEY/DEPLOYMENT). VLM disabled.")
+            return None
+        self._aoai_client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version=api_version)
+        self._aoai_deployment = deployment
+        return self._aoai_client
+
+    # ---------- Blob upload (optional) ----------
+    def _maybe_upload_to_blob(self, local_path: str) -> str | None:
+        """
+        If Azure Blob creds are set and azure-storage-blob is installed,
+        upload and return a public (or SAS) URL. Otherwise return None.
+        """
+        try:
+            from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
+        except Exception:
+            return None
+        conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        container = os.getenv("AZURE_STORAGE_CONTAINER")
+        if not conn or not container:
+            return None
+        try:
+            bsvc = BlobServiceClient.from_connection_string(conn)
+            cclient = bsvc.get_container_client(container)
+            try: cclient.create_container()
+            except Exception: pass
+            name = f"episodes/{int(time.time())}_{os.path.basename(local_path)}"
+            with open(local_path, "rb") as f:
+                cclient.upload_blob(name, f, overwrite=True, content_type=mimetypes.guess_type(local_path)[0] or "application/octet-stream")
+            # Try SAS link (read-only, short expiry)
+            try:
+                from datetime import datetime, timedelta
+                sas = generate_blob_sas(
+                    account_name=bsvc.account_name,
+                    container_name=container,
+                    blob_name=name,
+                    account_key=bsvc.credential.account_key,  # works for connection-string auth
+                    permission=BlobSasPermissions(read=True),
+                    expiry=datetime.utcnow() + timedelta(hours=12),
+                )
+                return f"https://{bsvc.account_name}.blob.core.windows.net/{container}/{name}?{sas}"
+            except Exception:
+                # Fallback to anonymous (requires container public access configured)
+                return f"https://{bsvc.account_name}.blob.core.windows.net/{container}/{name}"
+        except Exception as e:
+            print(f"⚠️ Blob upload failed: {e}")
+            return None
+
+    # ---------- Encoding helpers ----------
+    def _file_to_data_url(self, path: str, mime: str) -> str:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    def _image_file_to_data_url(self, path: str) -> str:
+        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+        return self._file_to_data_url(path, mime)
+
+    # ---------- Episode → video ----------
+    def _load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
+        """
+        Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing.
+        """
+        if not isinstance(obs, dict):
+            return None
+        for k in ("observation.images.cam_main", "observation.images.main", "observation.cam_main"):
+            if k in obs:
+                return self._to_uint8_rgb(obs[k])
+        return None
+
+    def _build_episode_maincam_video(self, episode_id: str, up_to_state_id: int) -> str | None:
+        """
+        Assemble MP4 from cam_main frames for states in [start .. up_to_state_id] of `episode_id`.
+        Returns output file path or None if no frames found.
+        """
+        # Collect (sid, obs_path) from both pending and completed buffers
+        paths: list[tuple[int, str]] = []
+        with self.state_lock:
+            pend = self.pending_states_by_episode.get(episode_id, {})
+            for sid, info in pend.items():
+                if sid <= up_to_state_id and info.get("obs_path"):
+                    paths.append((sid, info["obs_path"]))
+            buf = self.completed_states_buffer_by_episode.get(episode_id, {})
+            for sid, manifest in buf.items():
+                if sid <= up_to_state_id and isinstance(manifest, dict) and manifest.get("obs_path"):
+                    paths.append((sid, manifest["obs_path"]))
+        if not paths:
+            print(f"⚠️ No obs paths found to build video ep={episode_id} up_to={up_to_state_id}")
+            return None
+
+        paths.sort(key=lambda x: x[0])
+        frames: list[np.ndarray] = []
+        for sid, p in paths:
+            obs = self._load_obs_from_disk(p)
+            img = self._load_main_cam_from_obs(obs)
+            if img is not None:
+                frames.append(img)
+        if not frames:
+            print(f"⚠️ No cam_main frames found ep={episode_id} up_to={up_to_state_id}")
+            return None
+
+        H, W = frames[0].shape[:2]
+        # fps: prefer dataset metadata; fall back to 8
+        try:
+            fps = float(getattr(self.dataset, "fps", None) or getattr(self.dataset.meta, "fps", None) or 8.0)
+        except Exception:
+            fps = 8.0
+
+        out_dir = self._episode_cache_dir(episode_id)
+        out_path = out_dir / f"{up_to_state_id:06d}_maincam.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (W, H))
+        if not writer.isOpened():
+            print("⚠️ VideoWriter failed to open; trying MJPG AVI fallback")
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+            out_path = out_dir / f"{up_to_state_id:06d}_maincam.avi"
+            writer = cv2.VideoWriter(str(out_path), fourcc, fps, (W, H))
+
+        for rgb in frames:
+            if rgb.shape[:2] != (H, W):
+                rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_AREA)
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            writer.write(bgr)
+        writer.release()
+        print(f"🎞️ Wrote episode video → {out_path}")
+        return str(out_path)
+
+    def _gather_important_maincam_sequence(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
+        """
+        Return (image_data_urls, state_ids) for IMPORTANT states in this episode
+        with state_id <= up_to_state_id, in ascending order of state_id.
+        Each image is a data URL (data:image/jpeg;base64,...) produced from
+        observation.images.cam_main (or the fallbacks handled by _load_main_cam_from_obs).
+        """
+        # Collect (sid -> obs_path) for important states from both pending and completed buffers
+        paths_by_sid: dict[int, str] = {}
+
+        with self.state_lock:
+            # Completed states metadata tells us which were important; the obs paths live in the buffer
+            completed_meta = self.completed_states_by_episode.get(episode_id, {})
+            completed_buf  = self.completed_states_buffer_by_episode.get(episode_id, {})
+
+            for sid, meta in completed_meta.items():
+                if sid <= up_to_state_id and meta.get("is_important", False):
+                    man = completed_buf.get(sid)
+                    if isinstance(man, dict) and man.get("obs_path"):
+                        paths_by_sid[sid] = man["obs_path"]
+
+            # Pending states: read directly
+            pending = self.pending_states_by_episode.get(episode_id, {})
+            for sid, info in pending.items():
+                if sid <= up_to_state_id and info.get("important", False):
+                    p = info.get("obs_path")
+                    if p:
+                        paths_by_sid[sid] = p
+
+        if not paths_by_sid:
+            return [], []
+
+        # Load frames in chronological order
+        seq_urls: list[str] = []
+        seq_ids:  list[int] = []
+        for sid in sorted(paths_by_sid.keys()):
+            obs = self._load_obs_from_disk(paths_by_sid[sid])
+            img = self._load_main_cam_from_obs(obs)
+            if img is None:
+                continue
+            # Encode to data URL (JPEG, quality = self._jpeg_quality)
+            seq_urls.append(self._encode_jpeg_base64(img))
+            seq_ids.append(sid)
+
+        return seq_urls, seq_ids
+
+    # ---------- VLM prompt helpers ----------
+    def _load_prompt_text(self, filename: str, fallback: str = "") -> str:
+        """
+        Load prompt text from prompts/{filename}.
+        Returns fallback text if file doesn't exist or can't be read.
+        """
+        try:
+            base_dir = Path(__file__).resolve().parent
+            prompt_path = (base_dir / ".." / "prompts" / filename).resolve()
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return content if content else fallback
+        except Exception as e:
+            print(f"⚠️ Failed to load prompt from {filename}: {e}")
+            return fallback
+
+    def _get_episode_history_prompt(self) -> str:
+        """Get prompt text for episode history (maincam sequence)."""
+        template = self._load_prompt_text(
+            "episode_history.txt", 
+            "these are the important-state cam_main frames in chronological order"
+        )
+        # Replace {self.task} with the actual task value
+        try:
+            task_value = getattr(self, 'task', 'manipulation task')
+            return template.replace('{self.task}', str(task_value))
+        except Exception as e:
+            print(f"⚠️ Failed to format episode history prompt: {e}")
+            # Return the template as-is if formatting fails
+            return template
+
+    def _get_current_state_prompt(self) -> str:
+        """Get prompt text for current state (four views)."""
+        return self._load_prompt_text(
+            "current_state.txt", 
+            "these are four views"
+        )
+
+    # ---------- VLM worker core ----------
+    def _vlm_worker(self):
+        """
+        For each queued (episode_id, state_id, view_paths):
+          1) Gather chronological sequence of important-state cam_main frames up to current state
+          2) Prepare four views from that state
+          3) Call Azure OpenAI Responses API (two user messages)
+          4) Save raw response JSON in the episode cache
+        """
+        while self._vlm_worker_running and not self._shutting_down:
+            try:
+                item = self._vlm_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            episode_id, state_id, view_paths = item
+            try:
+                # 1) Gather important-state keyframes (cam_main) for this episode up to current important state
+                seq_urls, seq_ids = self._gather_important_maincam_sequence(episode_id, state_id)
+                if not seq_urls:
+                    print(f"⛔ VLM: no important-state cam_main sequence; skipping ep={episode_id} sid={state_id}")
+                    continue
+                print(f"🖼️ VLM: using {len(seq_urls)} important-state cam_main frames (sids={seq_ids})")
+
+                # 2) Collect four views (front/left/right/perspective in this order)
+                ordered = ["front", "left", "right", "perspective"]
+                img_urls = []
+                for name in ordered:
+                    p = view_paths.get(name)
+                    if p and os.path.exists(p):
+                        img_urls.append(self._image_file_to_data_url(p))
+                if not img_urls:
+                    print("⚠️ VLM: no per-state view images found; proceeding with maincam sequence only")
+
+                # Build content blocks
+                episode_history_text = self._get_episode_history_prompt()
+                current_state_text = self._get_current_state_prompt()
+                
+                maincam_sequence_content = [{"type": "input_text", "text": episode_history_text}]
+                maincam_sequence_content += [{"type": "input_image", "image_url": u} for u in seq_urls]
+
+                four_views_content = [{"type": "input_text", "text": current_state_text}]
+                four_views_content += [{"type": "input_image", "image_url": u} for u in img_urls]
+
+                input_messages = [
+                    {"role": "user", "content": maincam_sequence_content},
+                    {"role": "user", "content": four_views_content},
+                ]
+
+                # 4) Call Azure OpenAI (Responses API)
+                client = self._ensure_azure_openai_client()
+                if client is None:
+                    print("⚠️ Azure OpenAI client not configured; skipping VLM call.")
+                    continue
+
+                print(f"\n🤖 Calling Azure OpenAI ({self._aoai_deployment}) for ep={episode_id} sid={state_id} ...")
+                try:
+                    resp = client.responses.create(
+                        model=self._aoai_deployment,  # Azure deployment name
+                        input=input_messages,
+                    )
+                    out_text = getattr(resp, "output_text", None)
+                    if out_text is None:
+                        try:
+                            out_text = resp.to_dict().get("output_text")
+                        except Exception:
+                            out_text = None
+                    raw_json = getattr(resp, "model_dump_json", lambda **_: None)(indent=2) or str(resp)
+                except Exception as e:
+                    # Fallback: some regions still expose chat.completions (note: images may not be supported here)
+                    print(f"ℹ️ Responses API failed ({e}); trying chat.completions fallback (text-only prompts)")
+                    resp = client.chat.completions.create(
+                        model=self._aoai_deployment,
+                        messages=[
+                            {"role": "user", "content": episode_history_text},
+                            {"role": "user", "content": current_state_text},
+                        ],
+                        temperature=0.0,
+                    )
+                    out_text = (resp.choices[0].message.content if getattr(resp, "choices", None) else None)
+                    raw_json = str(resp)
+
+                # 4) Persist the VLM result
+                out_dir = self._episode_cache_dir(episode_id)
+                out_file = out_dir / f"{state_id:06d}_vlm_response.json"
+                payload = {
+                    "episode_id": episode_id,
+                    "state_id": state_id,
+                    "requested_at": time.time(),
+                    # We no longer produce a video; store the sequence metadata instead
+                    "maincam_sequence_state_ids": seq_ids,
+                    "maincam_sequence_count": len(seq_ids),
+                    "view_paths": view_paths,
+                    "messages": input_messages,
+                    "text": out_text,
+                    "raw": raw_json,
+                }
+                with open(out_file, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                print(f"📝 Saved VLM response → {out_file}")
+
+                # Attach VLM text to this pending important state (if still pending)
+                text_clean = (out_text or "").strip()
+                with self.state_lock:
+                    # cache (always)
+                    self._vlm_text_by_episode.setdefault(episode_id, {})[state_id] = text_clean
+                    # if the state is still pending, attach it directly so the next get-state sees it
+                    ep_states = self.pending_states_by_episode.get(episode_id)
+                    if ep_states and state_id in ep_states:
+                        ep_states[state_id]["vlm_text"] = text_clean
+                        ep_states[state_id]["vlm_ready"] = True
+                        print(f"🧠 VLM text attached to pending state {state_id} (ep {episode_id})")
+                    else:
+                        # state might have completed/been removed while we were running
+                        print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id})")
+
+            except Exception as e:
+                print(f"❌ VLM worker error: {e}")
+                traceback.print_exc()
+            finally:
+                try: self._vlm_queue.task_done()
+                except Exception: pass
+
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
         self.events = events
@@ -1352,12 +1770,30 @@ class CrowdInterface():
                 return
 
             info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
+            if 'important' in info and info['important']:
+                return
             info["important"] = True
             info["segmentation_ready"] = False
+            if self._vlm_enabled:
+                info["vlm_text"] = None   # will be filled by VLM worker once ready
+                info["vlm_ready"] = False
+            else:
+                # When VLM is disabled, treat as 'ready' so no gating occurs anywhere.
+                info["vlm_text"] = None
+                info["vlm_ready"] = True
             print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
 
             # always queue auto-labeling
             self.auto_label_previous_states(latest_state_id)
+
+            # snapshot inputs for background worker
+            episode_id_local = latest_episode_id
+            state_id_local = latest_state_id
+            view_paths_local = dict(info.get("view_paths", {}))
+            joints_local = dict(info["state"].get("joint_positions", {}))
+
+            if self._vlm_enabled:
+                self._enqueue_vlm_job(episode_id_local, state_id_local, view_paths_local)
 
             st_obj = info["state"]
             if not self._gripper_is_grasped(st_obj):
@@ -1366,12 +1802,6 @@ class CrowdInterface():
                 fv = self._extract_grip_force_N(st_obj)
                 print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) — not grasped (force={fv!r})")
                 return
-
-            # snapshot inputs for background worker
-            episode_id_local = latest_episode_id
-            state_id_local = latest_state_id
-            view_paths_local = dict(info.get("view_paths", {}))
-            joints_local = dict(info["state"].get("joint_positions", {}))
 
         # enqueue heavy work after releasing the lock
         self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
@@ -1484,7 +1914,44 @@ class CrowdInterface():
                 state_info = episode_states[random_state_id]
                 latest_state_id = random_state_id
             
-            # Prefer to avoid unsegmented important states, but don't starve the loop.
+            # ---- Strict VLM gating for important states ----
+            # Do not serve an important state until its VLM text has been generated.
+            if (self._vlm_enabled
+                and state_info.get("important", False)
+                and not state_info.get("vlm_ready", False)):
+                best_pref = None  # preferred: non-important, or important with VLM+segmentation ready
+                best_any  = None  # fallback: important with VLM ready (segmentation may still be pending)
+
+                for ep_id, ep_states in self.pending_states_by_episode.items():
+                    for sid, si in ep_states.items():
+                        # STRICT rule: skip important states whose VLM text isn't ready
+                        if si.get("important", False) and not si.get("vlm_ready", False):
+                            continue
+
+                        ts = si.get("timestamp", 0.0)
+                        candidate = (ts, sid, ep_id, si)
+
+                        # Prefer to avoid unsegmented important states (soft preference)
+                        if si.get("important", False) and not si.get("segmentation_ready", False):
+                            # lower priority bucket
+                            if best_any is None or ts > best_any[0]:
+                                best_any = candidate
+                        else:
+                            # preferred bucket (non-important OR important+segmented)
+                            if best_pref is None or ts > best_pref[0]:
+                                best_pref = candidate
+
+                chosen = best_pref or best_any
+                if chosen:
+                    _, latest_state_id, best_ep, best_si = chosen
+                    state_info = best_si
+                    episode_states = self.pending_states_by_episode[best_ep]
+                else:
+                    # No safe alternatives; block serving for now
+                    print(f"⏸️ VLM not ready for important state {latest_state_id}; holding back serving.")
+                    return {}
+
+            # (Soft) preference to avoid unsegmented important states (kept for when VLM is ready)
             if state_info.get("important", False) and not state_info.get("segmentation_ready", False):
                 best_sid = None; best_ep = None; best_ts = -1.0
                 for ep_id, ep_states in self.pending_states_by_episode.items():
@@ -1525,9 +1992,19 @@ class CrowdInterface():
             state = state_info["state"].copy()
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
-            # expose pending flag so UI can show "segmenting..." without blocking
-            state["segmentation_pending"] = bool(state_info.get("important", False)
+            # expose importance and VLM text for THIS state only
+            state["is_important"] = bool(state_info.get("important", False))
+            state["vlm_text"] = (
+                state_info.get("vlm_text")
+                or self._vlm_text_by_episode.get(serving_episode, {}).get(latest_state_id)
+            )
+            # expose pending flags so UI can show status (VLM only if enabled)
+            state["segmentation_pending"] = bool(
+                state_info.get("important", False)
                                                  and not state_info.get("segmentation_ready", False))
+            state["vlm_pending"] = bool(
+                self._vlm_enabled and state_info.get("important", False)
+                                         and not state_info.get("vlm_ready", False))
             # Attach view_paths so serializer can serve the correct snapshot for this state
             vp = state_info.get("view_paths")
             if vp:
@@ -2564,8 +3041,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         state = crowd_interface.get_latest_state(session_id)
         payload = crowd_interface._state_to_json(state)
         
-        # Add hardcoded prompt text
-        payload["prompt"] = f"Task: {crowd_interface.task} What should the arm do next?"
+        # Use state-specific VLM text if present for THIS state; otherwise fall back
+        use_vlm = bool(getattr(crowd_interface, "use_vlm_prompt", False)
+                       and getattr(crowd_interface, "_vlm_enabled", False))
+        vlm_text = payload.get("vlm_text")
+        if use_vlm and isinstance(vlm_text, str) and vlm_text.strip():
+            payload["prompt"] = f"{vlm_text.strip()} Animate to check that there's no collision."
+        else:
+            payload["prompt"] = f"Task: {crowd_interface.task}. What should the arm do next?"
 
         response = jsonify(payload)
         # Prevent caching

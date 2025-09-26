@@ -63,6 +63,9 @@ def _pop_crowd_cli_overrides(argv=None):
         help="For IMPORTANT states, per unique submission fill this many actions in total "
              "(1 actual + N-1 clones). Default = required-responses-per-important-state."
     )
+    ap.add_argument(
+        "--use-vlm-prompt", action="store_true", dest="crowd_use_vlm_prompt",
+        help="If set, the UI will use VLM-generated prompts (requires Azure OpenAI). Otherwise the simple task prompt is used.")
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -211,6 +214,8 @@ def control_robot(cfg: ControlPipelineConfig):
         ci_kwargs["autofill_important_states"] = True
     if getattr(_CROWD_OVERRIDES, "crowd_num_autofill_actions", None) is not None:
         ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
+    if getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
+        ci_kwargs["use_vlm_prompt"] = True
     crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()
 
@@ -225,6 +230,12 @@ def control_robot(cfg: ControlPipelineConfig):
     assert isinstance(cfg.control, RecordControlConfig), 'This script is for data collection'
 
     record(robot, crowd_interface, cfg.control)
+
+    # After record(...) returns
+    try:
+        crowd_interface.begin_shutdown()
+    except Exception:
+        pass
 
     if robot.is_connected:
         robot.disconnect()

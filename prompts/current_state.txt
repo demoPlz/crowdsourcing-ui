@@ -1,0 +1,7 @@
+Output a text prompt that describes what goal-pose or gripper-action the user should provide to advance the progress of the task. The text prompts take one of the following forms (** stands for parts you fill in, a/b indicates available wording options):
+
+1. Move gripper **, such that **, so that **.
+2. (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.
+3. Move gripper **, and (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.
+4. Open gripper to **.
+5. Close gripper to **.

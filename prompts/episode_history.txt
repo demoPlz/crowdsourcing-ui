@@ -1,0 +1,3 @@
+Consider a system where states from a robot manipulation task are shown to remote users, who in turn provide action labels for corresponding states. Those action labels are in the form of the next-best-pose or gripper open/close, which the robot will move linearly to attain, i.e. move in a straight line and/or rotate in a linear fashion to achieve the pose specified by the label.
+
+The high level task here is  {self.task}. This sequence of keyframes shows what has occurred in executing this manipulation task thus far. Describe what has happened, and what the next-best-pose should be. Keep in mind that the robot moves linearly. The next-best-pose needs to avoid collision.
