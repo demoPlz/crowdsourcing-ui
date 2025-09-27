@@ -1,0 +1,14 @@
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "prompt": "Below we provide the four views the user. Output a text prompt that describes what goal-pose or gripper-action the user should provide to advance the progress of the task. The text prompts take one of the following forms (** stands for parts you fill in, a/b indicates available wording options), previously used in describing the task strategy and failure mode recoveries:\n\n1. Move gripper **, such that **, so that **.\n2. (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.\n3. Move gripper **, and (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.\n4. Open gripper to **.\n5. Close gripper to **.\n\nIf the state is \"known,\" i.e. described as part of the strategy or a failure mode with a known recovery, simply output the corresponding prompt. If not, provide a prompt of the specified form that advances the task execution, and matches the observed physical, spatial, dynamical properties of the environment 1) presented in the four views and 2) implicit in the strategy and failure mode descriptions. Be aware that the robot moves linearly; the next-best-pose needs to avoid unintended collisions given such movement pattern.",
+  "views": [
+    "left",
+    "right",
+    "front",
+    "perspective",
+    "obs_main",
+    "obs_wrist"
+  ],
+  "num_images": 4
+}

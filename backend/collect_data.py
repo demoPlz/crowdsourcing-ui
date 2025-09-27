@@ -78,7 +78,7 @@ def _pop_crowd_cli_overrides(argv=None):
         "--sequence-dir",
         type=str,
         dest="crowd_seq_dir",
-        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demos/drawer').",
+        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demo/{--task-name}').",
     )
     ap.add_argument(
         "--sequence-clear",
@@ -86,12 +86,13 @@ def _pop_crowd_cli_overrides(argv=None):
         dest="crowd_seq_clear",
         help="If set, clear the sequence directory at startup before saving new frames.",
     )
-    # --- NEW: one-word task name -> derive sequence dir at <repo>/prompts/demos/{task_name} ---
+    # --- NEW: one-word task name -> derive sequence dir at <repo>/prompts/demo/{task_name} ---
     ap.add_argument(
         "--task-name",
         type=str,
         dest="crowd_task_name",
-        help="One-word task name used to derive sequence dir as '<repo>/prompts/demos/{task_name}' "
+        help="One-word task name used for prompt placeholder substitution and, if --sequence-dir is not provided, "
+             "to derive the sequence dir as '<repo>/prompts/demo/{task_name}' "
              "(ignored if --sequence-dir is provided).",
     )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
@@ -247,28 +248,27 @@ def control_robot(cfg: ControlPipelineConfig):
     # NEW: image sequence saving controls
     if getattr(_CROWD_OVERRIDES, "crowd_save_seq", False):
         ci_kwargs["save_maincam_sequence"] = True
+    # Always capture raw CLI task_name (if any) for prompt placeholders
+    task_name = getattr(_CROWD_OVERRIDES, "crowd_task_name", None)
+    safe = None
+    if task_name:
+        safe = "".join(c for c in task_name if (c.isalnum() or c in ("_", "-"))).strip()
+        if safe:
+            ci_kwargs["prompt_task_name"] = safe  # <-- used only for prompt substitution / demo assets
+
+    # Sequence directory resolution
     if getattr(_CROWD_OVERRIDES, "crowd_seq_dir", None) is not None:
         ci_kwargs["prompt_sequence_dir"] = _CROWD_OVERRIDES.crowd_seq_dir
     else:
-        # Derive prompts/demos/{task_name} if provided and no explicit --sequence-dir was given
-        task_name = getattr(_CROWD_OVERRIDES, "crowd_task_name", None)
-        if task_name:
-            # sanitize to a safe folder component (letters, digits, _ and -)
-            safe = "".join(c for c in task_name if (c.isalnum() or c in ("_", "-"))).strip()
-            if safe:
-                repo_root = Path(__file__).resolve().parent / ".."
-                seq_dir = (repo_root / "prompts" / "demos" / safe).resolve()
-                ci_kwargs["prompt_sequence_dir"] = str(seq_dir)
-                try:
-                    logging.info(f"Using derived prompt sequence dir from --task-name='{safe}': {seq_dir}")
-                except Exception:
-                    pass
-            else:
-                try:
-                    logging.warning(f"--task-name='{task_name}' produced an empty/invalid folder name; "
-                                    "falling back to default sequence directory.")
-                except Exception:
-                    pass
+        # Derive prompts/demo/{task_name} if provided and no explicit --sequence-dir was given
+        if safe:
+            repo_root = Path(__file__).resolve().parent / ".."
+            seq_dir = (repo_root / "prompts" / "demo" / safe).resolve()
+            ci_kwargs["prompt_sequence_dir"] = str(seq_dir)
+            try:
+                logging.info(f"Using derived prompt sequence dir from --task-name='{safe}': {seq_dir}")
+            except Exception:
+                pass
     if getattr(_CROWD_OVERRIDES, "crowd_seq_clear", False):
         ci_kwargs["prompt_sequence_clear"] = True
     crowd_interface = CrowdInterface(**ci_kwargs)

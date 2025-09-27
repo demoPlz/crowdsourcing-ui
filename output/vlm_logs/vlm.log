@@ -1,0 +1,54 @@
+
+==== 2025-09-27 16:23:29 :: CONTEXT_QUERY ====
+{
+  "task": "Put the objects on the desk into the middle drawer",
+  "prompt": "Consider a system where states from a robot manipulation task are shown to remote users, who in turn provide action labels for corresponding states. Those action labels are in the form of the next-best-pose or gripper open/close, which the robot will move linearly to attain, i.e. move in a straight line and/or rotate in a linear fashion to achieve the pose specified by the label.\n\nThe high level task here is  {task}. The optimal strategy for executing this task is the following:\n\n{strategy}\n\nCommon failure modes that may lead to deviations from the strategies and how to recover from each are as follows:\n\n{failures}\n\nThis sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. For each key frame, output what has happened, and what is the next step taken.",
+  "demo_images": []
+}
+
+==== 2025-09-27 16:23:39 :: CONTEXT_RESPONSE ====
+{
+  "task": "Put the objects on the desk into the middle drawer",
+  "text": "I can do that, but I’m missing the specifics and the keyframes. Please provide:\n\n- The task (e.g., pick-and-place, cable routing, tool use).\n- The optimal strategy you want followed.\n- The failure modes and recoveries you want demonstrated.\n- The sequence of keyframes (images or brief descriptions of each frame).\n\nIf you upload the keyframe images, I’ll annotate each with:\n- What happened (state change, success/failure).\n- The next step (action label: target pose and gripper open/close), assuming straight-line motion to the specified pose.\n\nIf it helps, you can use this quick template per frame:\n- Frame N: Observation (object/robot pose, gripper state, notable events).\n- Outcome: Success/Failure type.\n- Next action: Target pose (position + orientation, or relative move), gripper command (open/close), approach standoff if needed, and any recovery note.\n\nIf you prefer, tell me the domain and I can propose the strategy and failure recoveries before annotating the frames."
+}
+
+==== 2025-09-27 16:23:47 :: STATE_HISTORY_QUERY ====
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "prompt": "This sequence of keyframes shows what has occurred in executing this manipulation task thus far. Describe what has happened--whether the strategy is abided by, or a failure mode has arisen--and, at a high level, what we should do next.",
+  "sequence_state_ids": [
+    4
+  ],
+  "num_images": 1
+}
+
+==== 2025-09-27 16:23:59 :: STATE_HISTORY_RESPONSE ====
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "text": "What happened:\n- The robot is still centered and away from the drawer unit on the right. It hasn’t approached or contacted a handle, so the task strategy (approach–grasp–pull) hasn’t begun. Likely the policy failed to detect/track the drawer handle or aborted the approach.\n\nWhat to do next (high level):\n- Re-localize the drawer and select the correct handle.\n- Replan an approach to the right side: move the base/arm right, align the gripper with the handle height, orient the jaws to grasp, then execute a gentle grasp-and-pull.\n- If perception is uncertain, take a closer viewpoint first, then proceed."
+}
+
+==== 2025-09-27 16:23:59 :: STATE_CURRENT_QUERY ====
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "prompt": "Below we provide the four views the user. Output a text prompt that describes what goal-pose or gripper-action the user should provide to advance the progress of the task. The text prompts take one of the following forms (** stands for parts you fill in, a/b indicates available wording options), previously used in describing the task strategy and failure mode recoveries:\n\n1. Move gripper **, such that **, so that **.\n2. (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.\n3. Move gripper **, and (tilt clockwise/anti-clockwise) / (nod upward/downward) / (turn clockwise/anti-clockwise), such that **, so that**.\n4. Open gripper to **.\n5. Close gripper to **.\n\nIf the state is \"known,\" i.e. described as part of the strategy or a failure mode with a known recovery, simply output the corresponding prompt. If not, provide a prompt of the specified form that advances the task execution, and matches the observed physical, spatial, dynamical properties of the environment 1) presented in the four views and 2) implicit in the strategy and failure mode descriptions. Be aware that the robot moves linearly; the next-best-pose needs to avoid unintended collisions given such movement pattern.",
+  "views": [
+    "left",
+    "right",
+    "front",
+    "perspective",
+    "obs_main",
+    "obs_wrist"
+  ],
+  "num_images": 4
+}
+
+==== 2025-09-27 16:24:14 :: STATE_CURRENT_RESPONSE ====
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "text": "Move gripper right to the front-center of the top drawer’s handle, and nod downward, such that the fingertips hover 1–2 cm in front of the pull recess and align with its lip without touching the plastic, so that you can close and pull to open the drawer."
+}

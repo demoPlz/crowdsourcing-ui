@@ -1,0 +1,5 @@
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "text": "What happened:\n- The robot is still centered and away from the drawer unit on the right. It hasn’t approached or contacted a handle, so the task strategy (approach–grasp–pull) hasn’t begun. Likely the policy failed to detect/track the drawer handle or aborted the approach.\n\nWhat to do next (high level):\n- Re-localize the drawer and select the correct handle.\n- Replan an approach to the right side: move the base/arm right, align the gripper with the handle height, orient the jaws to grasp, then execute a gentle grasp-and-pull.\n- If perception is uncertain, take a closer viewpoint first, then proceed."
+}

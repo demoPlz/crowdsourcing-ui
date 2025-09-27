@@ -1,0 +1,9 @@
+{
+  "episode_id": 0,
+  "state_id": 4,
+  "prompt": "This sequence of keyframes shows what has occurred in executing this manipulation task thus far. Describe what has happened--whether the strategy is abided by, or a failure mode has arisen--and, at a high level, what we should do next.",
+  "sequence_state_ids": [
+    4
+  ],
+  "num_images": 1
+}

@@ -1,0 +1,5 @@
+{
+  "task": "Put the objects on the desk into the middle drawer",
+  "prompt": "Consider a system where states from a robot manipulation task are shown to remote users, who in turn provide action labels for corresponding states. Those action labels are in the form of the next-best-pose or gripper open/close, which the robot will move linearly to attain, i.e. move in a straight line and/or rotate in a linear fashion to achieve the pose specified by the label.\n\nThe high level task here is  {task}. The optimal strategy for executing this task is the following:\n\n{strategy}\n\nCommon failure modes that may lead to deviations from the strategies and how to recover from each are as follows:\n\n{failures}\n\nThis sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. For each key frame, output what has happened, and what is the next step taken.",
+  "demo_images": []
+}
