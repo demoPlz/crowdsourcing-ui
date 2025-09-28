@@ -749,8 +749,9 @@
     box-shadow:none;
   }
 
-  /* In-view Pose Reset button (lower-right of wheels) — liquid glass look */
-  .view-container .pose-reset{
+  /* In-view Pose Reset (lower-right) and Home HUD (lower-left) — liquid glass look */
+  .view-container .pose-reset,
+  .view-container .home-hud{
     position: absolute;
     z-index: 3;
     transform: translate(-50%, -50%); /* center on the computed anchor point */
@@ -778,18 +779,28 @@
     transition: transform .12s ease, box-shadow .12s ease, background .12s ease, opacity .12s ease, filter .12s ease;
   }
 
-  .view-container .pose-reset:hover{
+  /* Ensure SVG icons are perfectly centered */
+  .view-container .pose-reset svg,
+  .view-container .home-hud svg {
+    display: block;
+    margin: 0 auto;
+  }
+
+  .view-container .pose-reset:hover,
+  .view-container .home-hud:hover{
     transform: translate(-50%, -50%) translateY(-1px);
     box-shadow: 0 12px 28px rgba(0,0,0,.26);
     opacity: 1;
   }
 
-  .view-container .pose-reset:active{
+  .view-container .pose-reset:active,
+  .view-container .home-hud:active{
     transform: translate(-50%, -50%) translateY(0);
     filter: brightness(.98);
   }
 
-  .view-container .pose-reset[disabled]{
+  .view-container .pose-reset[disabled],
+  .view-container .home-hud[disabled]{
     opacity: .6;
     cursor: not-allowed;
     box-shadow: none;
@@ -1748,8 +1759,9 @@ loader.load(
     let gripArrows = [];                       // keeps currently-shown arrow meshes
     let gripDir    = state.gripper ?? 0;
 
-    let gripHUDs = []; // [{ view, el, badge, btn }]
+    let gripHUDs = [];      // [{ view, el, badge, btn }]
     let poseResetHUDs = []; // [{ view, el }]
+    let homeHUDs = [];      // [{ view, el }]
 
     let hudHiddenForAnimation = false;
     function setHUDHiddenForAnimation(hidden) {
@@ -1761,6 +1773,11 @@ loader.load(
       });
       // Pose Reset HUDs
       poseResetHUDs.forEach(({ el }) => {
+        if (hidden) el.style.setProperty('display', 'none', 'important');
+        else el.style.removeProperty('display');
+      });
+      // Home HUDs
+      homeHUDs.forEach(({ el }) => {
         if (hidden) el.style.setProperty('display', 'none', 'important');
         else el.style.removeProperty('display');
       });
@@ -2937,8 +2954,10 @@ loader.load(
       const btn = document.createElement('button');
       btn.className = 'pose-reset';
       btn.type = 'button';
-      btn.textContent = '↺'; // glyph only
-      btn.title = 'Reset to original position';
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="fill: currentColor;">
+        <path d="M22.719 12A10.719 10.719 0 0 1 1.28 12h.838a9.916 9.916 0 1 0 1.373-5H8v1H2V2h1v4.2A10.71 10.71 0 0 1 22.719 12z"/>
+      </svg>`; // reset SVG icon
+      btn.title = 'Reset to starting position';
       btn.setAttribute('aria-label', 'Reset to starting position');
 
       btn.addEventListener('click', (e) => {
@@ -2948,6 +2967,24 @@ loader.load(
 
       view.container.appendChild(btn);
       poseResetHUDs.push({ view, el: btn });
+    }
+
+    function createHomeHUDForView(view){
+      const btn = document.createElement('button');
+      btn.className = 'home-hud';
+      btn.type = 'button';
+      btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 50 50" style="fill: currentColor;">
+        <path d="M 24.962891 1.0546875 A 1.0001 1.0001 0 0 0 24.384766 1.2636719 L 1.3847656 19.210938 A 1.0005659 1.0005659 0 0 0 2.6152344 20.789062 L 4 19.708984 L 4 46 A 1.0001 1.0001 0 0 0 5 47 L 18.832031 47 A 1.0001 1.0001 0 0 0 19.158203 47 L 30.832031 47 A 1.0001 1.0001 0 0 0 31.158203 47 L 45 47 A 1.0001 1.0001 0 0 0 46 46 L 46 19.708984 L 47.384766 20.789062 A 1.0005657 1.0005657 0 1 0 48.615234 19.210938 L 41 13.269531 L 41 6 L 35 6 L 35 8.5859375 L 25.615234 1.2636719 A 1.0001 1.0001 0 0 0 24.962891 1.0546875 z M 25 3.3222656 L 44 18.148438 L 44 45 L 32 45 L 32 26 L 18 26 L 18 45 L 6 45 L 6 18.148438 L 25 3.3222656 z M 37 8 L 39 8 L 39 11.708984 L 37 10.146484 L 37 8 z M 20 28 L 30 28 L 30 45 L 20 45 L 20 28 z"></path>
+      </svg>`; // home SVG icon
+      btn.title = "Move to arm's home position";
+      btn.setAttribute('aria-label', "Move to arm's home position");
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applyHomePosition();
+      });
+
+      view.container.appendChild(btn);
+      homeHUDs.push({ view, el: btn });
     }
 
     const WHEEL_OUTER_RADIUS_M = 0.105; // keep in sync with makeWheel(... outerR=0.105 ...)
@@ -3587,6 +3624,7 @@ loader.load(
         attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
         createGripHUDForView(view);
         createPoseResetHUDForView(view);
+        createHomeHUDForView(view);
 
         // --- NEW: if a mask exists for this view, mount the overlay ---
         const segUrl = segmentsByView[viewInfo.name];
@@ -3879,6 +3917,62 @@ loader.load(
       updateGripHUDInteractivity();
     }
 
+    // --- NEW: applyHomePosition() ---
+    // Sets joints to: [0, 60°, 75°, -60°, 0°, 0°, 2°] and aligns the IK goal/marker to match.
+    function applyHomePosition() {
+      // If animation is running, stop it so we can jump to a clean configuration
+      cancelAnimationIfRunning('Home Pos');
+
+      // Define your Home angles (in radians) using Math.PI
+      const D2R = Math.PI / 180;
+      const HOME_RAD = [0, 60, 75, -60, 0, 0, 2].map(d => d * D2R);
+
+      // We'll map the angles onto the joint *order* provided by the server's
+      // initialJointPositions object (same order used during reset).
+      // This keeps the mapping robust without hardcoding joint names.
+      const jointNames = Object.keys(initialJointPositions || {});
+      const count = Math.min(jointNames.length, HOME_RAD.length);
+
+      let applied = 0;
+      for (let i = 0; i < count; i++) {
+        const name = jointNames[i];
+        const val  = HOME_RAD[i];
+        robot.setJointValue(name, val);
+        applied++;
+      }
+
+      robot.updateMatrixWorld(true);
+
+      // Sample the EE pose for this joint configuration
+      const p = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      eeVis.getWorldPosition(p);
+      eeVis.getWorldQuaternion(q);
+
+      // Update the live target/marker/goal so IK keeps the robot at this pose
+      targetPose.pos.copy(p);
+      targetPose.quat.copy(q);
+      marker.position.copy(p);
+      marker.quaternion.copy(q);
+      goal.setPosition(p.x, p.y, p.z);
+      goal.setQuaternion(q.x, q.y, q.z, q.w);
+
+      // Keep the Cartesian params consistent (sliders are hidden, but state matters)
+      params.x = p.x; params.y = p.y; params.z = p.z;
+      params.roll = 0; params.pitch = 0; params.yaw = 0;
+      prevAngles.roll = 0; prevAngles.pitch = 0; prevAngles.yaw = 0;
+
+      // Make sure the robot is visible like after a pose change
+      revealMinimalRobotFromPose();
+
+      // Update UI/interlocks (Task Already Completed, gripper gating, etc.)
+      updateTaskCompletedAvailability();
+      recomputeLocks();
+      updateGripHUDInteractivity();
+
+      console.log(`Home Pos applied to ${applied} joint(s) using order:`, jointNames.slice(0, applied));
+    }
+
     function positionPoseResetHUDs(){
       poseResetHUDs.forEach(({ view, el }) => {
         const cam  = view.camera;
@@ -3926,6 +4020,57 @@ loader.load(
         const edge = 8; // small screen-edge clamp
         const x = Math.round(baseX + offsetPxX);  // right
         const y = Math.round(baseY + offsetPxY);  // DOWN (note the +)
+
+        el.style.left = `${Math.max(edge, Math.min(rect.width  - edge, x))}px`;
+        el.style.top  = `${Math.max(edge, Math.min(rect.height - edge, y))}px`;
+      });
+    }
+
+    function positionHomeHUDs(){
+      homeHUDs.forEach(({ view, el }) => {
+        const cam  = view.camera;
+        const rect = view.renderer.domElement.getBoundingClientRect();
+
+        if (hudHiddenForAnimation) {
+          el.style.setProperty('display', 'none', 'important');
+          return;
+        } else {
+          el.style.removeProperty('display');
+        }
+
+        // Project marker center
+        const c = marker.position.clone().project(cam);
+        if (c.z < -1 || c.z > 1) { el.style.display = 'none'; return; }
+        el.style.display = 'block';
+
+        const baseX = (c.x * 0.5 + 0.5) * rect.width;
+        const baseY = (-c.y * 0.5 + 0.5) * rect.height;
+
+        // Estimate pixels-per-meter along screen up & right (same as reset HUD)
+        const upWorld    = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion).normalize();
+        const rightWorld = new THREE.Vector3(1,0,0).applyQuaternion(cam.quaternion).normalize();
+        const p0 = marker.position;
+        const M  = 0.10;
+
+        const sp1y = p0.clone().addScaledVector(upWorld,    M).project(cam);
+        const sp1x = p0.clone().addScaledVector(rightWorld, M).project(cam);
+
+        const py1 = (-sp1y.y * 0.5 + 0.5) * rect.height;
+        const px1 = ( sp1x.x * 0.5 + 0.5) * rect.width;
+
+        const pxPerMeterY = Math.abs(py1 - baseY) / M || 0;
+        const pxPerMeterX = Math.abs(px1 - baseX) / M || 0;
+
+        // Use same ring radius & margin as reset HUD, mirrored horizontally
+        const wheelPxRadiusX = Math.max(0, pxPerMeterX * WHEEL_OUTER_RADIUS_M);
+        const wheelPxRadiusY = Math.max(0, pxPerMeterY * WHEEL_OUTER_RADIUS_M);
+
+        const offsetPxX = Math.round(wheelPxRadiusX + RESET_HUD_MARGIN_PX); // left from edge
+        const offsetPxY = Math.round(wheelPxRadiusY + RESET_HUD_MARGIN_PX); // down from edge
+
+        const edge = 8;
+        const x = Math.round(baseX - offsetPxX);  // ← LEFT
+        const y = Math.round(baseY + offsetPxY);  // ← DOWN
 
         el.style.left = `${Math.max(edge, Math.min(rect.width  - edge, x))}px`;
         el.style.top  = `${Math.max(edge, Math.min(rect.height - edge, y))}px`;
@@ -4184,6 +4329,7 @@ loader.load(
 
       positionGripHUDs();
       positionPoseResetHUDs();
+      positionHomeHUDs();
 
       // ----- render all views -----
       views.forEach(view => {
