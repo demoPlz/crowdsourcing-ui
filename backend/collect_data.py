@@ -36,6 +36,7 @@ from lerobot.configs import parser
 from crowd_interface import *
 import cv2  # for closing display windows
 from pathlib import Path
+import os
 
 def _stop_display_only(listener, display_cameras: bool):
     """
@@ -94,6 +95,19 @@ def _pop_crowd_cli_overrides(argv=None):
         help="One-word task name used for prompt placeholder substitution and, if --sequence-dir is not provided, "
              "to derive the sequence dir as '<repo>/prompts/demo/{task_name}' "
              "(ignored if --sequence-dir is provided).",
+    )
+    # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
+    ap.add_argument(
+        "--record-demo-videos",
+        action="store_true",
+        dest="crowd_record_videos",
+        help="If set, enable frontend demo video recording; saved under prompts/demos/{task-name}/videos.",
+    )
+    ap.add_argument(
+        "--demo-videos-dir",
+        type=str,
+        dest="crowd_videos_dir",
+        help="Override directory where demo videos are saved (default: 'prompts/demos/{task-name}/videos').",
     )
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
@@ -271,6 +285,20 @@ def control_robot(cfg: ControlPipelineConfig):
                 pass
     if getattr(_CROWD_OVERRIDES, "crowd_seq_clear", False):
         ci_kwargs["prompt_sequence_clear"] = True
+
+    # --- NEW: demo video recording controls ---
+    if getattr(_CROWD_OVERRIDES, "crowd_record_videos", False):
+        ci_kwargs["record_demo_videos"] = True
+        # If a custom dir isn't provided, CrowdInterface will derive prompts/demos/{task}/videos
+        if getattr(_CROWD_OVERRIDES, "crowd_videos_dir", None) is not None:
+            ci_kwargs["demo_videos_dir"] = _CROWD_OVERRIDES.crowd_videos_dir
+        else:
+            # Derive default if we have a sanitized task name
+            if safe:
+                repo_root = Path(__file__).resolve().parent / ".."
+                default_vdir = (repo_root / "prompts" / "demos" / safe / "videos").resolve()
+                ci_kwargs["demo_videos_dir"] = str(default_vdir)
+
     crowd_interface = CrowdInterface(**ci_kwargs)
     crowd_interface.init_cameras()
 

@@ -1046,6 +1046,108 @@
     z-index: 3 !important; /* bump over the canvas */
   }
 
+  /* === Recording UI (cursor & indicator) ================================== */
+  :root { --rec-accent: #ef4444; } /* red-500 */
+
+  /* Record-only wrapper */
+  #recordRegion{
+    position: relative;           /* anchor overlays inside the recording */
+    overflow: hidden;             /* no spillover */
+    display: flex;                /* maintain layout structure */
+    flex-direction: column;       /* stack content and button bars vertically */
+    gap: 16px;                    /* same gap as original viewport */
+  }
+
+  /* While recording, hide OS cursor only inside the recorded region */
+  body.recording #recordRegion, 
+  body.recording #recordRegion * {
+    cursor: none !important;
+  }
+
+  /* Make the big cursor local to the recorded region */
+  #recordRegion #bigCursor{
+    position: absolute;           /* was: fixed */
+    left: 0; top: 0;
+    width: 32px; height: 32px;
+    margin-left: -16px; margin-top: -16px;
+    pointer-events: none; z-index: 10003; display: none;
+  }
+  #recordRegion #bigCursor .ring{
+    position:absolute; inset:0;
+    border: 3px solid #fff; border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.35);
+    background: rgba(255,255,255,.04);
+  }
+  #recordRegion #bigCursor .dot{
+    position:absolute; left:50%; top:50%; width:6px; height:6px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: #111827;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(0,0,0,.9);
+  }
+  #recordRegion #bigCursor.active { transform: scale(.92); }
+  #recordRegion #bigCursor.click  { animation: clickFlash .18s ease; }
+
+  #recordRegion #recIndicator{
+    position: absolute; top: 8px; left: 8px;
+    display: none; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: rgba(0,0,0,.55); color: #fff;
+    font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto;
+    border: 1px solid rgba(255,255,255,.15);
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    z-index: 10002;
+  }
+  #recordRegion #recIndicator.visible { display: inline-flex; }
+  #recordRegion #recIndicator .dot{
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--rec-accent, #ef4444);
+    box-shadow: 0 0 0 2px rgba(239,68,68,.35);
+    animation: recPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes recPulse { 0%,100%{ transform: scale(1); opacity: 1 } 50%{ transform: scale(0.7); opacity: .6 } }
+
+  /* Legacy fallback styles for browsers without region capture */
+  #bigCursor{
+    position: fixed; left: 0; top: 0;
+    width: 32px; height: 32px;
+    margin-left: -16px; margin-top: -16px;
+    pointer-events: none; z-index: 10003; display: none;
+  }
+  #bigCursor .ring{
+    position:absolute; inset:0;
+    border: 3px solid #fff; border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.35);
+    background: rgba(255,255,255,.04);
+  }
+  #bigCursor .dot{
+    position:absolute; left:50%; top:50%; width:6px; height:6px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: #111827;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(0,0,0,.9);
+  }
+  #bigCursor.active { transform: scale(.92); }
+  #bigCursor.click { animation: clickFlash .18s ease; }
+  @keyframes clickFlash { 0% { filter: brightness(1.35); } 100% { filter: brightness(1); } }
+
+  /* Preflight hint (before browser share picker) */
+  #recPreflight{
+    position: fixed; inset: 0; display: none; place-items: center;
+    z-index: 10004; background: rgba(0,0,0,.55);
+  }
+  #recPreflight.visible{ display: grid; }
+  #recPreflight .card{
+    max-width: 520px; width: min(92vw, 520px);
+    background: rgba(17,24,39,.9); color:#e5e7eb;
+    padding: 16px 18px; border: 1px solid rgba(255,255,255,.08);
+    box-shadow: 0 12px 32px rgba(0,0,0,.5);
+    border-radius: 12px; text-align: left;
+    font: 500 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto;
+  }
+  #recPreflight .title{ font-weight:700; margin:0 0 6px; font-size: 16px; }
+  #recPreflight .hint { opacity:.9 }
+
 
 </style>
 
@@ -1313,6 +1415,587 @@ let slidersLocked = false;
 
 const mount = document.getElementById('viewport');
 
+/* ---------- Local filesystem sink (File System Access API) ---------- */
+const LocalSink = (() => {
+  let dirHandle = null;
+  let fileHandle = null;
+  let writer = null;
+
+  async function pickFolder() {
+    // Requires user gesture; call from a button click or similar
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    // (Optionally store dirHandle in IndexedDB for reuse across sessions)
+    return true;
+  }
+
+  async function begin(filename) {
+    if (!dirHandle) return false;
+    fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+    writer = await fileHandle.createWritable();
+    return true;
+  }
+
+  async function writeChunk(blob) {
+    if (!writer) return false;
+    await writer.write(blob);
+    return true;
+  }
+
+  async function end() {
+    if (writer) { await writer.close(); writer = null; }
+    fileHandle = null;
+  }
+
+  function hasFolder() { return !!dirHandle; }
+
+  return { pickFolder, begin, writeChunk, end, hasFolder };
+})();
+
+/* ---------- Recording (tab capture + cursor overlay + backend upload) ---------- */
+
+// Re-crop if #recordRegion changes while recording
+function setupRegionRecrop(track) {
+  if (!('ResizeObserver' in window) || !('CropTarget' in window) || !track?.cropTo) return;
+  const ro = new ResizeObserver(async () => {
+    try {
+      const target = await window.CropTarget.fromElement(document.getElementById('recordRegion'));
+      await track.cropTo(target);
+    } catch (_) {}
+  });
+  const el = document.getElementById('recordRegion');
+  if (el) ro.observe(el);
+}
+
+function isBrowserTabTrack(track) {
+  try {
+    const s = track.getSettings && track.getSettings();
+    // In Chromium this is "browser" when the user picked "This Tab"
+    return !!s && s.displaySurface === 'browser';
+  } catch (_) { return false; }
+}
+
+/* ---------- Canvas-based recorder (no tab share required) ---------- */
+const CanvasRecording = (() => {
+  const FPS = 30;
+  let canvas, ctx, stream, mr, chunks = [], active = false, id, startedAt = 0;
+  let layout = null;            // {W,H, cells:[{x,y,w,h, view}]}
+  let cursor = { x: -1, y: -1, down: false };
+
+  function pickMime(){
+    const tryTypes = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    for (const t of tryTypes) if (MediaRecorder.isTypeSupported(t)) return t;
+    return '';
+  }
+
+  // Mirror your grid sizing so the compositor matches the on-screen look
+  function computeLayout(){
+    const vs = Array.from(views.values());
+    const n = vs.length;
+    if (!n) return null;
+
+    // same targets used in updateViewSizes()
+    let cellW, cellH;
+    if (n === 1)      { cellW = 600; cellH = 450; }
+    else if (n === 2) { cellW = 450; cellH = 338; }
+    else              { cellW = 375; cellH = 282; } // 3 or 4
+
+    const { rows, cols } = (n===1) ? {rows:1,cols:1}
+                        : (n===2) ? {rows:1,cols:2}
+                        :           {rows:2,cols:2};
+
+    const W = cols * cellW, H = rows * cellH;
+
+    // row-major placement
+    const cells = [];
+    for (let i=0;i<n;i++){
+      const r = Math.floor(i/cols), c = i%cols;
+      cells.push({ x: c*cellW, y: r*cellH, w: cellW, h: cellH, view: vs[i] });
+    }
+    return { W, H, cells };
+  }
+
+  function ensureCanvas(){
+    if (canvas) return;
+    canvas = document.createElement('canvas');
+    canvas.style.position = 'fixed';
+    canvas.style.left = '-10000px'; // keep off-screen
+    canvas.style.top  = '-10000px';
+    document.body.appendChild(canvas);
+    ctx = canvas.getContext('2d', { alpha: false });
+  }
+
+  // Cover-fit draw (like CSS background-size: cover)
+  function drawCover(img, dx, dy, dw, dh){
+    const sw = img.naturalWidth || img.videoWidth || img.width || 1;
+    const sh = img.naturalHeight || img.videoHeight || img.height || 1;
+    const s = Math.max(dw / sw, dh / sh);
+    const tw = sw * s, th = sh * s;
+    const sx = dx + (dw - tw) / 2;
+    const sy = dy + (dh - th) / 2;
+    ctx.drawImage(img, sx, sy, tw, th);
+  }
+
+  // pointer → compositor coordinates (relative to the views grid only)
+  function setupPointerTracking(){
+    const grid = viewsGrid; // your element that visually holds the 4 views
+    grid.addEventListener('pointermove', (e) => {
+      const r = grid.getBoundingClientRect();
+      cursor.x = (e.clientX - r.left);
+      cursor.y = (e.clientY - r.top);
+    }, { passive: true });
+    grid.addEventListener('pointerleave', () => { cursor.x = -1; cursor.y = -1; });
+    grid.addEventListener('pointerdown', () => { cursor.down = true; });
+    grid.addEventListener('pointerup',   () => { cursor.down = false; });
+  }
+
+  function drawCursor(){
+    if (!layout) return;
+    // When pointer is outside grid, skip
+    if (cursor.x < 0 || cursor.y < 0) return;
+
+    // cursor size roughly like your bigCursor element
+    const R = 16;    // outer radius
+    const r = 3;     // dot
+
+    ctx.save();
+    ctx.translate(cursor.x, cursor.y);
+
+    // outer white ring with dark outline
+    ctx.beginPath();
+    ctx.arc(0,0,R,0,Math.PI*2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#fff';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 2;
+    ctx.stroke();
+
+    // inner dot
+    ctx.beginPath();
+    ctx.arc(0,0,r,0,Math.PI*2);
+    ctx.fillStyle = '#111827';
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.fill();
+    ctx.stroke();
+
+    // click flash (simple scale)
+    if (cursor.down){
+      ctx.beginPath();
+      ctx.arc(0,0,R-2,0,Math.PI*2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Preload snapshot <img> for each view so we can draw them
+  function ensureSnapshotImg(view, dataUrl){
+    if (view._snapshotImg) return;
+    const img = new Image();
+    img.src = dataUrl;
+    view._snapshotImg = img;
+  }
+
+  let rafId = 0;
+  function compose(){
+    rafId = requestAnimationFrame(compose);
+    if (!layout) return;
+
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+
+    // Draw each cell: camera image → renderer canvas
+    for (const cell of layout.cells){
+      const v = cell.view;
+      // 1) camera snapshot (cover fit)
+      if (v._snapshotImg) drawCover(v._snapshotImg, cell.x, cell.y, cell.w, cell.h);
+      // 2) overlays — your WebGL renderer canvas
+      const c = v.renderer?.domElement;
+      if (c && c.width && c.height){
+        ctx.drawImage(c, cell.x, cell.y, cell.w, cell.h);
+      }
+      // (If you also want to draw the translucent seg mask, see note below.)
+    }
+
+    // 3) synthetic cursor (draw last so it sits on top)
+    drawCursor();
+  }
+
+  async function start(trigger='unknown'){
+    if (active) return true;
+
+    ensureCanvas();
+    setupPointerTracking();
+
+    // Build (or rebuild) the layout using current views
+    layout = computeLayout();
+    if (!layout) return false;
+
+    canvas.width  = layout.W;
+    canvas.height = layout.H;
+
+    // Make sure each view has a snapshot <img>
+    // We have the dataURL in the state; your code passed it into createViewRenderer as imageSrc
+    views.forEach((v, name) => {
+      const url = window.__INIT_STATE?.views?.[name];
+      if (url) ensureSnapshotImg(v, url);
+    });
+
+    // Start composition loop first (so first frame is ready quickly)
+    compose();
+
+    // Start recorder on the compositor canvas stream
+    const mime = pickMime();
+    stream = canvas.captureStream(FPS);
+    mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+    id = `rec-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+    chunks = [];
+    startedAt = Date.now();
+    active = true;
+
+    // Backend session (same contract as your old Recording)
+    let uploadOk = false;
+    try {
+      const rect = { width: canvas.width, height: canvas.height };
+      const meta = {
+        recording_id: id, sid: SID, started_at: new Date().toISOString(),
+        trigger, fps: FPS, viewport: { ...rect, dpr: 1 },
+        cursor_overlay: true,
+        state_id: window.__INIT_STATE?.state_id,
+        episode_id: window.__INIT_STATE?.episode_id,
+        task_name: window.__INIT_STATE?.task_name,
+        container: 'quad-views',
+        ext: 'webm'
+      };
+      const resp = await apiFetch('/api/record/start', {
+        method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(meta)
+      });
+      uploadOk = resp.ok;
+    } catch { uploadOk = false; }
+
+    mr.ondataavailable = async (ev) => {
+      if (!ev.data || ev.data.size === 0) return;
+      // stream to backend in 1s chunks to match your contract
+      if (uploadOk) {
+        try {
+          const qs = new URLSearchParams({ rid: id, seq: String(chunks.length), sid: SID });
+          await apiFetch(`/api/record/chunk?${qs}`, {
+            method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: ev.data
+          });
+          chunks.push(null); // maintain seq length
+          return;
+        } catch(_) {}
+      }
+      chunks.push(ev.data); // fallback buffer
+    };
+
+    mr.onstop = async () => {
+      cancelAnimationFrame(rafId); rafId = 0;
+
+      try {
+        await apiFetch('/api/record/stop', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ recording_id: id, duration_ms: Date.now()-startedAt })
+        });
+      } catch(_){ /* ignore */ }
+
+      // Fallback: download if backend not available
+      if (chunks.length && chunks[0] instanceof Blob) {
+        const blob = new Blob(chunks, { type: mime || 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `${id}.webm`; a.click();
+        URL.revokeObjectURL(url);
+      }
+      active = false;
+    };
+
+    mr.start(1000);
+    return true;
+  }
+
+  async function stop(){
+    if (!active) return;
+    const p = new Promise(res => mr.addEventListener('stop', res, {once:true}));
+    mr.stop();
+    await p;
+  }
+
+  return { ensureStart: start, stop, isActive: ()=>active };
+})();
+
+const Recording = (() => {
+  let stream = null, mr = null, chunks = [], uploadOk = false, seq = 0, id = null, active = false, startedAt = 0;
+  const FPS = 30;
+  let recIndicator, preflight, cursorEl, timerRAF;
+
+  function ensureUI(){
+    // ...existing...
+    const region = document.getElementById('recordRegion');
+
+    // REC indicator (append inside recordRegion)
+    if (!region.querySelector('#recIndicator')) {
+      const el = document.createElement('div');
+      el.id = 'recIndicator';
+      el.innerHTML = '<span class="dot" aria-hidden="true"></span><span>REC <span id="recTimer">00:00</span></span>';
+      region.prepend(el);
+    }
+    recIndicator = region.querySelector('#recIndicator');
+
+    // Preflight hint (still attached to body)
+    preflight = document.getElementById('recPreflight');
+    if (!preflight){
+      preflight = document.createElement('div');
+      preflight.id = 'recPreflight';
+      preflight.innerHTML = '<div class="card"><div class="title">Share this tab to start recording</div><div class="hint">When prompted by your browser, choose <b>This Tab</b>. We hide the system cursor and draw a large cursor so interactions are clear on video.</div></div>';
+      document.body.appendChild(preflight);
+    }
+
+    // Big cursor (append inside recordRegion)
+    cursorEl = region.querySelector('#bigCursor');
+    if (!cursorEl){
+      cursorEl = document.createElement('div');
+      cursorEl.id = 'bigCursor';
+      cursorEl.innerHTML = '<div class="ring"></div><div class="dot"></div>';
+      region.appendChild(cursorEl);
+    }
+
+    // Pointer tracking (show only inside #recordRegion)
+    window.addEventListener('pointermove', (e) => {
+      if (!active) { cursorEl.style.display = 'none'; return; }
+      const r = region.getBoundingClientRect();
+      const inBox = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      if (inBox) {
+        cursorEl.style.display = 'block';
+        cursorEl.style.left = e.clientX - r.left + 'px';
+        cursorEl.style.top  = e.clientY - r.top  + 'px';
+      } else {
+        cursorEl.style.display = 'none';
+      }
+    }, { passive: true });
+
+    window.addEventListener('pointerdown', () => {
+      cursorEl.classList.add('active'); cursorEl.classList.add('click');
+      setTimeout(()=>cursorEl.classList.remove('click'), 180);
+    }, { capture: true });
+    window.addEventListener('pointerup',   () => { cursorEl.classList.remove('active'); }, { capture: true });
+  }
+
+  function showPreflight(){ preflight?.classList.add('visible'); }
+  function hidePreflight(){ preflight?.classList.remove('visible'); }
+
+  function showIndicator(){
+    recIndicator?.classList.add('visible');
+    const tEl = document.getElementById('recTimer');
+    const tick = () => {
+      if (!active) return;
+      const s = Math.floor((Date.now()-startedAt)/1000);
+      const mm = String(Math.floor(s/60)).padStart(2, '0');
+      const ss = String(s%60).padStart(2, '0');
+      if (tEl) tEl.textContent = `${mm}:${ss}`;
+      timerRAF = requestAnimationFrame(tick);
+    };
+    timerRAF = requestAnimationFrame(tick);
+  }
+  function hideIndicator(){
+    recIndicator?.classList.remove('visible');
+    if (timerRAF) cancelAnimationFrame(timerRAF), timerRAF = null;
+  }
+
+  function pickMime(){
+    const tryTypes = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    for (const t of tryTypes) if (MediaRecorder.isTypeSupported(t)) return t;
+    return '';
+  }
+
+  async function start(trigger='unknown'){
+    if (active) return true;
+    if (!navigator.mediaDevices?.getDisplayMedia || !window.MediaRecorder) {
+      console.warn('Recording not supported in this browser.');
+      return false;
+    }
+
+    ensureUI();
+    try {
+      showPreflight();
+      // Capture THIS TAB; hide system cursor in the capture (we draw our own)
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: FPS, cursor: 'never', displaySurface: 'browser', logicalSurface: true },
+        audio: false
+      });
+      hidePreflight();
+
+      // Immediately after getDisplayMedia succeeds:
+      const [track] = stream.getVideoTracks();
+      // If the user picked "Entire screen" or a window, bail and re-prompt.
+      if (!isBrowserTabTrack(track)) {
+        try { stream.getTracks().forEach(t => t.stop()); } catch(_) {}
+        alert('Please share **This Tab** (not Entire screen) so we can crop to the robot views.');
+        // Re-open the picker; return the result of the recursive call
+        return await start(trigger);
+      }
+
+      if (track && 'cropTo' in track && 'CropTarget' in window) {
+        try {
+          const target = await window.CropTarget.fromElement(document.getElementById('recordRegion'));
+          await track.cropTo(target);
+          console.log('🎯 Recording is cropped to #recordRegion');
+        } catch (e) {
+          console.warn('Region Capture failed; falling back to full tab:', e);
+        }
+      } else {
+        console.warn('Region Capture not supported; recording full tab.');
+      }
+
+      // Re-crop if #recordRegion changes while recording
+      setupRegionRecrop(track);
+
+      const mime = pickMime();
+      mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+      chunks = [];
+      uploadOk = false; seq = 0;
+      id = `rec-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+      const filename = `${id}.webm`;
+      startedAt = Date.now();
+      active = true;
+
+      document.body.classList.add('recording');
+      cursorEl.style.display = 'block';
+      showIndicator();
+
+      // Best-effort backend session (falls back to local file if not available)
+      (async ()=>{
+        try {
+          const rect = mount.getBoundingClientRect();
+          const meta = {
+            recording_id: id,
+            sid: SID,
+            started_at: new Date().toISOString(),
+            trigger, fps: FPS,
+            viewport: { width: Math.round(rect.width), height: Math.round(rect.height), dpr: devicePixelRatio },
+            cursor_overlay: true,
+            state_id: window.__INIT_STATE?.state_id,
+            episode_id: window.__INIT_STATE?.episode_id,
+            task_name: window.__INIT_STATE?.task_name,       // backend "knows", but sending doesn't hurt
+            container: 'quad-views',                         // helpful for logs
+            ext: (mime && mime.includes('webm')) ? 'webm' : 'webm' // MediaRecorder → webm in browsers
+          };
+          const resp = await apiFetch('/api/record/start', {
+            method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(meta)
+          });
+          uploadOk = resp.ok;
+        } catch { uploadOk = false; }
+      })();
+
+      mr.ondataavailable = async (ev) => {
+        if (!ev.data || ev.data.size === 0) return;
+
+        if (uploadOk) {
+          try {
+            const qs = new URLSearchParams({ rid: id, seq: String(seq++), sid: SID });
+            await apiFetch(`/api/record/chunk?${qs}`, {
+              method:'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: ev.data
+            });
+            return; // success
+          } catch (e) {
+            console.warn('Chunk upload failed, switching to local sink.', e);
+            uploadOk = false;
+            // Intentionally fall through to local handling
+          }
+        }
+
+        // Local sink: open writer on first chunk
+        if (LocalSink.hasFolder() && !mr._localSinkOpened) {
+          try {
+            await LocalSink.begin(filename);
+            mr._localSinkOpened = true;
+          } catch (e) {
+            console.warn('Local sink not available; will buffer and download at end.', e);
+          }
+        }
+
+        if (mr._localSinkOpened) {
+          try { await LocalSink.writeChunk(ev.data); }
+          catch (e) { console.warn('Local sink write failed; buffering.', e); chunks.push(ev.data); }
+        } else {
+          chunks.push(ev.data);
+        }
+      };
+
+      mr.onstop = async () => {
+        try { stream?.getTracks().forEach(t => t.stop()); } catch {}
+        try {
+          if (uploadOk) {
+            await apiFetch('/api/record/stop', {
+              method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({
+                recording_id: id,
+                duration_ms: Date.now()-startedAt
+              })
+            });
+          } else if (RECORDING_ALLOWED && !LocalSink.hasFolder()) {
+            // When the flag is on we require backend persistence.
+            throw new Error('Backend recording upload not available (and no local sink).');
+          } else if (mr._localSinkOpened) {
+            await LocalSink.end();
+          } else if (chunks.length) {
+            // Legacy fallback: only when flag is OFF or a local sink was chosen.
+            const blob = new Blob(chunks, { type: mime || 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename; a.click();
+            URL.revokeObjectURL(url);
+          }
+        } catch (e) {
+          console.error('❌ Recording failed to persist to backend.', e);
+          alert('Recording could not be saved to the server. Please pick "This Tab" and try again.');
+        }
+        active = false;
+        document.body.classList.remove('recording');
+        cursorEl.style.display = 'none';
+        hideIndicator();
+      };
+
+      mr.start(1000); // 1s chunks
+
+      // If user stops sharing via browser UI, stop recorder cleanly
+      stream.getVideoTracks().forEach(t => t.addEventListener('ended', () => {
+        if (mr && mr.state !== 'inactive') mr.stop();
+      }));
+
+      return true;
+    } catch (err) {
+      console.error('User cancelled or capture failed:', err);
+      hidePreflight();
+      return false;
+    }
+  }
+
+  async function ensureStart(trigger='unknown'){
+    if (!active) await start(trigger);
+  }
+
+  async function stop(){
+    if (mr && mr.state !== 'inactive') {
+      const p = new Promise(res => mr.addEventListener('stop', res, {once:true}));
+      mr.stop();
+      await p;
+    }
+  }
+
+  function isActive(){ return active; }
+  return { ensureStart, stop, isActive };
+})();
+
+// Global flag for recording (set after initial state fetch)
+let RECORDING_ALLOWED = false;
+
+function maybeRecord(trigger) {
+  if (RECORDING_ALLOWED) CanvasRecording.ensureStart(trigger);
+}
+
 // Create a blue prompt bar that contains the prompt text
 const promptBar = document.createElement('div');
 promptBar.className = 'prompt-bar';
@@ -1324,14 +2007,19 @@ promptText.textContent = 'Pick up the red block.'; // Default text, will be upda
 promptBar.appendChild(promptText);
 mount.appendChild(promptBar);
 
-// Create the content container for views and controls
+// NEW: record-only wrapper that excludes the prompt bar
+const recordRegion = document.createElement('div');
+recordRegion.id = 'recordRegion';
+mount.appendChild(recordRegion);
+
+// Everything below goes into recordRegion (NOT directly into mount)
 const contentContainer = document.createElement('div');
 contentContainer.className = 'content-container';
-mount.appendChild(contentContainer);
+recordRegion.appendChild(contentContainer);
 
 const buttonBarsContainer = document.createElement('div');
 buttonBarsContainer.className = 'button-bars-container';
-mount.appendChild(buttonBarsContainer);
+recordRegion.appendChild(buttonBarsContainer);
 
 const resetBar = document.createElement('div');
 resetBar.className = 'reset-bar';
@@ -1341,12 +2029,12 @@ const confirmBar = document.createElement('div');
 confirmBar.className = 'confirm-bar';
 buttonBarsContainer.appendChild(confirmBar);
 
-// Create the views grid container
+// Views grid stays the same, but append to contentContainer under recordRegion
 const viewsGrid = document.createElement('div');
 viewsGrid.className = 'views-grid';
 contentContainer.appendChild(viewsGrid);
 
-// Create a wrapper for controls and task completed button
+// Controls wrapper as before (even if display:none)
 const controlsWrapper = document.createElement('div');
 controlsWrapper.style.display = 'flex';
 controlsWrapper.style.flexDirection = 'column';
@@ -1373,7 +2061,7 @@ function calculateGridLayout(numViews) {
 
 function setupViewportGrid(numViews) {
   const { rows, cols } = calculateGridLayout(numViews);
-  viewsGrid.style.gridTemplateRowsz = `repeat(${rows}, 1fr)`;
+  viewsGrid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
   viewsGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
 }
 
@@ -1746,6 +2434,14 @@ loader.load(
     ikRoot.clearDoF()
 
     const state = await getInitialState();
+    window.__INIT_STATE = state;  // so the recorder can include state_id/episode_id in its /start payload
+    
+    // After: const state = await getInitialState();
+    RECORDING_ALLOWED =
+      !!(state?.demo_video?.enabled ?? state?.record_demo_videos ?? state?.flags?.record_demo_videos ?? false);
+
+    console.log(`[recording] ${RECORDING_ALLOWED ? 'enabled (backend flag)' : 'disabled'}`);
+    
     const cameraModels = state.camera_models ?? {};
     // If the data collection server isn't available, stop building UI
     if (!state || Object.keys(state).length === 0 || !cameraModels) {
@@ -2199,6 +2895,9 @@ loader.load(
     
     
     function onGripperChange(newDir) {
+      // START recording on first state-altering action
+      maybeRecord('gripper-change');
+      
       cancelAnimationIfRunning('gripper changed');
       gripDir = newDir;                         // Update the current gripper direction
       drawGripArrows(newDir);
@@ -3481,12 +4180,10 @@ loader.load(
 
       // Press: start rotation or translation drag
       el.addEventListener('pointerdown', (evt) => {
-        if (slidersLocked) {                // ← block starting a drag while locked
-          el.style.cursor = 'not-allowed';
-          return;
-        }
-        if (calibrationMode) return;
-
+        if (slidersLocked || calibrationMode) return;
+        // START recording — this drag will alter the pose
+        maybeRecord('pose-drag');
+        
         const hits = pickAll(evt);
         if (!hits.length) return;
 
@@ -3788,6 +4485,9 @@ loader.load(
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
+      // Stop recording at the very start
+      if (RECORDING_ALLOWED) await CanvasRecording.stop();
+      
       // 0) Freeze any ongoing animation (unchanged)
       if (animState.enabled) {
         animState.enabled = false;
@@ -3813,6 +4513,7 @@ loader.load(
           });
 
           if (response.ok) {
+            if (RECORDING_ALLOWED) await CanvasRecording.stop();   // finalize video before refresh
             console.log('✅ Task already completed response sent');
             delayedRefresh(6000);
           } else {
@@ -3871,6 +4572,7 @@ loader.load(
         });
 
         if (response.ok) {
+          if (RECORDING_ALLOWED) await CanvasRecording.stop();   // safe even if already stopped
           console.log('✅ goal sent (final goal joints)');
           delayedRefresh(6000);
         } else {
@@ -4396,4 +5098,23 @@ loader.load(
   }
 );
 
-</script></body></html>
+// Stop recording on page hide to avoid orphaned sessions
+window.addEventListener('pagehide', () => { 
+  if (CanvasRecording.isActive()) CanvasRecording.stop(); 
+});
+
+</script>
+
+<div id="recPreflight" aria-hidden="true">
+  <div class="card">
+    <div class="title">Share this tab to start recording</div>
+    <div class="hint">
+      When your browser prompts, choose <b>This Tab</b>. We'll hide the system cursor and draw a large
+      high‑contrast cursor so interactions are clear on video.
+    </div>
+  </div>
+</div>
+<div id="bigCursor" aria-hidden="true"><div class="ring"></div><div class="dot"></div></div>
+<!-- The REC indicator is injected into #viewport via JS so it stays anchored on the card -->
+
+</body></html>

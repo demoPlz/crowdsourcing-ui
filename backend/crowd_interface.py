@@ -130,7 +130,11 @@ class CrowdInterface():
                  prompt_sequence_dir: str | None = None,
                  prompt_sequence_clear: bool = False,
                  # NEW: used ONLY for prompt substitution and demo assets
-                 prompt_task_name: str | None = None):
+                 prompt_task_name: str | None = None,
+                 # --- NEW: demo video recording ---
+                 record_demo_videos: bool = False,
+                 demo_videos_dir: str | None = None,
+                 demo_videos_clear: bool = True):
 
         # --- UI prompt mode (simple vs VLM) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
@@ -383,6 +387,127 @@ class CrowdInterface():
                 print(f"📸 Important-state capture → {self._prompt_seq_dir} (next index {self._prompt_seq_index:06d})")
             except Exception as e:
                 print(f"⚠️ Could not prepare sequence directory '{self._prompt_seq_dir}': {e}")
+
+        # --- NEW: Demo video recording ---
+        self.record_demo_videos = bool(record_demo_videos)
+        self._demo_videos_dir = None
+        self._video_index_lock = Lock()
+        self._video_index = 1   # 1-based, reset on each process start
+        self._video_ext_default = ".webm"
+        if self.record_demo_videos:
+            if demo_videos_dir:
+                self._demo_videos_dir = Path(demo_videos_dir).resolve()
+            else:
+                # Default: prompts/demos/{task-name}/videos
+                task_name = self.prompt_task_name or "default"
+                repo_root = Path(__file__).resolve().parent / ".."
+                self._demo_videos_dir = (repo_root / "prompts" / "demos" / task_name / "videos").resolve()
+            
+            try:
+                self._demo_videos_dir.mkdir(parents=True, exist_ok=True)
+                print(f"🎥 Demo video recording → {self._demo_videos_dir}")
+                # Clear dir (recommended) so numbering restarts at 1 every run
+                if demo_videos_clear:
+                    removed = 0
+                    for p in self._demo_videos_dir.iterdir():
+                        try:
+                            p.unlink()
+                            removed += 1
+                        except Exception:
+                            pass
+                    if removed:
+                        print(f"🧹 Cleared {removed} old files in {self._demo_videos_dir}")
+                # Ensure index starts at 1 (or next if directory not empty)
+                self._video_index = self._compute_next_video_index()
+            except Exception as e:
+                print(f"⚠️ Could not prepare demo videos directory '{self._demo_videos_dir}': {e}")
+                self.record_demo_videos = False
+
+    # ---------- Demo video config helpers (tell the frontend where to save) ----------
+    def _repo_root(self) -> Path:
+        """Root of the repo (backend assumes this file lives under <repo>/scripts or similar)."""
+        return (Path(__file__).resolve().parent / "..").resolve()
+
+    def _rel_path_from_repo(self, p: str | Path | None) -> str | None:
+        if not p:
+            return None
+        try:
+            rp = Path(p).resolve()
+            return str(rp.relative_to(self._repo_root()))
+        except Exception:
+            # If not inside the repo root, return the basename as a safe hint.
+            return os.path.basename(str(p))
+
+    def _compute_next_video_index(self) -> int:
+        """
+        Scan current videos dir and return the next integer index.
+        Accepts files named like '1.webm', '2.mp4', etc.
+        If directory is empty (typical after clear), returns 1.
+        """
+        if not self._demo_videos_dir:
+            return 1
+        max_idx = 0
+        try:
+            for p in self._demo_videos_dir.iterdir():
+                if not p.is_file():
+                    continue
+                m = re.match(r"^(\d+)\.[A-Za-z0-9]+$", p.name)
+                if m:
+                    max_idx = max(max_idx, int(m.group(1)))
+        except Exception:
+            pass
+        return (max_idx + 1) if max_idx > 0 else 1
+
+    @staticmethod
+    def _guess_ext_from_mime_or_name(mime: str | None, name: str | None, fallback: str = ".webm") -> str:
+        # Conservative mapping—extend if you need more types
+        mime = (mime or "").lower()
+        name = (name or "")
+        if "webm" in mime or name.endswith(".webm"):
+            return ".webm"
+        if "mp4" in mime or name.endswith(".mp4") or "mpeg4" in mime:
+            return ".mp4"
+        if "ogg" in mime or name.endswith(".ogv") or name.endswith(".ogg"):
+            return ".ogv"
+        return fallback
+
+    def _next_video_filename(self, ext: str) -> tuple[str, int]:
+        """Return ('{index}{ext}', index) and atomically increment the counter."""
+        if not ext.startswith("."):
+            ext = "." + ext
+        with self._video_index_lock:
+            idx = self._video_index
+            self._video_index += 1
+        return f"{idx}{ext}", idx
+
+    def get_demo_video_config(self) -> dict:
+        """
+        Small, stable contract the frontend can consume.
+        - enabled: whether UI should show the recorder
+        - task_name: sanitized task name if provided
+        - save_dir_abs / save_dir_rel: where uploads end up (for user display)
+        - upload_url: endpoint the UI should POST to (multipart 'video' + optional 'metadata')
+        - preferred_extension/mime: gentle hint for MediaRecorder/export
+        """
+        cfg = {
+            "enabled": bool(self.record_demo_videos),
+            "task_name": (self._task_name() or "default"),
+            "save_dir_abs": None,
+            "save_dir_rel": None,
+            "upload_url": "/api/upload-demo-video" if self.record_demo_videos else None,
+            "preferred_extension": "webm",
+            "preferred_mime": "video/webm",
+            # NEW: front-end hints to avoid getDisplayMedia (no Chrome picker, no screen recording)
+            "suggest_canvas_capture": True,
+            "filename_pattern": "{index}.{ext}",
+            "sequence_start_index": 1,
+            "reset_numbering_each_run": True,
+            "accept_mimes": ["video/webm", "video/mp4", "video/ogg"]
+        }
+        if self.record_demo_videos and self._demo_videos_dir:
+            cfg["save_dir_abs"] = str(self._demo_videos_dir)
+            cfg["save_dir_rel"] = self._rel_path_from_repo(self._demo_videos_dir)
+        return cfg
 
     def begin_shutdown(self):
         """Fence off new work immediately; endpoints will early-return."""
@@ -3377,6 +3502,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         else:
             payload["prompt"] = f"Task: {crowd_interface.task}. What should the arm do next?"
 
+        # NEW: Always tell the frontend what to do with demo videos
+        payload["demo_video"] = crowd_interface.get_demo_video_config()
+
         response = jsonify(payload)
         # Prevent caching
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -3389,6 +3517,17 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         # Count total states across all episodes
         total_states = sum(len(states) for states in crowd_interface.pending_states_by_episode.values())
         return jsonify({"message": "Flask server is working", "states_count": total_states})
+
+    @app.route("/api/demo-video-config", methods=["GET"])
+    def demo_video_config():
+        """
+        Lightweight config endpoint so the new frontend can fetch once on load.
+        Mirrors the 'demo_video' object we also embed in /api/get-state.
+        """
+        try:
+            return jsonify(crowd_interface.get_demo_video_config())
+        except Exception as e:
+            return jsonify({"enabled": False, "error": str(e)}), 500
     
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
@@ -3711,5 +3850,63 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": f"unexpected error: {e}"}), 500
+    
+    @app.route("/api/upload-demo-video", methods=["POST"])
+    def upload_demo_video():
+        if crowd_interface._shutting_down:
+            return jsonify({"status": "shutting_down"}), 503
+        
+        if not crowd_interface.record_demo_videos:
+            return jsonify({"error": "Demo video recording is not enabled"}), 400
+        
+        try:
+            if 'video' not in request.files:
+                return jsonify({"error": "No video file provided"}), 400
+            
+            file = request.files['video']
+            if file.filename == '':
+                return jsonify({"error": "No file selected"}), 400
+            
+            # Get optional metadata
+            metadata = {}
+            if 'metadata' in request.form:
+                try:
+                    metadata = json.loads(request.form['metadata'])
+                except:
+                    pass
+            
+            # Force server-side sequential naming: 1.ext, 2.ext, ...
+            # Decide extension from MIME or original name; default ".webm"
+            ext = CrowdInterface._guess_ext_from_mime_or_name(
+                getattr(file, "mimetype", None), file.filename, fallback=crowd_interface._video_ext_default
+            )
+            filename, index = crowd_interface._next_video_filename(ext)
+            file_path = crowd_interface._demo_videos_dir / filename
+            file.save(str(file_path))
+            
+            # Optionally save metadata
+            if metadata:
+                # Save metadata as {index}.json alongside the video, regardless of original filename
+                metadata_path = (crowd_interface._demo_videos_dir / f"{index}.json")
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, indent=2)
+            
+            # Optionally upload to blob storage (if configured) to produce a shareable URL
+            public_url = crowd_interface._maybe_upload_to_blob(str(file_path))
+
+            return jsonify({
+                "status": "success",
+                "filename": filename,
+                "path": str(file_path),  # absolute on server (for logs)
+                "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
+                "public_url": public_url,  # may be None if blob not configured
+                "config": crowd_interface.get_demo_video_config(),
+                "index": index
+            })
+            
+        except Exception as e:
+            print(f"❌ Error uploading demo video: {e}")
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
     
     return app
