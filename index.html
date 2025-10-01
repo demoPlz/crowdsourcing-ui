@@ -1544,6 +1544,51 @@ loader.load(
 
     scene.add(robot);
 
+    /* === Gold tint helpers (applies to both opaque + ghost) ================== */
+    const GOLD_HEX           = 0xffc83d;   // warm gold
+    const GOLD_EMISSIVE_HEX  = 0x6a4b00;   // subtle warm self-illum
+
+    function applyGoldTintToMaterial(mat, isGhost = false){
+      try {
+        // Base color
+        if (mat.color) mat.color.setHex(GOLD_HEX);
+
+        // Make sure it stays visible on dark camera imagery
+        if (mat.emissive){
+          mat.emissive.setHex(GOLD_EMISSIVE_HEX);
+          mat.emissiveIntensity = isGhost ? 0.65 : 0.40;   // ghost a bit brighter
+        }
+
+        // PBR-style materials
+        if ('metalness' in mat) mat.metalness = 0.6;
+        if ('roughness' in mat) mat.roughness = isGhost ? 0.55 : 0.35;
+
+        // Phong/Lambert fallback
+        if ('shininess' in mat) mat.shininess = 30;
+        if (mat.specular) mat.specular.setHex(0x222222);
+
+        mat.needsUpdate = true;
+      } catch(_) {}
+    }
+
+    function applyGoldTint(materialOrArray, isGhost = false){
+      if (Array.isArray(materialOrArray)) {
+        materialOrArray.forEach(m => applyGoldTintToMaterial(m, isGhost));
+      } else if (materialOrArray) {
+        applyGoldTintToMaterial(materialOrArray, isGhost);
+      }
+    }
+
+    // Tint every mesh on the robot now (covers SOLID parts when ghosting is off)
+    function tintRobotToGold(root){
+      root.traverse(o => {
+        if (o.isMesh && o.material) applyGoldTint(o.material, false);
+      });
+    }
+
+    // Do an immediate pass so the "solid" minimal links are gold from the start
+    tintRobotToGold(robot);
+
     // Which links should be visible outside animation:
     const MINIMAL_LINKS = ['link_6', 'gripper_left', 'gripper_right'];
 
@@ -1582,7 +1627,11 @@ loader.load(
         gm = mat.clone();
         gm.transparent = true;
         gm.opacity = GHOST.opacity;
-        gm.depthWrite = false;     // helps avoid z-fighting with opaque parts
+        gm.depthWrite = false;       // helps avoid z-fighting with opaque parts
+
+        // ⬇️ apply the same gold tint, slightly brighter emissive for readability
+        applyGoldTint(gm, true);
+
         // keep depthTest = true so ghosts still sort reasonably
         if (gm.needsUpdate !== undefined) gm.needsUpdate = true;
         GHOST.ghostFor.set(mat, gm);
