@@ -1,6 +1,6 @@
 Consider a system where states from a robot manipulation task are shown to remote users, who in turn provide action labels for corresponding states. Those action labels are in the form of the next-best-pose or gripper open/close, which the robot will move linearly to attain, i.e. move in a straight line and/or rotate in a linear fashion to achieve the pose specified by the label.
 
-The high level task here is  {task}. The optimal strategy for executing this task is the following:
+The high level task here is {task}. The optimal strategy for executing this task is the following:
 
 {strategy}
 
@@ -8,4 +8,4 @@ Common failure modes that may lead to deviations from the strategies and how to 
 
 {failures}
 
-This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. For each key frame, output what has happened, and what is the next step taken.
+This sequence of keyframes shows an example full execution of the task, with intentional demonstrations of failure cases and recoveries. The first frame shows the arm in the home position, which may occur in subsequent frames as well. For each key frame, output what has happened, and what is the next step taken.

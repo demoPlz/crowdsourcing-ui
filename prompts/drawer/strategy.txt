@@ -1,28 +1,72 @@
 High level:
 
-1. Check if any items are close to the drawer (the items should all be entirely on the left of the robot, to leave ample space), such that they risk being covered underneath the drawer if the drawer opens. If they are, move them to be entirely on the left of the robot one by one.
+1. If any items are close to the drawer (the items should all be entirely on the left of the robot, to leave ample space), such that they risk being covered underneath the drawer if the drawer opens, move them to be entirely on the left of the robot one by one. Else, go to step 2.
 
-2. Open the drawer.
+2. Open the middle drawer.
 
-3. Pick and place each item into the drawer.
+3. Pick and place each item into the opened drawer.
 
 4. Close the drawer.
 
 
-Low level:
+Lower level:
 
-Move objects left protocol:
+Move object left protocol:
 
-1.
+1. If the gripper is not in the general area above the object, or it cannot travel to be ~5cm above the object in a straight line without collision, move the gripper to satisfy these conditions. Else, go to step 2. This is to ensure that the object is in the wrist camera view of the arm, and we can execute step 2 without collision.
+
+2. Lower (translation-only) the gripper to be ~5cm above the object, or its grasp point.
+
+3. Rotate (rotate-only) the gripper to align with grasp.
+
+4. Lower the gripper to prepare for grasp.
+
+5. Close gripper to grasp.
+
+6. If dragging leftward will colide with another object, move forward or backward, such that the gripper and the object can move leftward without collision.
+
+6. Drag (translate-only) leftward along the desk.
+
 
 Open drawer protocol:
 
-1.
+1. If the gripper is not higher than the middle drawer's handle, raise the gripper such that it is. Else, move to step 2. This is to ensure that when we execute step 2 we get the correct grasp (one finger on top of the handle, one finger underneath the handle).
+
+2. Position the gripper to grasp to the middle drawer's handle.
+
+3. Close the gripper to grasp.
+
+4. Move the gripper to the left (translate-only) to drag the drawer open.
+
+5. Release the gripper.
+
+6. Return to the home position.
+
+
 
 Pick and place item into drawer protocol:
 
-1. 
+1. If the gripper is not in the general area above the object, or it cannot travel to be ~5cm above the object in a straight line without collision, move the gripper to satisfy these conditions. Else, go to step 2. This is to ensure that the object is in the wrist camera view of the arm, and we can execute step 2 without collision.
+
+2. Lower (translation-only) the gripper to be ~5cm above the object, or its grasp point.
+
+3. Rotate (rotate-only) the gripper to align with grasp.
+
+4. Lower the gripper to prepare for grasp.
+
+5. Close gripper to grasp.
+
+6. Raise (translation-only) the gripper such that the gripper and the object clear the height of the edge of the drawer.
+
+7. Move (translation-only) to be above the opened drawer.
+
+8. Open gripper to release object into the drawer.
+
 
 Close drawer protocol:
 
-1.
+1. Move such that the gripper is a) above the open drawer (usually is the case) and b) can move down to be on the same level as the open drawer without collision.
+
+2. Move down and rotate the gripper to be on the same level as the drawer, to prepare to push the drawer close.
+
+3. Push the the drawer close.

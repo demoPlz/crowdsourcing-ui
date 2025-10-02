@@ -2244,6 +2244,42 @@ let RECORDING_ALLOWED = false;
 let LAST_RECORDING_ID  = null;
 let LAST_RECORDING_EXT = 'webm'; // MediaRecorder → webm in browsers
 
+// --- Recording hotkeys (bound only when recording is enabled) -----------------
+let RECORDING_HOTKEYS_BOUND = false;
+
+function bindRecordingHotkeysOnce() {
+  if (RECORDING_HOTKEYS_BOUND || !RECORDING_ALLOWED) return;
+  RECORDING_HOTKEYS_BOUND = true;
+
+  window.addEventListener('keydown', async (e) => {
+    // ignore modifiers, IME composition, or typing in inputs
+    if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.defaultPrevented) return;
+
+    const k = (e.key || '').toLowerCase();
+
+    if (k === 'q') {
+      // Stop recording
+      if (CanvasRecording.isActive()) {
+        e.preventDefault();
+        try { await CanvasRecording.stop(); } catch (_) {}
+        console.log('🛑 Recording stopped via "q".');
+      }
+    } else if (k === 'r') {
+      // Re-record: stop (if needed) and start a fresh session
+      e.preventDefault();
+      try { if (CanvasRecording.isActive()) await CanvasRecording.stop(); } catch (_) {}
+      try {
+        await CanvasRecording.ensureStart('hotkey-rerecord');
+        console.log('⏺️ Re-record started via "r".');
+      } catch (err) {
+        console.warn('Could not start re-recording:', err);
+      }
+    }
+  });
+}
+
 function maybeRecord(trigger) {
   if (RECORDING_ALLOWED) CanvasRecording.ensureStart(trigger);
 }
@@ -2708,6 +2744,7 @@ loader.load(
 
     console.log(`[recording] ${RECORDING_ALLOWED ? 'enabled (backend flag)' : 'disabled'}`);
     
+    bindRecordingHotkeysOnce();
     const cameraModels = state.camera_models ?? {};
     // If the data collection server isn't available, stop building UI
     if (!state || Object.keys(state).length === 0 || !cameraModels) {
@@ -4760,9 +4797,6 @@ loader.load(
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
-      // Stop recording at the very start
-      if (RECORDING_ALLOWED) await CanvasRecording.stop();
-      
       // 0) Freeze any ongoing animation (unchanged)
       if (animState.enabled) {
         animState.enabled = false;
@@ -4791,7 +4825,6 @@ loader.load(
           });
 
           if (response.ok) {
-            if (RECORDING_ALLOWED) await CanvasRecording.stop();   // finalize video before refresh
             console.log('✅ Task already completed response sent');
             delayedRefresh(6000);
           } else {
@@ -4853,7 +4886,6 @@ loader.load(
         });
 
         if (response.ok) {
-          if (RECORDING_ALLOWED) await CanvasRecording.stop();   // safe even if already stopped
           console.log('✅ goal sent (final goal joints)');
           delayedRefresh(6000);
         } else {
