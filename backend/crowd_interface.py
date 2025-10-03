@@ -259,12 +259,6 @@ class CrowdInterface():
         else:
             print("🧪 VLM prompts disabled (use_vlm_prompt=False).")
 
-        # NEW: prepare log dir + flags
-        self._vlm_log_dir = Path(os.getenv("VLM_LOG_DIR", "output/vlm_logs")).resolve()
-        try:
-            self._vlm_log_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         self._vlm_context_done = False
         self._vlm_context_text = None
 
@@ -1164,43 +1158,10 @@ class CrowdInterface():
         raw = self._load_text(p, fallback)
         return self._substitute_placeholders(raw, self._task_name())
 
-    def _ensure_vlm_log_dir(self):
-        if not hasattr(self, "_vlm_log_dir"):
-            self._vlm_log_dir = Path(os.getenv("VLM_LOG_DIR", "output/vlm_logs")).resolve()
-            try:
-                self._vlm_log_dir.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-
-    def _vlm_log_append(self, heading: str, payload):
-        """
-        Append a human-friendly log entry to output/vlm_logs/vlm.log
-        and also save a timestamped snapshot file for easier diffing.
-        """
-        self._ensure_vlm_log_dir()
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            # Append log stream
-            log_path = self._vlm_log_dir / "vlm.log"
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"\n==== {ts} :: {heading} ====\n")
-                if isinstance(payload, (dict, list)):
-                    f.write(json.dumps(payload, indent=2, ensure_ascii=False))
-                else:
-                    f.write(str(payload))
-                f.write("\n")
-            # Snapshot
-            snap_path = self._vlm_log_dir / f"{time.strftime('%Y%m%d-%H%M%S')}_{heading}.json"
-            with open(snap_path, "w", encoding="utf-8") as g:
-                json.dump(payload if isinstance(payload, (dict, list)) else {"text": str(payload)},
-                          g, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-
     def _get_vlm_context_cache_path(self, task_name: str) -> Path:
         """Get the cache file path for VLM context for a specific task."""
-        cache_dir = self._vlm_log_dir / "context_cache"
-        cache_dir.mkdir(exist_ok=True)
+        cache_dir = Path(os.getenv("VLM_CACHE_DIR", str(self._prompts_root_dir() / "context_cache")))
+        cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / f"{task_name}_context.txt"
 
     def _load_cached_vlm_context(self, task_name: str) -> str | None:
@@ -1303,16 +1264,6 @@ class CrowdInterface():
             conversation_messages = text_only_conversation.copy()
             conversation_messages.append({"role": "user", "content": content})
             
-            self._vlm_log_append(f"CONTEXT_QUERY_ROUND_{round_num}", {
-                "task": task_name,
-                "round": round_num,
-                "prompt": prompt,
-                "batch_images": batch_imgs,
-                "batch_size": len(batch_imgs),
-                "total_images": len(imgs),
-                "previous_context_messages": len(text_only_conversation)
-            })
-
             # Call GPT-5 API
             resp = client.responses.create(model=self._aoai_deployment, input=conversation_messages)
             out_text = getattr(resp, "output_text", None)
@@ -1322,12 +1273,6 @@ class CrowdInterface():
             if out_text:
                 text_only_conversation.append({"role": "user", "content": prompt})
                 text_only_conversation.append({"role": "assistant", "content": out_text})
-
-            self._vlm_log_append(f"CONTEXT_RESPONSE_ROUND_{round_num}", {
-                "task": task_name,
-                "round": round_num,
-                "text": out_text
-            })
             
             all_responses.append({
                 "round": round_num,
@@ -1346,23 +1291,6 @@ class CrowdInterface():
             self._save_vlm_context_to_cache(task_name, combined_text.strip())
             # Also write to task directory for placeholder substitution
             self._write_vlm_context_to_task_dir(task_name, combined_text.strip())
-
-        # Persist record for the entire conversation
-        self._ensure_vlm_log_dir()
-        out_path = self._vlm_log_dir / f"{int(time.time())}_context_response.json"
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "task": task_name,
-                "requested_at": time.time(),
-                "total_images": len(imgs),
-                "total_rounds": len(all_responses),
-                "batch_size": batch_size,
-                "demo_images": imgs,
-                "combined_text": combined_text,
-                "all_responses": all_responses,
-                "cached": False,
-                "force_regenerate": force_regenerate
-            }, f, indent=2, ensure_ascii=False)
 
         self._vlm_context_text = combined_text.strip() if combined_text else ""
         self._vlm_context_done = True
@@ -1728,14 +1656,6 @@ class CrowdInterface():
                     "content": [{"type": "input_text", "text": episode_history_text}] +
                                [{"type": "input_image", "image_url": u} for u in seq_urls]
                 }]
-                self._vlm_log_append("STATE_HISTORY_QUERY", {
-                    "episode_id": episode_id, "state_id": state_id,
-                    "prompt": episode_history_text,
-                    "sequence_state_ids": seq_ids,
-                    "num_images": len(seq_urls),
-                    "includes_context": bool(hasattr(self, '_vlm_context_text') and self._vlm_context_text),
-                    "conversation_length": len(history_messages)
-                })
                 hist_text, hist_raw = None, None
                 try:
                     resp_h = client.responses.create(model=self._aoai_deployment, input=history_messages)
@@ -1745,7 +1665,6 @@ class CrowdInterface():
                     except Exception:
                         hist_raw = str(resp_h)
                 except Exception as e:
-                    self._vlm_log_append("STATE_HISTORY_FALLBACK", {"episode_id": episode_id, "state_id": state_id, "error": str(e)})
                     # text-only fallback - also include context in conversation
                     fallback_messages = []
                     if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
@@ -1760,10 +1679,6 @@ class CrowdInterface():
                     hist_text = (resp_h.choices[0].message.content
                                  if getattr(resp_h, "choices", None) else None)
                     hist_raw = str(resp_h)
-                self._vlm_log_append("STATE_HISTORY_RESPONSE", {
-                    "episode_id": episode_id, "state_id": state_id,
-                    "text": hist_text
-                })
 
                 # (2) CURRENT CALL: per-state multi-view (continuing the conversation with history response)
                 # Build conversation: context + history query + history response + current query
@@ -1789,15 +1704,6 @@ class CrowdInterface():
                 })
                 
                 current_messages = current_conversation
-                self._vlm_log_append("STATE_CURRENT_QUERY", {
-                    "episode_id": episode_id, "state_id": state_id,
-                    "prompt": current_state_text,
-                    "views": list(view_paths.keys()),
-                    "num_images": len(img_urls),
-                    "includes_context": bool(hasattr(self, '_vlm_context_text') and self._vlm_context_text),
-                    "includes_history": bool(hist_text),
-                    "conversation_length": len(current_messages)
-                })
                 curr_text, curr_raw = None, None
                 try:
                     resp_c = client.responses.create(model=self._aoai_deployment, input=current_messages)
@@ -1807,7 +1713,6 @@ class CrowdInterface():
                     except Exception:
                         curr_raw = str(resp_c)
                 except Exception as e:
-                    self._vlm_log_append("STATE_CURRENT_FALLBACK", {"episode_id": episode_id, "state_id": state_id, "error": str(e)})
                     # text-only fallback - include full conversation context
                     fallback_current_messages = []
                     if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
@@ -1825,10 +1730,6 @@ class CrowdInterface():
                     curr_text = (resp_c.choices[0].message.content
                                  if getattr(resp_c, "choices", None) else None)
                     curr_raw = str(resp_c)
-                self._vlm_log_append("STATE_CURRENT_RESPONSE", {
-                    "episode_id": episode_id, "state_id": state_id,
-                    "text": curr_text
-                })
 
                 # Combine for UI/storage; mark ready
                 combined_text = "\n\n---\n".join(
@@ -1837,29 +1738,6 @@ class CrowdInterface():
 
                 # For frontend: only use current state response with cleaned format
                 frontend_text = self._clean_vlm_response_format((curr_text or "").strip())
-
-                # Persist the VLM result (now includes both calls)
-                out_dir = self._episode_cache_dir(episode_id)
-                out_file = out_dir / f"{state_id:06d}_vlm_response.json"
-                payload = {
-                    "episode_id": episode_id,
-                    "state_id": state_id,
-                    "requested_at": time.time(),
-                    "maincam_sequence_state_ids": seq_ids,
-                    "maincam_sequence_count": len(seq_ids),
-                    "view_paths": view_paths,
-                    "messages_history": history_messages,
-                    "messages_current": current_messages,
-                    "text_history": hist_text,
-                    "text_current": curr_text,
-                    "text_combined": combined_text,
-                    "text_frontend": frontend_text,  # Only current state response for frontend
-                    "raw_history": hist_raw,
-                    "raw_current": curr_raw,
-                }
-                with open(out_file, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, indent=2, ensure_ascii=False)
-                print(f"📝 Saved VLM responses (history & current) → {out_file}")
 
                 # Attach to pending state and mark ready (frontend gets only current response)
                 with self.state_lock:
