@@ -45,7 +45,7 @@
     text-shadow: 0 2px 4px rgba(0,0,0,0.3);
     line-height: 1.4;
     min-height: auto;
-    padding: 0 50px 0 0;           /* right padding to avoid overlapping with info button */
+    padding: 0;                     /* full width by default */
     margin: 0;
     /* Make long prompt lines wrap instead of widening the card */
     white-space: normal;          /* allow wrapping */
@@ -53,6 +53,9 @@
     word-break: break-word;       /* Safari edge cases */
     hyphens: auto;                /* nice hyphenation in supported browsers */
   }
+
+  /* Only reserve space when the example toggle is present */
+  #viewport.has-example .prompt-text { padding-right: 50px; }
 
   /* Content container for views and controls */
   #viewport .content-container{
@@ -2633,19 +2636,6 @@ promptText.textContent = 'Pick up the red block.'; // Default text, will be upda
 
 promptBar.appendChild(promptText);
 
-// ADD: cursive "i" toggle on the prompt bar
-const exampleToggle = document.createElement('button');
-exampleToggle.className = 'prompt-example-toggle never-activated'; // Add class to track activation state
-exampleToggle.type = 'button';
-exampleToggle.title = 'Show example video';
-exampleToggle.setAttribute('aria-pressed', 'false');
-exampleToggle.innerHTML = `
-  <svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="20" height="20" viewBox="0 0 50 50" fill="currentColor">
-    <path d="M25,2C12.297,2,2,12.297,2,25s10.297,23,23,23s23-10.297,23-23S37.703,2,25,2z M25,11c1.657,0,3,1.343,3,3s-1.343,3-3,3 s-3-1.343-3-3S23.343,11,25,11z M29,38h-2h-4h-2v-2h2V23h-2v-2h2h4v2v13h2V38z"></path>
-  </svg>
-`;
-promptBar.appendChild(exampleToggle);
-
 mount.appendChild(promptBar);
 
 // NEW: record-only wrapper that excludes the prompt bar
@@ -2678,6 +2668,7 @@ contentContainer.appendChild(viewsGrid);
 // ADD: Example video dock (independent window to the right of the views)
 let exampleDock = null;
 let exampleVideo = null;
+let exampleToggle = null; // created only when demo videos are allowed AND a URL/id exists
 
 function createExampleDockOnce(){
   if (exampleDock) return;
@@ -2766,8 +2757,6 @@ function toggleExampleDock(force){
                !(exampleDock && exampleDock.style.display === 'block');
   if (want) showExampleDock(); else hideExampleDock();
 }
-
-exampleToggle.addEventListener('click', () => toggleExampleDock());
 
 // Keep the dock aligned when the window resizes
 window.addEventListener('resize', updateExampleDockLayout);
@@ -3253,15 +3242,13 @@ loader.load(
     const promptFromServer = state.prompt || 'Pick up the red block.';
     promptText.textContent = promptFromServer;
     
-    // === Example video source hookup ============================================
+    // === Example video gating =====================================================
+    // Only show video button when there's a VLM-processed video for this specific state
     function getExampleVideoUrlFromState(s){
-      // Prefer backend-provided fields; fall back to ?example=<url> for ad-hoc testing
-      const qp = new URLSearchParams(location.search).get('example');
       return s?.example_video_url
           || s?.example_video?.url
           || s?.prompt_example?.video_url
           || s?.demo_video?.example_url
-          || qp
           || null;
     }
 
@@ -3276,74 +3263,67 @@ loader.load(
       return raw;
     }
 
-    // --- helper: feature-detect VP9 playback ---
-    function browserCanPlayVP9() {
-      const v = document.createElement('video');
-      const res = v.canPlayType('video/webm; codecs="vp9"');
-      return res === 'probably' || res === 'maybe';
-    }
+    // Only show the button if there's a VLM-processed video ID for this state
+    const hasVlmVideo = !!(state?.vlm_video_id);
+    const rawExampleUrl = hasVlmVideo ? getExampleVideoUrlFromState(state) : null;
+    const exampleUrl = hasVlmVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
 
-    // --- helper: show a friendly placeholder in the dock ---
-    function showExampleFallback(message) {
-      createExampleDockOnce();
-      // clear and show placeholder
-      exampleDock.innerHTML = '';
-      const ph = document.createElement('div');
-      ph.className = 'placeholder';
-      ph.textContent = message;
-      exampleDock.appendChild(ph);
-      // Don't automatically show - let user click the button to open
-    }
-
-    // === Example video source hookup (replace your current block) ===
-    const rawUrl = getExampleVideoUrlFromState(state);
-    const url = resolveExampleVideoUrl(rawUrl);
-
-    if (url) {
-      // Show the button when video is available
-      exampleToggle.style.display = '';
-      exampleToggle.disabled = false;
+    if (hasVlmVideo && exampleUrl) {
+      // 1) Build the toggle button now (it did not exist before)
+      exampleToggle = document.createElement('button');
+      exampleToggle.className = 'prompt-example-toggle never-activated';
+      exampleToggle.type = 'button';
       exampleToggle.title = 'Show example video';
-      
+      exampleToggle.setAttribute('aria-pressed', 'false');
+      exampleToggle.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 50 50" fill="currentColor" aria-hidden="true">
+          <path d="M25,2C12.297,2,2,12.297,2,25s10.297,23,23,23s23-10.297,23-23S37.703,2,25,2z M25,11c1.657,0,3,1.343,3,3s-1.343,3-3,3 s-3-1.343-3-3S23.343,11,25,11z M29,38h-2h-4h-2v-2h2V23h-2v-2h2h4v2v13h2V38z"></path>
+        </svg>
+      `;
+      promptBar.appendChild(exampleToggle);
+
+      // Reserve space on the prompt bar only when the toggle exists
+      mount.classList.add('has-example');
+
+      // 2) Build the dock lazily and load the video source (no placeholder fallback)
       createExampleDockOnce();
+      exampleDock.innerHTML = '';
+      exampleVideo = document.createElement('video');
+      exampleVideo.muted = true;
+      exampleVideo.loop = true;
+      exampleVideo.autoplay = true;
+      exampleVideo.playsInline = true;
+      exampleVideo.preload = 'auto';
+      exampleVideo.crossOrigin = 'anonymous';
 
-      // If this browser can't decode VP9/WebM, don't even try.
-      if (!browserCanPlayVP9()) {
-        showExampleFallback('Your browser cannot play VP9/WebM. Use Chrome/Edge/Firefox, or provide an MP4 (H.264) fallback.');
-      } else {
-        // Set up the <video> with a typed <source> and basic diagnostics
-        exampleDock.innerHTML = '';
-        exampleVideo = document.createElement('video');
-        exampleVideo.muted = true;
-        exampleVideo.loop = true;
-        exampleVideo.autoplay = true;
-        exampleVideo.playsInline = true;
-        exampleVideo.preload = 'auto';
-        exampleVideo.crossOrigin = 'anonymous'; // safe default
+      const src = document.createElement('source');
+      src.src  = exampleUrl;
+      // Use a generic type; servers may emit mp4 or webm depending on encoder
+      src.type = '';
+      exampleVideo.appendChild(src);
+      exampleDock.appendChild(exampleVideo);
 
-        const source = document.createElement('source');
-        source.src = url;
-        source.type = 'video/webm; codecs="vp9"';
-        exampleVideo.appendChild(source);
+      // Do not auto-open the dock; let the user click the toggle
+      exampleVideo.addEventListener('error', () => {
+        console.error('Example video failed to load:', exampleVideo?.error, exampleUrl);
+      });
 
-        // Diagnostics -> console if something's wrong (404/codec/etc.)
-        exampleVideo.addEventListener('error', () => {
-          console.error('Example video error:', exampleVideo.error, url);
-          showExampleFallback('Could not play example video.');
-        });
-        exampleVideo.addEventListener('loadedmetadata', () => {
-          console.log('Example video loaded:', { url, duration: exampleVideo.duration });
-        });
+      exampleVideo.addEventListener('loadedmetadata', () => {
+        // noop; keep dock hidden until user clicks
+      });
 
-        exampleDock.appendChild(exampleVideo);
-        // Don't automatically show or play - let user click the button to open and start playback
+      exampleVideo.load();
 
-        // Just load the video metadata, but don't start playing
-        exampleVideo.load();
-      }
+      // Wire the toggle now that it exists
+      exampleToggle.addEventListener('click', () => toggleExampleDock());
     } else {
-      // Hide the button completely when no video is available
-      exampleToggle.style.display = 'none';
+      // No VLM video for this state ⇒ do NOT render any example UI at all.
+      // Ensure full-width prompt text:
+      mount.classList.remove('has-example');
+      // Make sure the dock stays gone and we don't set up any layout for it:
+      exampleDock = null;
+      exampleVideo = null;
+      exampleToggle = null;
     }
     
     for (const [name, val] of Object.entries(initialJointPositions)) {

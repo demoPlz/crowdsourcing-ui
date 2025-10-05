@@ -2398,6 +2398,131 @@ class CrowdInterface():
                 max_id = k if max_id is None or k > max_id else max_id
         return max_id
     
+    def _demote_earlier_unanswered_importants_locked(self, episode_id: str, pivot_state_id: int) -> list[int]:
+        """
+        Demote earlier important states with 0 responses to normal.
+        MUST be called with self.state_lock already held.
+        Returns a sorted list of demoted state_ids.
+        """
+        ep_states = self.pending_states_by_episode.get(episode_id, {})
+        demoted: list[int] = []
+
+        for sid, info in list(ep_states.items()):
+            if sid < pivot_state_id and info.get("important", False) and int(info.get("responses_received", 0)) == 0:
+                info["important"] = False
+                # Clear gates/features that only matter for important states
+                info["segmentation_ready"] = True
+                info["segmentation_paths"] = {}
+                # VLM state (no longer relevant for normal states)
+                info["vlm_ready"] = True
+                info["vlm_queued"] = False
+                info["vlm_text"] = None
+                info.pop("vlm_video_id", None)
+                info.pop("video_id", None)
+                # Leader mode bookkeeping
+                info["leader_submissions"] = 0
+                info["leader_sessions"] = set()
+                demoted.append(sid)
+
+        if demoted:
+            demoted.sort()
+            print(f"⬇️  Demoted earlier important states with 0 responses → normal in episode {episode_id}: {demoted}")
+        return demoted
+
+    def _auto_label_states_like_unimportant_locked(self, episode_id: str, pivot_state_id: int, state_ids: list[int]) -> None:
+        """
+        Auto-label the given 'state_ids' as if they were normal, using the SAME rules as _process_auto_labeling:
+          - template = most-recent earlier IMPORTANT state's first label (pending or completed)
+          - fallback = joint positions of the FIRST pending state in the episode
+        MUST be called with self.state_lock already held.
+        """
+        if not state_ids:
+            return
+
+        episode_states = self.pending_states_by_episode.get(episode_id, {})
+        if not episode_states:
+            return
+
+        # --- Build the template action exactly like _process_auto_labeling ---
+        template_action = None
+        previous_important_states = []
+
+        # 1) From PENDING: earlier important states that already have actions
+        for sid, sinfo in episode_states.items():
+            if sid < pivot_state_id and sinfo.get("important", False) and sinfo.get("actions"):
+                previous_important_states.append((sid, sinfo))
+
+        # 2) From COMPLETED buffer: earlier important states (recover first action)
+        if episode_id in self.completed_states_by_episode:
+            buf = self.completed_states_buffer_by_episode.get(episode_id, {})
+            for sid, cinfo in self.completed_states_by_episode[episode_id].items():
+                if sid < pivot_state_id and cinfo.get("is_important", False):
+                    man = buf.get(sid)
+                    if isinstance(man, dict) and "action" in man:
+                        act = man["action"]  # 1D tensor: (required_responses_per_important_state * action_dim,)
+                        action_dim = len(JOINT_NAMES)
+                        first = act[:action_dim]
+                        if not isinstance(first, torch.Tensor):
+                            first = torch.as_tensor(first, dtype=torch.float32)
+                        previous_important_states.append((sid, {"actions": [first]}))
+
+        if previous_important_states:
+            latest_sid, latest_info = max(previous_important_states, key=lambda x: x[0])
+            template_action = latest_info["actions"][0]
+            print(f"🎯 Auto-label template from previous important state {latest_sid}")
+        else:
+            # Fallback: joint positions of the FIRST pending state in the episode
+            first_state_id = min(episode_states.keys())
+            first_state = episode_states[first_state_id]["state"]
+            joint_positions = first_state['joint_positions']
+            gripper_action = first_state.get('gripper', 0)
+
+            goal_positions = []
+            for joint_name in JOINT_NAMES:
+                v = joint_positions.get(joint_name, 0.0)
+                v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
+                goal_positions.append(v)
+            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+            template_action = torch.tensor(goal_positions, dtype=torch.float32)
+            print(f"🎯 Auto-label fallback template from first pending state {first_state_id}")
+
+        # --- Label each target state and complete them exactly like _process_auto_labeling ---
+        action_dim = len(JOINT_NAMES)
+        for sid in sorted(state_ids):
+            sinfo = episode_states.get(sid)
+            if not sinfo:
+                continue  # state might have disappeared (rare)
+
+            # Fill up to required responses for a NORMAL state
+            while sinfo["responses_received"] < self.required_responses_per_state:
+                sinfo["actions"].append(template_action.clone())
+                sinfo["responses_received"] += 1
+
+            # Concatenate + pad (pad to important-shape with NaNs so tensors are uniform)
+            all_actions = torch.cat(sinfo["actions"][:self.required_responses_per_state], dim=0)
+            missing = self.required_responses_per_important_state - self.required_responses_per_state
+            if missing > 0:
+                padding = torch.full((missing * action_dim,), float('nan'), dtype=torch.float32)
+                all_actions = torch.cat([all_actions, padding], dim=0)
+
+            completed_state = {
+                "_manifest": True,
+                "obs_path": sinfo.get("obs_path"),
+                "action": all_actions,
+                "task": self.task if self.task else "crowdsourced_task",
+            }
+
+            # Buffer for chronological add_frame
+            self.completed_states_buffer_by_episode.setdefault(episode_id, {})[sid] = completed_state
+            self.completed_states_by_episode.setdefault(episode_id, {})[sid] = {
+                "responses_received": sinfo["responses_received"],
+                "completion_time": time.time(),
+                "is_important": False  # now normal
+            }
+            # Remove from pending
+            del episode_states[sid]
+            print(f"🏷️  Auto-labeled (demoted) state {sid} in episode {episode_id}")
+
     # --- State Management ---
     def add_state(self, 
                   joint_positions: dict, 
@@ -2938,6 +3063,11 @@ class CrowdInterface():
                 print(f"⚠️  State {state_id} not found in pending states")
                 return False
             
+            # --- capture BEFORE incrementing ---
+            was_important = bool(state_info.get("important", False))
+            prior_responses = int(state_info.get("responses_received", 0))
+            first_response_to_important = (was_important and prior_responses == 0)
+            
             required_responses = (self.required_responses_per_important_state 
                                 if state_info['important'] else self.required_responses_per_state)
             
@@ -3036,6 +3166,15 @@ class CrowdInterface():
 
             print(f"🔔 Response recorded for state {state_id} in episode {found_episode} "
                   f"({state_info['responses_received']}/{required_responses})")
+
+            # NEW: if this was the FIRST response to an IMPORTANT state:
+            #       1) demote earlier important states with 0 responses
+            #       2) auto-label those demoted states exactly like normal states
+            if first_response_to_important:
+                demoted_ids = self._demote_earlier_unanswered_importants_locked(found_episode, state_id)
+                if demoted_ids:
+                    # Auto-label the newly demoted states right now (same rules as _process_auto_labeling)
+                    self._auto_label_states_like_unimportant_locked(found_episode, state_id, demoted_ids)
 
             # Stage important maincam save on first label
             if state_info.get("important", False) and state_info["responses_received"] == 1:
