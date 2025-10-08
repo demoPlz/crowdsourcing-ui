@@ -1,6 +1,6 @@
 1. All three objects are on the desk; the drawer is closed. This is the very initial state of the task. Since at least one object: the blue cube, is completely left of the arm's base, we can open the drawer, and put the blue cube into the drawer. The immediate next subtask is to open the drawer, thus: position the arm to grip the handle of the middle drawer.
 
-2. We are in position to grip the middle drawer's handle, thus: close the gripper to grip then drawer handle.
+2. We are in position to grip the middle drawer's handle, thus: grasp the drawer handle.
 
 3. We have grasped onto the handle, thus: pull the drawer open.
 

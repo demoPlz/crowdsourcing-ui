@@ -720,6 +720,7 @@
   .view-container .grip-hud .toggle{
     appearance:none; border:0; border-radius:9px;
     padding:6px 10px;
+    min-width:67px;
     font:700 12px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
     color:#fff; cursor:pointer;
     transition: transform .12s ease, box-shadow .12s ease, filter .12s ease, background .12s ease;
@@ -875,6 +876,19 @@
 
   #viewport .confirm-bar .confirm-button:active{
     transform:translateY(0);
+  }
+
+  #viewport .confirm-bar .confirm-button:disabled{
+    background:#9ca3af;
+    color:#6b7280;
+    cursor:not-allowed;
+    opacity:0.6;
+    transform:none;
+  }
+
+  #viewport .confirm-bar .confirm-button:disabled:hover{
+    transform:none;
+    box-shadow:none;
   }
 
 /* Confirm bar: place Animate to the left of Confirm with a little space */
@@ -1447,14 +1461,36 @@ async function isAsyncCollectionMode() {
   }
 }
 
+async function isLeaderMode() {
+  try {
+    // Check if leader mode is enabled by looking at the current state
+    const response = await fetch(`${API_BASE_URL}/api/get-state`);
+    if (!response.ok) {
+      console.warn('Could not check leader mode, defaulting to false');
+      return false;
+    }
+    const data = await response.json();
+    return data.leader_mode === true;
+  } catch (error) {
+    console.warn('Error checking leader mode:', error);
+    return false;
+  }
+}
+
 // Auto-refresh with progress bar function
 async function delayedRefresh(delay = 5000) {
-  // Check if we're in async collection mode
+  // Check collection mode and leader mode
   const isAsync = await isAsyncCollectionMode();
+  const isLeader = await isLeaderMode();
   
-  // If in async collection mode, refresh immediately
-  if (isAsync) {
-    console.log('🔄 Async collection mode detected - refreshing immediately');
+  // New logic: If NOT async collection mode AND leader mode: delay
+  // If NOT leader mode OR async collection mode: no delay
+  if (!isAsync && isLeader) {
+    // In leader mode and not async - use the delay
+    console.log('🔄 Leader mode (non-async) - using', delay + 'ms delay');
+  } else {
+    // Either async mode OR not leader mode - refresh immediately
+    console.log('🔄 Immediate refresh - async:', isAsync, 'leader:', isLeader);
     // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
     // This forces a bypass of all caches
     window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
@@ -2799,7 +2835,7 @@ promptBar.className = 'prompt-bar';
 
 const promptText = document.createElement('div');
 promptText.className = 'prompt-text';
-promptText.textContent = ''; // Start empty, will be updated from server
+promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
 
 promptBar.appendChild(promptText);
 
@@ -5507,6 +5543,7 @@ loader.load(
 
     let taskCompletedSelected = false;
     let taskCompletedBtn = null;
+    let verifyButtonUsed = false; // Track if Verify button has been clicked in this session
 
     /* ---------- confirm button (lower-right corner) ------------------- */
 
@@ -5528,6 +5565,17 @@ loader.load(
     confirmBtn.className = 'confirm-button';
 
     confirmBtn.onclick = async () => {
+      // Check if button has already been used
+      if (verifyButtonUsed) {
+        console.log('⚠️ Verify button already used in this session');
+        return;
+      }
+
+      // Mark button as used and disable it
+      verifyButtonUsed = true;
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Submitted';
+
       // 0) Freeze any ongoing animation (unchanged)
       if (animState.enabled) {
         animState.enabled = false;

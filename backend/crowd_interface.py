@@ -542,6 +542,45 @@ class CrowdInterface():
         if video_id is not None:
             info["flex_video_id"] = video_id
         info["flex_ready"] = True
+        
+        # Check if this is an important state with "end." text - auto-fill with current position
+        if (text and text.strip().lower() == "end." and 
+            info.get("important", False) and 
+            info["responses_received"] < self.required_responses_per_important_state):
+            self._auto_fill_end_state_locked(info, episode_id, state_id)
+
+    def _auto_fill_end_state_locked(self, info: dict, episode_id: str, state_id: int) -> None:
+        """
+        Auto-fill an important state labeled as "end." with multiple copies of its current position.
+        MUST be called with self.state_lock already held.
+        """
+        try:
+            state = info.get("state", {})
+            joint_positions = state.get('joint_positions', {})
+            gripper_action = state.get('gripper', 0)
+            
+            # Convert joint positions to action tensor (same as autolabel logic)
+            goal_positions = []
+            for joint_name in JOINT_NAMES:
+                v = joint_positions.get(joint_name, 0.0)
+                v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
+                goal_positions.append(v)
+            # Set gripper position based on gripper action
+            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+            
+            position_action = torch.tensor(goal_positions, dtype=torch.float32)
+            
+            # Fill remaining responses with this position
+            responses_before = info["responses_received"]
+            while info["responses_received"] < self.required_responses_per_important_state:
+                info["actions"].append(position_action.clone())
+                info["responses_received"] += 1
+            
+            responses_added = info["responses_received"] - responses_before
+            print(f"🎯 Auto-filled 'end.' state {state_id} in episode {episode_id} with {responses_added} position copies (total: {info['responses_received']}/{self.required_responses_per_important_state})")
+            
+        except Exception as e:
+            print(f"❌ Error auto-filling end state {state_id} in episode {episode_id}: {e}")
 
     def _compute_next_video_index(self) -> int:
         """
@@ -4382,6 +4421,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         # NEW: Always tell the frontend what to do with demo videos
         payload["demo_video"] = crowd_interface.get_demo_video_config()
+        
+        # NEW: Add leader mode information for frontend delay logic
+        payload["leader_mode"] = crowd_interface.leader_mode
 
         response = jsonify(payload)
         # Prevent caching

@@ -1,6 +1,6 @@
 1. All three objects are on the desk; the drawer is closed. This is the very initial state of the task. Since at least one object: the blue cube, is completely left of the arm's base, we can open the drawer, and put the blue cube into the drawer. The immediate next subtask is to open the drawer, thus: position the arm to grip the handle of the middle drawer.
 
-2. We are in position to grip the middle drawer's handle, thus: close the gripper to grip then drawer handle.
+2. We are in position to grip the middle drawer's handle, thus: grasp the drawer handle.
 
 3. We have grasped onto the handle, thus: pull the drawer open.
 
@@ -16,13 +16,13 @@
 
 9. We follow the pick and place item into drawer protocol, and the gripper is rotated to align with the grasp angle, thus: lower the gripper to prepare for grasp.
 
-10. We follow the pick and place item into drawer protocol, and the gripper is lowered and prepared for grasp, thus: close gripper to grasp.
+10. We follow the pick and place item into drawer protocol, and the gripper is lowered and prepared for grasp, thus: grasp the blue cube.
 
-11. We follow the pick and place item into drawer protocol, and the gripper is closed and grasped onto the cube, thus: raise the gripper such that the gripper and the the blue cube clear the height of the edge of the drawer.
+11. We follow the pick and place item into drawer protocol, and the gripper is closed and grasped onto the cube, thus: raise the blue cube to clear the height of the edge of the drawer.
 
-12. We follow the pick and place item into drawer protocol, and the gripper and object is raised so as to clear the height of the edge of the drawer, thus: move horizontally such that the gripper is above the opened drawer.
+12. We follow the pick and place item into drawer protocol, and the gripper and object is raised so as to clear the height of the edge of the drawer, thus: move horizontally to be above the opened drawer.
 
-13. We follow the pick and place item into drawer protocol, and the gripper is above the opened drawer, thus: open gripper to release object into the drawer.
+13. We follow the pick and place item into drawer protocol, and the gripper is above the opened drawer, thus: release object into the drawer.
 
 14. Next, we need to close the drawer, move the remaining object left, open the drawer, pick and place the objects into the drawer, and close the drawer again. To start the close drawer protocol, it is best to not have the gripper have a roll; We also want to move leftward, because the close drawer protocol happens by pushing the drawer in from the left side. Returning to the home position both resets the roll to neutral, and moves gripper to the left, thus: return to the home position.
 
@@ -38,11 +38,11 @@
 
 20. We have lowered and pitched the gripper till vertical to be ~3cm above the tennis ball. Since the tennis ball is a round object, there's no need to rotate to align grasp angle. We follow the move object left protocol, thus: lower the gripper to prepare for grasping the tennis ball.
 
-21. We have lowered the gripper and are prepared to grasp, thus: close the gripper to grasp onto the tennis ball.
+21. We have lowered the gripper and are prepared to grasp, thus: grasp onto the tennis ball.
 
 22. We have grasped onto the tennis ball, and dragging leftward will not collide with another object, thus: drag the tennis ball leftward along the desk.
 
-23. We have now dragged the object leftward along the desk, thus: open the gripper to let go the tennis ball.
+23. We have now dragged the object leftward along the desk, thus: release the tennis ball.
 
 24. We have opened the gripper, thus: raise the gripper vertically to be ~5cm above the tennis ball.
 
@@ -54,11 +54,11 @@
 
 28. We have rotated the gripper to align with grasp angle, thus: lower the gripper to prepare for grasping the red cube.
 
-29. We have lowered the gripper to prepare for grasp, thus: close the gripper to grasp onto the red cube.
+29. We have lowered the gripper to prepare for grasp, thus: grasp the red cube.
 
 30. We have grasped onto the red cube, and dragging leftward will not collide with another object, thus: drag the red cube leftward along the desk.
 
-31. We have dragged the object leftward along the desk, thus: open the gripper to let go the red cube.
+31. We have dragged the object leftward along the desk, thus: release the red cube.
 
 32. We have opened the gripper and let go the red cube, thus: raise the gripper vertically to be ~5cm above the red cube.
 
@@ -66,9 +66,9 @@
 
 34. We are now at the home position, thus: position the arm to grip the handle of the middle drawer.
 
-35. We are now in position to grasp the handle of the middle drawer, thus close the gripper to grasp the drawer's handle.
+35. We are now in position to grasp the handle of the middle drawer, thus: grasp the drawer's handle.
 
-36. We have grasped the drawer's handle, thus: move leftward to pull the drawer open.
+36. We have grasped the drawer's handle, thus: pull the drawer open.
 
 37. We have pulled the drawer open, thus: release the gripper to let go of the drawer's handle.
 
@@ -80,13 +80,13 @@
 
 41. We have now lowered and pitched the gripper till vertical to be ~3cm above the tennis ball, which is round, and requires no alignment for grasp, thus: lower the gripper to prepare for grasping the tennis ball.
 
-42. We have lowered the gripper and are prepared to grasp the tennis ball, thus: close the gripper to grasp the tennis ball.
+42. We have lowered the gripper and are prepared to grasp the tennis ball, thus: grasp the tennis ball.
 
 43. We have grasped onto the tennis ball, thus: raise the gripper such that the gripper and the the tennis ball clear the height of the edge of the drawer.
 
 44. We have raised the gripper such that the gripper and the object clear the height of the edge of the drawer, thus: move right to be above the opened drawer.
 
-45. The gripper with the tennis ball are above the opened drawer, thus: open gripper to release the tennis ball into the drawer.
+45. The gripper with the tennis ball are above the opened drawer, thus: release the tennis ball into the drawer.
 
 46. Now we need to pick and place the red cube into the drawer. The gripper is not rotated (its pitch has changed twice, but is at a relatively neutral position after these changes), so we don't return to the home position, but instead move directly to the general area above the red cube, thus: move left to be in the general area above the red cube.
 
@@ -94,13 +94,13 @@
 
 48. We have lowered and pitched the gripper till vertical to be ~3cm above the red cube. The red cube is not rotated, and its grasp angle is aligned with the gripper's orientation, thus: lower the gripper to prepare for grasping the red cube.
 
-49. We have lowered the gripper and are prepared for grasping the red cube, thus: close the gripper to grasp onto the red cube.
+49. We have lowered the gripper and are prepared for grasping the red cube, thus: grasp the red cube.
 
 50. We have closed the gripper and grasped onto the red cube, thus: raise the gripper such that the gripper and the red cube clear the height of the edge of the drawer.
 
 51. The gripper and the red red cube are raised to clear the height of the edge of the drawer, thus: move right to be above the opened drawer.
 
-52. We are above the opened drawer with the red cube, thus: open the gripper to release the red cube into the drawer.
+52. We are above the opened drawer with the red cube, thus: release the red cube into the drawer.
 
 53. We have released the red cube into the drawer. Now we need to close the drawer. The gripper isn't rotated, thus: move leftward so that the gripper can later travel down without collision and push the drawer close.
 

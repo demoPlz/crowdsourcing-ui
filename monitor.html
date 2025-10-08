@@ -91,7 +91,7 @@
         .chart-bars::-webkit-scrollbar-thumb:hover { background:#94a3b8; }
         .state-bar-container { flex:none; width:3px; height:100%; display:flex; flex-direction:column; justify-content:end; position:relative; min-width:2px; max-width:20px; }
         .state-bar-container.clickable { cursor:pointer; }
-        .state-bar { background:linear-gradient(180deg,#10b981,#059669); border-radius:2px 2px 0 0; transition:height .3s ease, box-shadow .15s ease, transform .1s ease; position:relative; min-height:2px; width:100%; }
+        .state-bar { background:linear-gradient(180deg,#e2e8f0,#cbd5e1); border-radius:2px 2px 0 0; transition:height .3s ease, box-shadow .15s ease, transform .1s ease; position:relative; min-height:2px; width:100%; }
         .state-bar.empty { background:#e2e8f0; height:100% !important; }
         .state-bar.important-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
         .state-bar.important-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
@@ -1225,8 +1225,21 @@
                 if (!resp.ok || !data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Save failed');
 
                 markClickedImportant(episodeId, stateId);
+                
+                // Update the current text prompt in the modal
+                const savedText = isManualMode ? (manualTextEl.value || '').trim() : modalContext.selectedText;
+                if (savedText) {
+                    modalPrompt.textContent = savedText;
+                }
+                
+                // Update video ID display
+                const savedVid = isManualMode ? 
+                    ((manualVideoEl.value || '').trim() !== '' ? Number(manualVideoEl.value) : null) :
+                    modalContext.selectedVideoId;
+                kvVid.textContent = (savedVid !== null ? String(savedVid) : '-');
+                
                 showToast(isManualMode ? 'Saved (manual override locked).' : 'Updated VLM selection.');
-                closeModal();
+                // Don't close modal - keep it open for further editing
                 fetchPendingStatesInfo(); // refresh so bars/tooltips reflect new status
             } catch (e) {
                 console.error(e);
