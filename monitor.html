@@ -1,592 +1,195 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Data Collection Monitor</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+        * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #f8fafc;
-            height: 100vh;
-            overflow: hidden;
+            background:#f8fafc; height:100vh; overflow:hidden;
         }
-        
-        .container {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            gap: 20px;
-            padding: 20px;
+        .container { display:flex; flex-direction:column; height:100vh; gap:20px; padding:20px; }
+        .top-section { display:flex; gap:20px; }
+        .camera-section { flex:3; background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:20px; }
+        .status-control-column { flex:1; display:flex; flex-direction:column; gap:20px; }
+        .status-section, .control-section {
+            background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:15px; display:flex; flex-direction:column; gap:15px;
         }
-        
-        .top-section {
-            display: flex;
-            gap: 20px;
+        .main-content { display:flex; flex:1; gap:20px; min-height:0; }
+        .left-panel, .right-panel {
+            background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:20px; display:flex; flex-direction:column;
         }
-        
-        .camera-section {
-            flex: 3;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            padding: 20px;
-        }
-        
-        .status-control-column {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-        
-        .status-section {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            padding: 15px;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-        
-        .control-section {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            padding: 15px;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-        
-        .main-content {
-            display: flex;
-            flex: 1;
-            gap: 20px;
-            min-height: 0;
-        }
-        
-        .left-panel {
-            flex: 2;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .right-panel {
-            flex: 1;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-        
-        .panel-header {
-            border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 16px;
-            margin-bottom: 20px;
-        }
-        
-        .panel-header h2 {
-            color: #1e293b;
-            font-size: 24px;
-            font-weight: 600;
-        }
-        
+        .left-panel { flex:1; }
+        .panel-header { border-bottom:2px solid #e2e8f0; padding-bottom:16px; margin-bottom:20px; }
+        .panel-header h2 { color:#1e293b; font-size:24px; font-weight:600; }
         .camera-views {
-            width: 100%;
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            grid-template-rows: repeat(2, 1fr);
-            gap: 12px;
-            height: 400px;
+            width:100%; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(2,1fr);
+            gap:12px; height:400px;
         }
-        
         .camera-view {
-            background: #f1f5f9;
-            border-radius: 4px;
-            border: 1px solid #e2e8f0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            transition: all 0.2s ease;
+            background:#f1f5f9; border-radius:4px; border:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; overflow:hidden; transition:all .2s ease;
+            position:relative;
         }
-        
-        .camera-view:hover {
-            border-color: #3b82f6;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
-        }
-        
-        .camera-image {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            border-radius: 3px;
-        }
-
-        .camera-view {              /* only positioning context, doesn't change layout */
-            position: relative;
-        }
-
-        .camera-layer {
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            border-radius: 3px;     /* matches .camera-image */
-            display: none;          /* Use display instead of opacity for instant swap */
-        }
-
-        .camera-layer.is-visible {
-            display: block;
-        }
-        
-        .camera-placeholder {
-            color: #64748b;
-            font-size: 10px;
-            text-align: center;
-            padding: 8px;
-        }
-        
-        .status-card {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 16px;
-        }
-        
-        .status-card h3 {
-            color: #1e293b;
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 12px;
-        }
-        
-        .status-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 0;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        
-        .status-item:last-child {
-            border-bottom: none;
-        }
-        
-        .status-label {
-            color: #64748b;
-            font-size: 14px;
-        }
-        
-        .status-value {
-            color: #1e293b;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 8px;
-        }
-        
-        .status-indicator.connected {
-            background: #10b981;
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
-        }
-        
-        .status-indicator.disconnected {
-            background: #ef4444;
-            box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
-        }
-        
-        .status-indicator.warning {
-            background: #f59e0b;
-            box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background: #e2e8f0;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #3b82f6, #1d4ed8);
-            border-radius: 4px;
-            transition: width 0.3s ease;
-        }
-        
-        .robot-state {
-            padding: 12px;
-            border-radius: 6px;
-            font-weight: 500;
-            text-align: center;
-            margin: 8px 0;
-        }
-        
-        .robot-state.moving {
-            background: #fef3c7;
-            color: #92400e;
-            border: 1px solid #fcd34d;
-        }
-        
-        .robot-state.stationary {
-            background: #d1fae5;
-            color: #065f46;
-            border: 1px solid #6ee7b7;
-        }
-        
-        .robot-state.async-collection {
-            background: #e0e7ff;
-            color: #3730a3;
-            border: 1px solid #a5b4fc;
-            animation: pulse 2s infinite;
-        }
-        
-        .robot-state.resetting {
-            background: #fef3c7;
-            color: #92400e;
-            border: 1px solid #fcd34d;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-        
-        .error-message {
-            background: #fef2f2;
-            border: 1px solid #fecaca;
-            color: #dc2626;
-            padding: 12px;
-            border-radius: 6px;
-            font-size: 14px;
-            text-align: center;
-        }
-        
-        .control-buttons {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-        
+        .camera-view:hover { border-color:#3b82f6; box-shadow:0 2px 8px rgba(59,130,246,.15); }
+        .camera-image { width:100%; height:100%; object-fit:contain; border-radius:3px; }
+        .camera-layer { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; border-radius:3px; display:none; }
+        .camera-layer.is-visible { display:block; }
+        .camera-placeholder { color:#64748b; font-size:10px; text-align:center; padding:8px; }
+        .status-card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; }
+        .status-card h3 { color:#1e293b; font-size:16px; font-weight:600; margin-bottom:12px; }
+        .status-item { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #e2e8f0; }
+        .status-item:last-child { border-bottom:none; }
+        .status-label { color:#64748b; font-size:14px; }
+        .status-value { color:#1e293b; font-weight:500; font-size:14px; }
+        .status-indicator { width:12px; height:12px; border-radius:50%; display:inline-block; margin-right:8px; }
+        .status-indicator.connected { background:#10b981; box-shadow:0 0 8px rgba(16,185,129,.4); }
+        .status-indicator.disconnected { background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,.4); }
+        .status-indicator.warning { background:#f59e0b; box-shadow:0 0 8px rgba(245,158,11,.4); }
+        .progress-bar { width:100%; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; }
+        .progress-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#1d4ed8); border-radius:4px; transition:width .3s ease; }
+        .robot-state { padding:12px; border-radius:6px; font-weight:500; text-align:center; margin:8px 0; }
+        .robot-state.moving { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+        .robot-state.stationary { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
+        .robot-state.async-collection { background:#e0e7ff; color:#3730a3; border:1px solid #a5b4fc; animation:pulse 2s infinite; }
+        .robot-state.resetting { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.7;} }
+        .error-message { background:#fef2f2; border:1px solid #fecaca; color:#dc2626; padding:12px; border-radius:6px; font-size:14px; text-align:center; }
+        .control-buttons { display:flex; flex-direction:column; gap:12px; }
         .control-button {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 12px 16px;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display:flex; align-items:center; justify-content:center; gap:8px; padding:12px 16px; border:none; border-radius:10px; font-size:14px; font-weight:600;
+            cursor:pointer; transition:all .2s ease; box-shadow:0 2px 8px rgba(0,0,0,.1);
         }
-        
-        .control-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+        .control-button:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,.15); }
+        .control-button:active { transform:translateY(0); box-shadow:0 2px 8px rgba(0,0,0,.1); }
+        .control-button:disabled { opacity:.6; cursor:not-allowed; transform:none; }
+        .control-button.loading { opacity:.7; cursor:wait; }
+        .fast-forward-btn { background:linear-gradient(135deg,#3b82f6,#1d4ed8); color:white; }
+        .fast-forward-btn:hover { background:linear-gradient(135deg,#2563eb,#1e40af); }
+        .rerecord-btn { background:linear-gradient(135deg,#f59e0b,#d97706); color:white; }
+        .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
+        .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
+        .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
+        .control-icon { font-size:20px; }
+
+        /* Episode charts */
+        .episode-charts-container { max-height:calc(100vh - 200px); overflow-y:auto; padding-right:8px; }
+        .episode-chart { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; margin-bottom:16px; transition:all .2s ease; }
+        .episode-chart:hover { border-color:#3b82f6; box-shadow:0 2px 8px rgba(59,130,246,.15); }
+        .episode-chart.current { border-color:#10b981; background:#f0fdf4; box-shadow:0 2px 8px rgba(16,185,129,.15); }
+        .episode-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+        .episode-title { font-weight:600; font-size:14px; color:#1e293b; }
+        .episode-stats { font-size:12px; color:#64748b; }
+        .chart-container { position:relative; height:80px; background:white; border-radius:4px; border:1px solid #e2e8f0; overflow:hidden; }
+        .chart-y-axis { position:absolute; left:0; top:10px; bottom:16px; width:32px; display:flex; flex-direction:column; justify-content:space-between; padding:0 4px; background:rgba(248,250,252,.9); border-right:1px solid #e2e8f0; }
+        .y-axis-label { font-size:10px; color:#64748b; text-align:center; }
+        .chart-bars { position:absolute; top:10px; left:32px; right:8px; height:calc(100% - 26px); display:flex; align-items:end; padding:0 8px 16px 8px; gap:1px; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; }
+        .chart-bars::-webkit-scrollbar { height:4px; }
+        .chart-bars::-webkit-scrollbar-track { background:#f1f5f9; border-radius:2px; }
+        .chart-bars::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:2px; }
+        .chart-bars::-webkit-scrollbar-thumb:hover { background:#94a3b8; }
+        .state-bar-container { flex:none; width:3px; height:100%; display:flex; flex-direction:column; justify-content:end; position:relative; min-width:2px; max-width:20px; }
+        .state-bar-container.clickable { cursor:pointer; }
+        .state-bar { background:linear-gradient(180deg,#10b981,#059669); border-radius:2px 2px 0 0; transition:height .3s ease; position:relative; min-height:2px; width:100%; }
+        .state-bar.empty { background:#e2e8f0; height:100% !important; }
+        .state-bar.important-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
+        .state-bar.important-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
+        .state-bar.important-awaiting-vlm { background:linear-gradient(180deg,#f9a8d4,#f472b6) !important; box-shadow:inset 0 0 0 1px rgba(219,39,119,.25); }
+        .state-bar.regular-complete { background:linear-gradient(180deg,#2563eb,#1d4ed8) !important; }
+        .state-bar.regular-incomplete { background:linear-gradient(180deg,#60a5fa,#2563eb) !important; }
+        .state-bar-label { position:absolute; bottom:-16px; left:50%; transform:translateX(-50%); font-size:10px; color:#64748b; white-space:nowrap; }
+        .chart-x-axis { position:absolute; bottom:0; left:32px; right:8px; height:16px; display:flex; align-items:center; padding:0 8px; background:rgba(248,250,252,.9); border-top:1px solid #e2e8f0; font-size:10px; color:#64748b; }
+
+        /* === VLM Details Modal === */
+        .modal-overlay {
+            position:fixed; inset:0; background:rgba(2,6,23,0.55); display:none; align-items:center; justify-content:center; z-index:9999;
         }
-        
-        .control-button:active {
-            transform: translateY(0);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        .modal-overlay.show { display:flex; }
+        .modal-card {
+            width:min(1100px, 95vw);
+            height:min(85vh, 860px);
+            background:white;
+            border-radius:14px;
+            box-shadow:0 30px 80px rgba(2,6,23,0.35);
+            display:grid;
+            grid-template-columns: 60% 40%;
+            grid-template-rows: auto 1fr auto;
+            overflow:hidden;
         }
-        
-        .control-button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
+        .modal-header {
+            grid-column:1 / -1;
+            display:flex; align-items:center; justify-content:space-between;
+            padding:14px 16px; border-bottom:1px solid #e2e8f0; background:#f8fafc;
         }
-        
-        .control-button.loading {
-            opacity: 0.7;
-            cursor: wait;
+        .modal-title {
+            font-size:16px; font-weight:600; color:#0f172a;
         }
-        
-        .fast-forward-btn {
-            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-            color: white;
+        .modal-close-btn {
+            background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b;
         }
-        
-        .fast-forward-btn:hover {
-            background: linear-gradient(135deg, #2563eb, #1e40af);
+        .modal-main {
+            display:contents;
         }
-        
-        .rerecord-btn {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            color: white;
+        .modal-left {
+            padding:16px; border-right:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; background:#0b1220;
         }
-        
-        .rerecord-btn:hover {
-            background: linear-gradient(135deg, #e3a008, #c2701a);
+        .modal-maincam {
+            max-width:100%; max-height:100%; object-fit:contain; border-radius:8px;
         }
-        
-        .stop-btn {
-            background: linear-gradient(135deg, #ef4444, #dc2626);
-            color: white;
+        .modal-right {
+            padding:16px; display:flex; flex-direction:column; gap:12px;
         }
-        
-        .stop-btn:hover {
-            background: linear-gradient(135deg, #dc2626, #b91c1c);
+        .field-label { font-size:12px; color:#475569; font-weight:600; }
+        .select-wrap {
+            display:flex; gap:8px; align-items:center;
         }
-        
-        .control-icon {
-            font-size: 20px;
+        .select-el {
+            width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; font-size:14px; color:#0f172a;
         }
-        
-        /* Episode Charts Styles */
-        .episode-charts-container {
-            max-height: calc(100vh - 200px);
-            overflow-y: auto;
-            padding-right: 8px;
+        .prompt-box {
+            flex:1; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; overflow:auto; white-space:pre-wrap; font-size:14px; color:#0f172a;
         }
-        
-        .episode-chart {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-            transition: all 0.2s ease;
+        .kv-line { font-size:12px; color:#334155; }
+        .modal-footer {
+            grid-column:1 / -1;
+            display:flex; justify-content:flex-end; gap:10px;
+            padding:12px 16px; border-top:1px solid #e2e8f0; background:#f8fafc;
         }
-        
-        .episode-chart:hover {
-            border-color: #3b82f6;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
+        .btn {
+            padding:10px 14px; border:none; border-radius:10px; font-weight:600; cursor:pointer; transition:transform .1s ease, box-shadow .2s ease;
         }
-        
-        .episode-chart.current {
-            border-color: #10b981;
-            background: #f0fdf4;
-            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15);
+        .btn:active { transform:translateY(0.5px); }
+        .btn-primary { background:#2563eb; color:white; }
+        .btn-primary:hover { box-shadow:0 6px 18px rgba(37,99,235,.25); }
+        .btn-secondary { background:#e2e8f0; color:#0f172a; }
+        .btn-danger { background:#dc2626; color:white; }
+        .muted { color:#64748b; }
+
+        /* Toasts */
+        .toast {
+            position:fixed; bottom:18px; right:18px; background:#0f172a; color:white; padding:10px 12px; border-radius:10px; box-shadow:0 8px 24px rgba(2,6,23,.25);
+            font-size:13px; z-index:10000; opacity:0; transform:translateY(8px); transition:opacity .2s ease, transform .2s ease;
         }
-        
-        .episode-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        
-        .episode-title {
-            font-weight: 600;
-            font-size: 14px;
-            color: #1e293b;
-        }
-        
-        .episode-stats {
-            font-size: 12px;
-            color: #64748b;
-        }
-        
-        .chart-container {
-            position: relative;
-            height: 80px;
-            background: white;
-            border-radius: 4px;
-            border: 1px solid #e2e8f0;
-            overflow: hidden;
-        }
-        
-        .chart-bars {
-            display: flex;
-            height: calc(100% - 26px);
-            align-items: end;
-            padding: 0px 8px 16px 8px;
-            gap: 1px;
-            overflow-x: auto;
-            overflow-y: hidden;
-            width: calc(100% - 40px);
-            position: absolute;
-            top: 10px;
-            left: 32px;
-            scrollbar-width: thin;
-        }
-        
-        .state-bar-container {
-            flex: 1;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: end;
-            position: relative;
-            min-width: 2px;
-            max-width: 20px;
-        }
-        
-        .state-bar {
-            background: linear-gradient(180deg, #10b981, #059669);
-            border-radius: 2px 2px 0 0;
-            transition: height 0.3s ease;
-            position: relative;
-            min-height: 2px;
-            width: 100%;
-        }
-        
-        .state-bar.empty {
-            background: #e2e8f0;
-            height: 100% !important;
-        }
-        
-        .state-bar.important-complete {
-            background: linear-gradient(180deg, #dc2626, #991b1b) !important;
-        }
-        
-        .state-bar.important-incomplete {
-            background: linear-gradient(180deg, #f87171, #dc2626) !important;
-        }
-        
-        .state-bar.regular-complete {
-            background: linear-gradient(180deg, #2563eb, #1d4ed8) !important;
-        }
-        
-        .state-bar.regular-incomplete {
-            background: linear-gradient(180deg, #60a5fa, #2563eb) !important;
-        }
-        
-        .state-bar-label {
-            position: absolute;
-            bottom: -16px;
-            left: 50%;
-            transform: translateX(-50%);
-            font-size: 10px;
-            color: #64748b;
-            white-space: nowrap;
-        }
-        
-        .chart-y-axis {
-            position: absolute;
-            left: 0;
-            top: 10px;
-            bottom: 16px;
-            width: 32px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            padding: 0px 4px 0px 4px;
-            background: rgba(248, 250, 252, 0.9);
-            border-right: 1px solid #e2e8f0;
-        }
-        
-        .y-axis-label {
-            font-size: 10px;
-            color: #64748b;
-            text-align: center;
-        }
-        
-        .chart-x-axis {
-            position: absolute;
-            bottom: 0;
-            left: 32px;
-            right: 8px;
-            height: 16px;
-            display: flex;
-            align-items: center;
-            padding: 0 8px;
-            background: rgba(248, 250, 252, 0.9);
-            border-top: 1px solid #e2e8f0;
-            font-size: 10px;
-            color: #64748b;
-        }
-        
-        /* Scrollbar styling for chart bars */
-        .chart-bars::-webkit-scrollbar {
-            height: 4px;
-        }
-        
-        .chart-bars::-webkit-scrollbar-track {
-            background: #f1f5f9;
-            border-radius: 2px;
-        }
-        
-        .chart-bars::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 2px;
-        }
-        
-        .chart-bars::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
-        
-        /* Scrollbar styling */
-        .episode-charts-container::-webkit-scrollbar {
-            width: 6px;
-        }
-        
-        .episode-charts-container::-webkit-scrollbar-track {
-            background: #f1f5f9;
-            border-radius: 3px;
-        }
-        
-        .episode-charts-container::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 3px;
-        }
-        
-        .episode-charts-container::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
+        .toast.show { opacity:1; transform:translateY(0); }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- Top Section: Camera Views and Status/Control Column -->
+        <!-- Top Section -->
         <div class="top-section">
-            <!-- Camera Views -->
             <div class="camera-section">
                 <div class="camera-views">
-                    <div class="camera-view" id="camera-front">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
-                    <div class="camera-view" id="camera-left">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
-                    <div class="camera-view" id="camera-right">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
-                    <div class="camera-view" id="camera-perspective">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
-                    <div class="camera-view" id="camera-obs_main">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
-                    <div class="camera-view" id="camera-obs_wrist">
-                        <div class="camera-placeholder">No image</div>
-                    </div>
+                    <div class="camera-view" id="camera-front"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-left"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-right"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-perspective"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-obs_main"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-obs_wrist"><div class="camera-placeholder">No image</div></div>
                 </div>
             </div>
-            
-            <!-- Status and Control Column -->
             <div class="status-control-column">
-                <!-- System Status -->
                 <div class="status-section">
-                    <!-- Connection Status -->
                     <div class="status-card">
                         <div class="status-item">
                             <span class="status-label">Backend Server</span>
@@ -596,75 +199,80 @@
                             </span>
                         </div>
                     </div>
-                    
-                    <!-- Robot Status -->
                     <div class="status-card">
-                        <div class="robot-state stationary" id="robot-state">
-                            🛑 Robot Status Unknown
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">Current State ID</span>
-                            <span class="status-value" id="current-state-id">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">State Type</span>
-                            <span class="status-value" id="state-type">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">Responses</span>
-                            <span class="status-value" id="state-responses">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">Pending States</span>
-                            <span class="status-value" id="pending-states-count">--</span>
-                        </div>
+                        <div class="robot-state stationary" id="robot-state">🛑 Robot Status Unknown</div>
+                        <div class="status-item"><span class="status-label">Current State ID</span><span class="status-value" id="current-state-id">--</span></div>
+                        <div class="status-item"><span class="status-label">State Type</span><span class="status-value" id="state-type">--</span></div>
+                        <div class="status-item"><span class="status-label">Responses</span><span class="status-value" id="state-responses">--</span></div>
+                        <div class="status-item"><span class="status-label">Pending States</span><span class="status-value" id="pending-states-count">--</span></div>
                     </div>
                 </div>
-                
-                <!-- Control Panel -->
                 <div class="control-section">
                     <div class="control-buttons">
-                        <button class="control-button fast-forward-btn" id="fast-forward-btn">
-                            <span class="control-icon">⏩</span>
-                            Next Episode
-                        </button>
-                        
-                        <button class="control-button rerecord-btn" id="rerecord-btn">
-                            <span class="control-icon">🔄</span>
-                            Re-record Episode
-                        </button>
-                        
-                        <button class="control-button stop-btn" id="stop-btn">
-                            <span class="control-icon">⏹️</span>
-                            Stop Recording
-                        </button>
+                        <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
+                        <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
+                        <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
                     </div>
                 </div>
             </div>
         </div>
-        
-        <!-- Main Content Area -->
+
+        <!-- Main Content -->
         <div class="main-content">
-            <!-- Episode Progress Charts (full width) -->
-            <div class="left-panel" style="flex: 1;">
-                <div class="episode-charts-container" id="episode-charts-container">
-                    <!-- Episode charts will be dynamically added here -->
-                </div>
+            <div class="left-panel" style="flex:1;">
+                <div class="episode-charts-container" id="episode-charts-container"></div>
             </div>
         </div>
     </div>
 
+    <!-- === VLM DETAILS MODAL === -->
+    <div class="modal-overlay" id="vlm-modal">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="vlm-modal-title">
+            <div class="modal-header">
+                <div class="modal-title" id="vlm-modal-title">VLM Details</div>
+                <button class="modal-close-btn" id="vlm-modal-close" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-main">
+                <div class="modal-left">
+                    <img id="modal-maincam" class="modal-maincam" alt="Main camera observation" />
+                </div>
+                <div class="modal-right">
+                    <div>
+                        <div class="field-label">Pick description (number = VLM video id):</div>
+                        <div class="select-wrap">
+                            <select id="modal-description-select" class="select-el"></select>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="field-label">Current text prompt:</div>
+                        <div id="modal-prompt-text" class="prompt-box"></div>
+                    </div>
+                    <div class="kv-line">
+                        <span class="muted">Episode:</span> <span id="kv-episode">—</span>
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <span class="muted">State:</span> <span id="kv-state">—</span>
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <span class="muted">Video ID:</span> <span id="kv-video">—</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="vlm-modal-cancel">Close</button>
+                <button class="btn btn-primary" id="vlm-modal-save">Save Selection</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="app-toast"></div>
+
     <script>
-        // Simple API Configuration - use appropriate proxy based on environment
+        // === API bootstrap (unchanged except used by new endpoints) ===
         async function getCurrentCloudflaredUrl() {
             try {
-                // For production (Netlify), always use the function proxy to avoid CORS issues
                 if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
                     return '/.netlify/functions/api';
                 }
-                
-                // For local development, try to get the actual cloudflared URL from Netlify function
-                // This only works if running netlify dev, otherwise fallback to hardcoded URL
                 try {
                     const response = await fetch('/.netlify/functions/get-backend-url');
                     if (response.ok) {
@@ -672,109 +280,158 @@
                         return data.backend_url;
                     }
                 } catch (netlifyError) {
-                    // Netlify functions not available (running on pure Vite dev server)
                     console.log('Netlify functions not available, using fallback Tailscale URL');
                 }
-                
-                // Fallback to hardcoded Tailscale URL for local development
                 return 'https://ztclab-1.tail503d36.ts.net';
             } catch (error) {
                 console.error('Error getting backend URL:', error);
-                // Fallback based on environment
                 if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                    return '/.netlify/functions/api'; // Use proxy for production
+                    return '/.netlify/functions/api';
                 }
-                return 'https://reconstruction-parker-put-push.trycloudflare.com'; // Direct for local dev
+                return 'https://reconstruction-parker-put-push.trycloudflare.com';
             }
         }
-
-        // Initialize API_BASE_URL - will be set dynamically
-        let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
-
-        // Set API_BASE_URL dynamically based on environment
+        let API_BASE_URL = '/.netlify/functions/api';
         async function initializeApiUrl() {
             if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
                 if (location.port === '5173' || location.port === '5174') {
-                    // Running on Vite dev server - get direct cloudflared URL
                     API_BASE_URL = await getCurrentCloudflaredUrl();
-                    console.log('[DEBUG] Monitor using direct cloudflared URL for Vite dev server:', API_BASE_URL);
+                    console.log('[DEBUG] Monitor using direct cloudflared URL:', API_BASE_URL);
                 } else {
-                    // Running on production build locally
                     API_BASE_URL = 'http://127.0.0.1:9000';
                 }
             } else {
-                // Running on deployed Netlify - use function proxy to avoid CORS
                 API_BASE_URL = '/.netlify/functions/api';
-                console.log('[DEBUG] Monitor using Netlify function proxy for production:', API_BASE_URL);
+                console.log('[DEBUG] Monitor using Netlify proxy:', API_BASE_URL);
             }
         }
 
-        // Configuration
-
-        // === Performance knobs ===
-        const DEBUG = false;               // flip to true if you want console logs
-        const CAMERA_POLL_MS = 250;        // ~4 FPS for camera previews
-        const INFO_POLL_MS   = 1000;       // 1 Hz for episode/state metadata
+        // === Perf knobs ===
+        const DEBUG = false;
+        const CAMERA_POLL_MS = 250;
+        const INFO_POLL_MS   = 1000;
 
         let latestStateInFlight = false;
         let pendingInfoInFlight = false;
 
-        // Track per-camera last update to avoid churn
-        const lastCamUpdate = { front: 0, left: 0, right: 0, perspective: 0, obs_main: 0, obs_wrist: 0 };
-        // Double-buffer state per camera (created on first frame)
-        const cameraBuffers = {};          // cameraName -> { imgs: [img0, img1], active: 0/1, lastSrc: '', initialized: bool }
-        const camSwapInFlight = {};        // cameraName -> boolean (prevents overlapping swaps)
+        const lastCamUpdate = { front:0, left:0, right:0, perspective:0, obs_main:0, obs_wrist:0 };
+        const cameraBuffers = {};
+        const camSwapInFlight = {};
 
         let autoRefreshInterval = null;
-        
-        // DOM elements
+
+        // DOM
         const serverStatus = document.getElementById('server-status');
-        const robotState = document.getElementById('robot-state');
-        const currentStateId = document.getElementById('current-state-id');
-        const stateType = document.getElementById('state-type');
-        const stateResponses = document.getElementById('state-responses');
-        const pendingStatesCount = document.getElementById('pending-states-count');
-        
-        // Control button elements
+        const robotState   = document.getElementById('robot-state');
+        const currentStateId      = document.getElementById('current-state-id');
+        const stateType           = document.getElementById('state-type');
+        const stateResponses      = document.getElementById('state-responses');
+        const pendingStatesCount  = document.getElementById('pending-states-count');
+
         const fastForwardBtn = document.getElementById('fast-forward-btn');
-        const rerecordBtn = document.getElementById('rerecord-btn');
-        const stopBtn = document.getElementById('stop-btn');
-        
-        // Camera view elements
+        const rerecordBtn    = document.getElementById('rerecord-btn');
+        const stopBtn        = document.getElementById('stop-btn');
+
         const cameraViews = {
             front: document.getElementById('camera-front'),
             left: document.getElementById('camera-left'),
             right: document.getElementById('camera-right'),
             perspective: document.getElementById('camera-perspective'),
             obs_main: document.getElementById('camera-obs_main'),
-            obs_wrist: document.getElementById('camera-obs_wrist')
+            obs_wrist: document.getElementById('camera-obs_wrist'),
         };
-        
-        // Episode charts management
-        const episodeChartsContainer = document.getElementById('episode-charts-container');
-        let episodes = []; // Array of episode data
-        let REQUIRED_RESPONSES_PER_STATE = 1; // Will be updated from API
-        let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10; // Will be updated from API
 
-        // Track user scroll state to prevent auto-scroll interference
+        const episodeChartsContainer = document.getElementById('episode-charts-container');
+        let episodes = [];
+        let REQUIRED_RESPONSES_PER_STATE = 1;
+        let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10;
+
         let userIsScrolling = false;
         let scrollTimeout = null;
 
-        // Remove episodes that the backend no longer reports (they've been fully completed and pruned)
-        function pruneMissingEpisodes(presentIds) {
-            const present = new Set(presentIds);
-            for (let i = episodes.length - 1; i >= 0; i--) {
-                const ep = episodes[i];
-                if (!present.has(ep.id)) {
-                    const el = document.getElementById(`episode-${ep.id}`);
-                    if (el) el.remove();
-                    episodes.splice(i, 1);
-                }
-            }
-            updateCurrentEpisodeIndicator();
+        // === Modal State ===
+        const vlmModal = document.getElementById('vlm-modal');
+        const vlmModalClose = document.getElementById('vlm-modal-close');
+        const vlmModalCancel = document.getElementById('vlm-modal-cancel');
+        const vlmModalSave = document.getElementById('vlm-modal-save');
+        const modalMaincam = document.getElementById('modal-maincam');
+        const modalTitle   = document.getElementById('vlm-modal-title');
+        const modalSelect  = document.getElementById('modal-description-select');
+        const modalPrompt  = document.getElementById('modal-prompt-text');
+        const kvEp         = document.getElementById('kv-episode');
+        const kvSt         = document.getElementById('kv-state');
+        const kvVid        = document.getElementById('kv-video');
+        const appToast     = document.getElementById('app-toast');
+
+        let modalContext = { episodeId:null, stateId:null, selectedVideoId:null, selectedText:null, bank:[] };
+
+        function showToast(msg, timeout=1600) {
+            appToast.textContent = msg;
+            appToast.classList.add('show');
+            setTimeout(() => appToast.classList.remove('show'), timeout);
         }
-        
-        // Update server status indicator
+
+        // ——— Camera plumbing (unchanged) ———
+        function ensureCameraBuffers(cameraName) {
+            const container = cameraViews[cameraName];
+            if (!container) return null;
+            let state = cameraBuffers[cameraName];
+            if (!state) {
+                const img0 = document.createElement('img');
+                img0.className = 'camera-image camera-layer';
+                const img1 = document.createElement('img');
+                img1.className = 'camera-image camera-layer';
+                container.appendChild(img0);
+                container.appendChild(img1);
+                state = cameraBuffers[cameraName] = { imgs:[img0,img1], active:0, lastSrc:'', initialized:false };
+            }
+            return state;
+        }
+        async function updateCameraView(name, dataUrl) {
+            const container = cameraViews[name];
+            if (!container) return;
+            if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+                const state = cameraBuffers[name];
+                if (state) {
+                    state.imgs[0].classList.remove('is-visible');
+                    state.imgs[1].classList.remove('is-visible');
+                    state.initialized = false; state.lastSrc = '';
+                }
+                if (!container.querySelector('.camera-placeholder')) {
+                    const ph = document.createElement('div'); ph.className='camera-placeholder'; ph.textContent='No image';
+                    container.appendChild(ph);
+                }
+                return;
+            }
+            const now = performance.now();
+            if (now - (lastCamUpdate[name]||0) < CAMERA_POLL_MS*0.9) return;
+            const state = ensureCameraBuffers(name);
+            if (!state) return;
+            if (dataUrl === state.lastSrc) return;
+            if (camSwapInFlight[name]) return;
+            camSwapInFlight[name] = true;
+            const backIndex = 1 - state.active;
+            const backImg = state.imgs[backIndex];
+            try {
+                backImg.decoding = 'async';
+                backImg.src = dataUrl;
+                if (typeof backImg.decode === 'function') {
+                    await backImg.decode().catch(()=>{});
+                } else {
+                    await new Promise(r => backImg.complete ? r() : (backImg.onload = () => r()));
+                }
+                if (!state.initialized) {
+                    const ph = container.querySelector('.camera-placeholder'); if (ph) ph.remove();
+                    state.initialized = true;
+                }
+                state.imgs[state.active].classList.remove('is-visible');
+                backImg.classList.add('is-visible');
+                state.active = backIndex;
+                state.lastSrc = dataUrl;
+                lastCamUpdate[name] = now;
+            } finally { camSwapInFlight[name] = false; }
+        }
+
         function updateServerStatus(connected) {
             const indicator = serverStatus.querySelector('.status-indicator');
             if (connected) {
@@ -785,156 +442,37 @@
                 serverStatus.innerHTML = '<span class="status-indicator disconnected"></span>Disconnected';
             }
         }
-
-        function ensureCameraBuffers(cameraName) {
-            const container = cameraViews[cameraName];
-            if (!container) return null;
-
-            let state = cameraBuffers[cameraName];
-            if (!state) {
-                // Create two stacked <img> layers; start hidden (opacity 0).
-                const img0 = document.createElement('img');
-                img0.className = 'camera-image camera-layer';
-                img0.alt = `${cameraName} camera 0`;
-
-                const img1 = document.createElement('img');
-                img1.className = 'camera-image camera-layer';
-                img1.alt = `${cameraName} camera 1`;
-
-                container.appendChild(img0);
-                container.appendChild(img1);
-
-                state = cameraBuffers[cameraName] = {
-                    imgs: [img0, img1],
-                    active: 0,
-                    lastSrc: '',
-                    initialized: false
-                };
-            }
-            return state;
-        }
-        
-        // Update camera view
-        async function updateCameraView(cameraName, imageDataUrl) {
-            const container = cameraViews[cameraName];
-            if (!container) return;
-
-            // If no image: show (or keep) placeholder and hide buffers
-            if (!imageDataUrl || !imageDataUrl.startsWith('data:image/')) {
-                const state = cameraBuffers[cameraName];
-                if (state) {
-                    state.imgs[0].classList.remove('is-visible');
-                    state.imgs[1].classList.remove('is-visible');
-                    state.initialized = false;
-                    state.lastSrc = '';
-                }
-                if (!container.querySelector('.camera-placeholder')) {
-                    const ph = document.createElement('div');
-                    ph.className = 'camera-placeholder';
-                    ph.textContent = 'No image';
-                    container.appendChild(ph);
-                }
-                return;
-            }
-
-            // Throttle a bit to avoid redundant churn
-            const now = performance.now();
-            if (now - (lastCamUpdate[cameraName] || 0) < CAMERA_POLL_MS * 0.9) return;
-
-            const state = ensureCameraBuffers(cameraName);
-            if (!state) return;
-
-            // If the incoming frame is byte-identical to the last one, skip
-            if (imageDataUrl === state.lastSrc) return;
-
-            // Avoid overlapping decodes/swaps for this camera
-            if (camSwapInFlight[cameraName]) return;
-            camSwapInFlight[cameraName] = true;
-
-            const backIndex = 1 - state.active;
-            const backImg   = state.imgs[backIndex];
-
-            try {
-                backImg.decoding = 'async';
-                backImg.src = imageDataUrl;
-
-                // Wait until the new frame is fully decoded before we show it
-                if (typeof backImg.decode === 'function') {
-                    await backImg.decode().catch(() => {});
-                } else {
-                    await new Promise(resolve =>
-                        backImg.complete ? resolve() : (backImg.onload = () => resolve())
-                    );
-                }
-
-                // First successful frame: remove placeholder if present
-                if (!state.initialized) {
-                    const ph = container.querySelector('.camera-placeholder');
-                    if (ph) ph.remove();
-                    state.initialized = true;
-                }
-
-                // Atomic swap: hide old image and show new one instantly
-                // This eliminates any flickering or empty frames
-                state.imgs[state.active].classList.remove('is-visible');
-                backImg.classList.add('is-visible');
-                state.active = backIndex;
-                
-                state.lastSrc = imageDataUrl;
-                lastCamUpdate[cameraName] = now;
-            } finally {
-                camSwapInFlight[cameraName] = false;
-            }
-        }
-
-        
-        // Update robot state
         function updateRobotState(isMoving, isResetting, resetCountdown, isAsyncCollection) {
             if (isResetting) {
-                robotState.className = 'robot-state resetting';
-                const countdownText = resetCountdown > 0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
-                robotState.textContent = `🔄 Resetting Environment${countdownText}`;
+                robotState.className='robot-state resetting';
+                const t = resetCountdown>0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
+                robotState.textContent = `🔄 Resetting Environment${t}`;
             } else if (isAsyncCollection) {
-                robotState.className = 'robot-state async-collection';
-                robotState.textContent = '🔄 Asynchronous Data Collection';
+                robotState.className='robot-state async-collection';
+                robotState.textContent='🔄 Asynchronous Data Collection';
             } else if (isMoving) {
-                robotState.className = 'robot-state moving';
-                robotState.textContent = '🏃 Robot Moving';
+                robotState.className='robot-state moving';
+                robotState.textContent='🏃 Robot Moving';
             } else {
-                robotState.className = 'robot-state stationary';
-                robotState.textContent = '🛑 Robot Stationary';
+                robotState.className='robot-state stationary';
+                robotState.textContent='🛑 Robot Stationary';
             }
         }
-        
-        // Update control buttons based on reset state
         function updateControlButtons(isResetting) {
             if (isResetting) {
-                // Change "Next Episode" to "Start Episode" during reset
                 fastForwardBtn.innerHTML = '<span class="control-icon">▶️</span>Start Episode';
                 fastForwardBtn.title = 'Skip remaining reset time and start episode immediately';
             } else {
-                // Normal "Next Episode" button
                 fastForwardBtn.innerHTML = '<span class="control-icon">⏩</span>Next Episode';
                 fastForwardBtn.title = 'Finish current episode and move to next';
             }
         }
-        
-        // Update joint positions display
-        function updateJointPositions(joints) {
-            // Function removed - joint positions panel no longer exists
-        }
-        
-        // Episode Chart Management - Episodes are now managed by the backend
-        
+
+        // ——— Episode charts ———
         function createEpisodeChartElement(episode) {
             const episodeDiv = document.createElement('div');
-            episodeDiv.className = 'episode-chart';
-            episodeDiv.id = `episode-${episode.id}`;
-            
-            if (episode.isCurrentServing) {
-                episodeDiv.classList.add('current');
-            }
-            
+            episodeDiv.className = 'episode-chart'; episodeDiv.id = `episode-${episode.id}`;
+            if (episode.isCurrentServing) episodeDiv.classList.add('current');
             episodeDiv.innerHTML = `
                 <div class="episode-header">
                     <div class="episode-title">Episode ${episode.id}</div>
@@ -945,135 +483,114 @@
                 <div class="chart-container">
                     <div class="chart-y-axis">
                         <div class="y-axis-label">${REQUIRED_RESPONSES_PER_IMPORTANT_STATE}</div>
-                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_IMPORTANT_STATE / 2)}</div>
+                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_IMPORTANT_STATE/2)}</div>
                         <div class="y-axis-label">0</div>
                     </div>
                     <div class="chart-bars" id="episode-${episode.id}-bars"></div>
                     <div class="chart-x-axis">State IDs</div>
                 </div>
             `;
-            
             episodeChartsContainer.appendChild(episodeDiv);
-            // After episodeChartsContainer.appendChild(episodeDiv);
             const bars = document.getElementById(`episode-${episode.id}-bars`);
             const stats = document.getElementById(`episode-${episode.id}-stats`);
-
-            // Cache DOM references & a per-episode bar map
             episode.barsContainer = bars;
-            episode.statsElement  = stats;
-            episode.barEls        = {};   // stateId -> <div.state-bar-container>
-            episode.responsesTotal = 0;   // keep running totals without O(N) recomputation
+            episode.statsElement = stats;
+            episode.barEls = {};
+            episode.responsesTotal = 0;
             episode.importantCount = 0;
-            episode.regularCount   = 0;
+            episode.regularCount = 0;
         }
-        
-        function updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant, forceRefresh = false) {
-            // Find the episode object you created earlier
+
+        // Bind click once for eligible bars
+        function bindBarClickIfEligible(barContainer, episodeId, stateId, isImportant, hasVlmBoth) {
+            barContainer.dataset.episodeId = String(episodeId);
+            barContainer.dataset.stateId = String(stateId);
+            // clickable only if important and has both VLM text + video id
+            if (isImportant && hasVlmBoth) {
+                barContainer.classList.add('clickable');
+                if (barContainer.dataset.clickBound !== '1') {
+                    barContainer.addEventListener('click', () => openVlmModal(episodeId, stateId));
+                    barContainer.dataset.clickBound = '1';
+                }
+            } else {
+                barContainer.classList.remove('clickable');
+            }
+        }
+
+        function updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant, forceRefresh=false, hasVlmArtifacts /* bool */) {
             const episode = episodes.find(ep => ep.id === episodeId);
             if (!episode || !episode.barsContainer) return;
 
-            // Force refresh is used only to refresh stats; keep it cheap
             if (forceRefresh) {
-                // Update stats text from cached episode.state entries
                 const values = Object.values(episode.states || {});
-                let totalResponses = 0, important = 0, regular = 0;
-                for (const v of values) {
-                    totalResponses += v.responses || 0;
-                    if (v.isImportant) important++; else regular++;
-                }
-                episode.responsesTotal = totalResponses;
-                episode.importantCount = important;
-                episode.regularCount   = regular;
+                let totalResponses=0, important=0, regular=0;
+                for (const v of values) { totalResponses += v.responses||0; if (v.isImportant) important++; else regular++; }
+                episode.responsesTotal=totalResponses; episode.importantCount=important; episode.regularCount=regular;
                 if (episode.statsElement) {
-                    episode.statsElement.textContent =
-                        `${values.length} states (🔴${important} 🔵${regular}), ${totalResponses} responses`;
+                    episode.statsElement.textContent = `${values.length} states (🔴${important} 🔵${regular}), ${totalResponses} responses`;
                 }
                 return;
             }
-
-            // Initialize storage for states if missing
             if (!episode.states) episode.states = {};
-
-            // Short-circuit if nothing changed
             const prev = episode.states[stateId];
-            if (prev && prev.responses === responsesReceived && prev.isImportant === !!isImportant) {
-                return;
+            if (!prev || prev.responses !== responsesReceived || prev.isImportant !== !!isImportant || prev.hasVlmArtifacts !== (!!hasVlmArtifacts)) {
+                if (prev) {
+                    episode.responsesTotal -= prev.responses||0;
+                    if (prev.isImportant) episode.importantCount--; else episode.regularCount--;
+                }
+                episode.responsesTotal += (responsesReceived||0);
+                if (isImportant) episode.importantCount++; else episode.regularCount++;
+                episode.states[stateId] = { responses: responsesReceived||0, isImportant:!!isImportant, hasVlmArtifacts:!!hasVlmArtifacts };
             }
 
-            // Maintain running totals cheaply
-            if (prev) {
-                episode.responsesTotal -= prev.responses || 0;
-                if (prev.isImportant) episode.importantCount--; else episode.regularCount--;
-            }
-            episode.responsesTotal += (responsesReceived || 0);
-            if (isImportant) episode.importantCount++; else episode.regularCount++;
-
-            // Cache the new state record
-            episode.states[stateId] = {
-                responses: responsesReceived || 0,
-                isImportant: !!isImportant
-            };
-
-            // Upsert the bar DOM node for this state
             let barContainer = episode.barEls[stateId];
             if (!barContainer) {
                 barContainer = document.createElement('div');
-                barContainer.className = 'state-bar-container';
-                barContainer.style.flex = 'none';
-                barContainer.style.width = '3px'; // fixed narrow column, lets container scroll horizontally
-
-                const bar = document.createElement('div');
-                bar.className = 'state-bar';
+                barContainer.className='state-bar-container';
+                const bar = document.createElement('div'); bar.className='state-bar';
                 barContainer.appendChild(bar);
-
-                // Keep bars sorted by stateId with cheap insertion
                 barContainer.dataset.stateId = String(stateId);
                 const kids = episode.barsContainer.children;
                 let inserted = false;
-                for (let i = kids.length - 1; i >= 0; i--) {
+                for (let i=kids.length-1; i>=0; i--) {
                     const cur = parseInt(kids[i].dataset.stateId, 10);
-                    if (cur <= stateId) {
-                        episode.barsContainer.insertBefore(barContainer, kids[i].nextSibling);
-                        inserted = true;
-                        break;
-                    }
+                    if (cur <= stateId) { episode.barsContainer.insertBefore(barContainer, kids[i].nextSibling); inserted=true; break; }
                 }
                 if (!inserted) episode.barsContainer.insertBefore(barContainer, episode.barsContainer.firstChild);
-
                 episode.barEls[stateId] = barContainer;
             }
 
             const bar = barContainer.firstChild;
             const required = isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+            const hasVlm = (hasVlmArtifacts === undefined) ? true : !!hasVlmArtifacts;
 
-            // Reset classes then set state‑specific styles
             bar.className = 'state-bar';
-
-            if ((responsesReceived || 0) === 0) {
-                bar.classList.add('empty');
-                bar.style.height = '100%';  // empty bars are full height but gray
+            if ((responsesReceived||0) === 0) {
+                bar.style.height = '100%';
+                if (isImportant && !hasVlm) bar.classList.add('important-awaiting-vlm');
+                else bar.classList.add('empty');
             } else {
                 const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
                 bar.style.height = `${pct}%`;
-                if (isImportant) {
-                    bar.classList.add(responsesReceived >= required ? 'important-complete' : 'important-incomplete');
-                } else {
-                    bar.classList.add(responsesReceived >= required ? 'regular-complete' : 'regular-incomplete');
-                }
+                if (isImportant && !hasVlm) bar.classList.add('important-awaiting-vlm');
+                else if (isImportant) bar.classList.add(responsesReceived >= required ? 'important-complete' : 'important-incomplete');
+                else bar.classList.add(responsesReceived >= required ? 'regular-complete' : 'regular-incomplete');
             }
 
-            // Tooltip
             const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
-            barContainer.title = `State ${stateId}: ${responsesReceived}/${required} (${pct.toFixed(1)}%, ${isImportant ? 'Important' : 'Regular'})`;
+            const vlmStr = isImportant ? (hasVlm ? 'VLM ✓ (text+video)' : 'VLM missing') : 'Regular';
+            barContainer.title = `State ${stateId}: ${responsesReceived}/${required} (${pct.toFixed(1)}%, ${isImportant?'Important':'Regular'}; ${vlmStr})`;
 
-            // Update stats (cheap; uses cached running totals)
+            // Bind click (if eligible)
+            bindBarClickIfEligible(barContainer, episodeId, stateId, !!isImportant, !!hasVlm);
+
+            // Header stats
             if (episode.statsElement) {
                 const count = Object.keys(episode.states).length;
-                episode.statsElement.textContent =
-                    `${count} states (🔴${episode.importantCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
+                episode.statsElement.textContent = `${count} states (🔴${episode.importantCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
             }
         }
-        
+
         function updateCurrentEpisodeIndicator() {
             const current = episodes.find(ep => ep.isCurrentServing);
             document.querySelectorAll('.episode-chart').forEach(chart => chart.classList.remove('current'));
@@ -1081,35 +598,36 @@
                 const el = document.getElementById(`episode-${current.id}`);
                 if (el) {
                     el.classList.add('current');
-                    // Only auto-scroll if user is not manually scrolling
-                    if (!userIsScrolling) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                    }
+                    if (!userIsScrolling) el.scrollIntoView({ behavior:'smooth', block:'nearest' });
                 }
             }
         }
-        
-        function processMonitoringData(data) {
-            if (data.required_responses_per_state) {
-                REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
-            }
-            if (data.required_responses_per_important_state) {
-                REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
-            }
 
+        function pruneMissingEpisodes(presentIds) {
+            const present = new Set(presentIds);
+            for (let i=episodes.length-1; i>=0; i--) {
+                const ep = episodes[i];
+                if (!present.has(ep.id)) {
+                    const el = document.getElementById(`episode-${ep.id}`);
+                    if (el) el.remove();
+                    episodes.splice(i, 1);
+                }
+            }
+            updateCurrentEpisodeIndicator();
+        }
+
+        function processMonitoringData(data) {
+            if (data.required_responses_per_state) REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
+            if (data.required_responses_per_important_state) REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
             if (!data.episodes) return;
 
-            // Remove episodes the backend pruned
             pruneMissingEpisodes(Object.keys(data.episodes));
 
             for (const [episodeId, episodeData] of Object.entries(data.episodes)) {
                 let episodeIndex = episodes.findIndex(ep => ep.id === episodeId);
                 if (episodeIndex === -1) {
                     const newEpisode = {
-                        index: episodes.length,
-                        id: episodeId,
-                        states: {},
-                        maxStates: 0,
+                        index: episodes.length, id: episodeId, states: {}, maxStates: 0,
                         isComplete: episodeData.is_completed || false,
                         isCurrentServing: episodeData.is_current_serving || false
                     };
@@ -1117,318 +635,354 @@
                     createEpisodeChartElement(newEpisode);
                     episodeIndex = newEpisode.index;
                 }
-
                 const episode = episodes[episodeIndex];
                 episode.isComplete = episodeData.is_completed || false;
                 episode.isCurrentServing = episodeData.is_current_serving || false;
 
-                // Upsert state bars incrementally
                 if (episodeData.states) {
                     for (const [sidStr, info] of Object.entries(episodeData.states)) {
                         const sid = parseInt(sidStr, 10);
-                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, info.is_important || false);
+                        const isImportant = !!(info.is_important || false);
+                        const hasVlmBoth = Boolean(info.has_vlm_text) && Boolean(info.has_video_id);
+                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isImportant, false, (isImportant ? hasVlmBoth : true));
                     }
                 }
 
-                // Update header badges
                 const episodeElement = document.getElementById(`episode-${episodeId}`);
                 if (episodeElement) {
                     const titleElement = episodeElement.querySelector('.episode-title');
                     if (titleElement) {
                         let title = `Episode ${episodeId}`;
                         if (episode.isCurrentServing) title += ' (Current)';
-                        if (episode.isComplete)       title += ' (Complete)';
+                        if (episode.isComplete) title += ' (Complete)';
                         titleElement.textContent = title;
                     }
-                    episodeElement.classList.toggle('current',  episode.isCurrentServing);
+                    episodeElement.classList.toggle('current', episode.isCurrentServing);
                     episodeElement.classList.toggle('complete', episode.isComplete);
                 }
             }
-
             updateCurrentEpisodeIndicator();
         }
-        
-        // Fetch latest state from monitoring endpoint
+
+        // ——— Fetchers ———
         async function fetchLatestState() {
             try {
-                console.log('Fetching latest state from:', `${API_BASE_URL}/api/monitor/latest-state`);
-                    const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, {
-                        headers: {
-                            'Accept': 'application/json'
-                        }
-                    });                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 const data = await response.json();
-                console.log('Received monitoring data:', data);
-                
-                // Update server status
                 updateServerStatus(true);
-                
                 if (data.status === 'success') {
-                    // Update camera views
-                    if (data.views) {
-                        for (const [cameraName, imageDataUrl] of Object.entries(data.views)) {
-                            updateCameraView(cameraName, imageDataUrl);
-                        }
-                    }
-                    
-                    // Update status information
+                    if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     currentStateId.textContent = data.state_id || '--';
-                    
-                    // Update state type and response information
                     if (data.is_important !== undefined) {
                         stateType.textContent = data.is_important ? '🔴 Important' : '🔵 Regular';
                         const required = data.is_important ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
                         const received = data.responses_received || 0;
                         stateResponses.textContent = `${received}/${required}`;
                     } else {
-                        stateType.textContent = '--';
-                        stateResponses.textContent = '--';
+                        stateType.textContent = '--'; stateResponses.textContent = '--';
                     }
-                    
-                    // Update robot state
                     updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown, data.is_async_collection);
-                    
-                    // Update control button based on reset state
                     updateControlButtons(data.is_resetting);
-                    
-                    // Update pending states count
-                    if (data.total_pending_states !== undefined) {
-                        pendingStatesCount.textContent = data.total_pending_states;
-                    } else {
-                        pendingStatesCount.textContent = '--';
-                    }
-                    
+                    if (data.total_pending_states !== undefined) pendingStatesCount.textContent = data.total_pending_states; else pendingStatesCount.textContent = '--';
                 } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
-                    // No pending states, but we may be in RESET; still render robot/reset UI.
                     currentStateId.textContent = 'No states';
                     stateType.textContent = '--';
                     stateResponses.textContent = '--';
                     pendingStatesCount.textContent = '0';
-
-                    // Show reset / async / motion state even when there are no states.
-                    updateRobotState(
-                        data.robot_moving,
-                        data.is_resetting,
-                        data.reset_countdown,
-                        data.is_async_collection
-                    );
-                    // Flip "Next Episode" ↔ "Start Episode" based on reset flag.
+                    updateRobotState(data.robot_moving, data.is_resetting, data.reset_countdown, data.is_async_collection);
                     updateControlButtons(data.is_resetting);
-
-                    // Keep showing the latest camera snapshots if provided.
-                    if (data.views) {
-                        for (const [cameraName, imageDataUrl] of Object.entries(data.views)) {
-                            updateCameraView(cameraName, imageDataUrl);
-                        }
-                    }
+                    if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                 }
-
-            } catch (error) {
-                console.error('Error fetching latest state:', error);
+            } catch (e) {
+                console.error('Error fetching latest state:', e);
                 updateServerStatus(false);
             }
         }
-        
-        // Fetch pending states info for episode tracking
+
         async function fetchPendingStatesInfo() {
             try {
-                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, {
-                    headers: {
-                        'Accept': 'application/json'
-                    }
-                });
+                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, { headers:{ 'Accept':'application/json' }});
                 if (response.ok) {
                     const data = await response.json();
                     processMonitoringData(data);
-                    
-                    // Update the pending states count in the DOM
-                    if (pendingStatesCount) {
-                        pendingStatesCount.textContent = data.total_pending || 0;
-                    }
+                    if (pendingStatesCount) pendingStatesCount.textContent = data.total_pending || 0;
                 }
-            } catch (error) {
-                console.error('Error fetching pending states info:', error);
+            } catch (e) {
+                console.error('Error fetching pending states info:', e);
             }
         }
-        
-        // Auto-refresh function (always enabled at 30 FPS)
-        function startAutoRefresh() {
-            stopAutoRefresh(); // clear any old timers
 
+        // ——— Description bank helpers ———
+        function extractThusText(s) {
+            if (!s) return '';
+            const idx = s.toLowerCase().indexOf('thus:');
+            if (idx >= 0) return s.slice(idx + 5).trim().replace(/^[\s–—:,]+/, '');
+            return s.trim();
+        }
+        function parseDescriptionBank(raw) {
+            // Raw can be a string (one numbered item per line) or an array of {id,text}
+            if (Array.isArray(raw)) {
+                return raw
+                    .filter(x => typeof x === 'object' && x && typeof x.id !== 'undefined')
+                    .map(x => ({ id: Number(x.id), text: String(x.text || ''), thus_text: extractThusText(String(x.text||'')) }))
+                    .sort((a,b) => a.id - b.id);
+            }
+            if (typeof raw !== 'string') return [];
+            const out = [];
+            const lines = raw.split('\n');
+            for (const line of lines) {
+                const m = line.match(/^\s*(\d+)\.\s*(.+)$/);
+                if (!m) continue;
+                const id = Number(m[1]);
+                const text = m[2].trim();
+                out.push({ id, text, thus_text: extractThusText(text) });
+            }
+            out.sort((a,b) => a.id - b.id);
+            return out;
+        }
+
+        async function fetchDescriptionBank() {
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/description-bank`, { headers:{ 'Accept':'application/json' }});
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (data && data.ok === true) {
+                    return parseDescriptionBank(data.entries || data.raw_text || []);
+                }
+                return null;
+            } catch {
+                return null;
+            }
+        }
+
+        // ——— Modal logic ———
+        function openModal() { vlmModal.classList.add('show'); }
+        function closeModal() { vlmModal.classList.remove('show'); }
+
+        function populateDropdown(items, selectedId) {
+            modalSelect.innerHTML = '';
+            for (const it of items) {
+                const opt = document.createElement('option');
+                opt.value = String(it.id);
+                opt.textContent = `${it.id} — ${it.thus_text}`;
+                if (it.id === selectedId) opt.selected = true;
+                modalSelect.appendChild(opt);
+            }
+        }
+
+        async function fetchStateDetails(episodeId, stateId) {
+            const url = new URL(`${API_BASE_URL}/api/state-details`, location.origin);
+            url.searchParams.set('episode_id', episodeId);
+            url.searchParams.set('state_id', stateId);
+            console.log('Fetching state details from:', url.toString().replace(location.origin,''));
+            const resp = await fetch(url.toString().replace(location.origin,''), { headers:{ 'Accept':'application/json' }});
+            console.log('Response status:', resp.status, resp.statusText);
+            if (!resp.ok) throw new Error(`Failed to fetch state details (${resp.status})`);
+            const data = await resp.json();
+            console.log('State details response:', data);
+            if (!data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Bad response');
+            return data;
+        }
+
+        async function openVlmModal(episodeId, stateId) {
+            try {
+                console.log('Opening VLM modal for episode:', episodeId, 'state:', stateId);
+                // Prime modal
+                modalTitle.textContent = `Important state ${stateId} — Episode ${episodeId}`;
+                modalMaincam.src = '';
+                modalPrompt.textContent = '…';
+                kvEp.textContent = episodeId;
+                kvSt.textContent = stateId;
+                kvVid.textContent = '—';
+                modalContext = { episodeId, stateId, selectedVideoId:null, selectedText:null, bank:[] };
+                openModal();
+
+                console.log('About to fetch state details...');
+                // Load details (maincam + current VLM + bank)
+                const details = await fetchStateDetails(episodeId, stateId);
+                console.log('Got state details:', details);
+                
+                if (details.maincam_data_url) {
+                    console.log('Setting modal main camera image');
+                    modalMaincam.src = details.maincam_data_url;
+                } else {
+                    console.log('No main camera data URL found');
+                }
+
+                const currentText = details.vlm_text || '';
+                const currentVid  = (typeof details.vlm_video_id === 'number') ? details.vlm_video_id : null;
+
+                console.log('VLM Text:', currentText);
+                console.log('VLM Video ID:', currentVid);
+                modalPrompt.textContent = currentText || '(no VLM text found)';
+                kvVid.textContent = (currentVid !== null ? String(currentVid) : '—');
+
+                console.log('Processing description bank...');
+                let bank = [];
+                if (details.description_bank) {
+                    console.log('Using description bank from details:', details.description_bank);
+                    // New API returns parsed entries directly
+                    bank = details.description_bank.map(entry => ({
+                        id: entry.id,
+                        thus_text: entry.text
+                    }));
+                } else {
+                    console.log('No description bank in details, fetching fallback...');
+                    const fallback = await fetchDescriptionBank();
+                    bank = fallback || [];
+                }
+                console.log('Final bank:', bank);
+                modalContext.bank = bank;
+
+                // Populate dropdown (pre-select current video id if present)
+                populateDropdown(bank, currentVid ?? undefined);
+                modalContext.selectedVideoId = currentVid;
+                modalContext.selectedText = currentText;
+
+                // If there is no current vid but we have a bank, pick the first as visible choice (no auto save)
+                if (currentVid === null && bank.length) {
+                    modalPrompt.textContent = bank[0].thus_text;
+                    kvVid.textContent = String(bank[0].id);
+                    modalContext.selectedVideoId = bank[0].id;
+                    modalContext.selectedText = bank[0].thus_text;
+                }
+                console.log('VLM modal setup completed successfully');
+            } catch (e) {
+                console.error('Error in openVlmModal:', e);
+                showToast('Failed to load VLM details.');
+                closeModal();
+            }
+        }
+
+        // Dropdown -> preview new text & video id (no save yet)
+        modalSelect.addEventListener('change', () => {
+            const selId = Number(modalSelect.value);
+            const it = modalContext.bank.find(x => x.id === selId);
+            if (it) {
+                modalContext.selectedVideoId = it.id;
+                modalContext.selectedText = it.thus_text;
+                modalPrompt.textContent = it.thus_text;
+                kvVid.textContent = String(it.id);
+            }
+        });
+
+        // Save selection to backend
+        async function saveVlmSelection() {
+            const { episodeId, stateId, selectedVideoId, selectedText } = modalContext;
+            if (selectedVideoId == null || !selectedText) {
+                showToast('Pick a description first.');
+                return;
+            }
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/update-vlm-selection`, {
+                    method:'POST',
+                    headers:{ 'Content-Type':'application/json' },
+                    body: JSON.stringify({
+                        episode_id: episodeId,
+                        state_id: stateId,
+                        video_id: selectedVideoId,
+                        vlm_text: selectedText
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Save failed');
+                showToast('Updated VLM selection.');
+                closeModal();
+                // Optional: refresh info so tooltips reflect any change
+                fetchPendingStatesInfo();
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to save selection.');
+            }
+        }
+
+        // Modal buttons & close mechanisms
+        vlmModalClose.addEventListener('click', closeModal);
+        vlmModalCancel.addEventListener('click', closeModal);
+        vlmModalSave.addEventListener('click', saveVlmSelection);
+        vlmModal.addEventListener('click', (e) => { if (e.target === vlmModal) closeModal(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && vlmModal.classList.contains('show')) closeModal(); });
+
+        // ——— Controls ———
+        async function handleFastForward() {
+            const buttonText = fastForwardBtn.textContent;
+            const isStartEpisode = buttonText.includes('Start Episode');
+            const button = fastForwardBtn; button.classList.add('loading'); button.disabled = true;
+            try {
+                const endpoint = isStartEpisode ? '/api/control/start-episode' : '/api/control/next-episode';
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const result = await response.json();
+                if (result.status === 'success') {
+                    // noop: next fetch will update UI
+                } else {
+                    console.error('Failed:', result.message);
+                }
+            } catch (e) {
+                console.error(e);
+            } finally { button.classList.remove('loading'); button.disabled = false; }
+        }
+        async function handleRerecord() {
+            const b = rerecordBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/rerecord`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const j = await r.json();
+                if (j.status !== 'success') console.error('Failed:', j.message);
+            } catch (e) { console.error(e); }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
+        async function handleStop() {
+            const b = stopBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/stop`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const j = await r.json();
+                if (j.status !== 'success') console.error('Failed:', j.message);
+            } catch (e) { console.error(e); }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
+        fastForwardBtn.addEventListener('click', handleFastForward);
+        rerecordBtn.addEventListener('click', handleRerecord);
+        stopBtn.addEventListener('click', handleStop);
+
+        // ——— Auto-refresh ———
+        function startAutoRefresh() {
+            stopAutoRefresh();
             autoRefreshInterval = {
                 cameras: setInterval(() => {
                     if (!latestStateInFlight) {
-                        latestStateInFlight = true;
-                        fetchLatestState().finally(() => latestStateInFlight = false);
+                        latestStateInFlight = true; fetchLatestState().finally(()=>latestStateInFlight=false);
                     }
                 }, CAMERA_POLL_MS),
-
                 info: setInterval(() => {
                     if (!pendingInfoInFlight) {
-                        pendingInfoInFlight = true;
-                        fetchPendingStatesInfo().finally(() => pendingInfoInFlight = false);
+                        pendingInfoInFlight = true; fetchPendingStatesInfo().finally(()=>pendingInfoInFlight=false);
                     }
                 }, INFO_POLL_MS)
             };
-
-            if (DEBUG) console.log(`Auto-refresh started (cams ${Math.round(1000/CAMERA_POLL_MS)} FPS, info ${Math.round(1000/INFO_POLL_MS)} Hz)`);
         }
-
         function stopAutoRefresh() {
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval.cameras);
                 clearInterval(autoRefreshInterval.info);
                 autoRefreshInterval = null;
-                if (DEBUG) console.log('Auto-refresh stopped');
             }
         }
-        
-        // Control button handlers
-        async function handleFastForward() {
-            const buttonText = fastForwardBtn.textContent;
-            const isStartEpisode = buttonText.includes('Start Episode');
-            
-            console.log(isStartEpisode ? 'Start Episode button clicked' : 'Next Episode button clicked');
-            const button = fastForwardBtn;
-            button.classList.add('loading');
-            button.disabled = true;
-            
-            try {
-                const endpoint = isStartEpisode ? '/api/control/start-episode' : '/api/control/next-episode';
-                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const action = isStartEpisode ? 'episode start' : 'next episode';
-                    console.log(`✅ ${action} triggered successfully`);
-                    
-                    // The new episode will be automatically detected on the next data fetch
-                    // No need to manually create episode charts since backend manages episodes
-                    
-                } else {
-                    const action = isStartEpisode ? 'start episode' : 'trigger next episode';
-                    console.error(`❌ Failed to ${action}:`, result.message);
-                }
-            } catch (error) {
-                const action = isStartEpisode ? 'starting episode' : 'triggering next episode';
-                console.error(`❌ Error ${action}:`, error);
-            } finally {
-                button.classList.remove('loading');
-                button.disabled = false;
-            }
-        }
-        
-        async function handleRerecord() {
-            console.log('Re-record button clicked');
-            const button = rerecordBtn;
-            button.classList.add('loading');
-            button.disabled = true;
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/control/rerecord`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                const result = await response.json();
-                if (result.status === 'success') {
-                    console.log('✅ Re-record episode triggered successfully');
-                } else {
-                    console.error('❌ Failed to trigger re-record:', result.message);
-                }
-            } catch (error) {
-                console.error('❌ Error triggering re-record:', error);
-            } finally {
-                button.classList.remove('loading');
-                button.disabled = false;
-            }
-        }
-        
-        async function handleStop() {
-            console.log('Stop button clicked');
-            const button = stopBtn;
-            button.classList.add('loading');
-            button.disabled = true;
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/control/stop`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                const result = await response.json();
-                if (result.status === 'success') {
-                    console.log('✅ Stop recording triggered successfully');
-                } else {
-                    console.error('❌ Failed to trigger stop:', result.message);
-                }
-            } catch (error) {
-                console.error('❌ Error triggering stop:', error);
-            } finally {
-                button.classList.remove('loading');
-                button.disabled = false;
-            }
-        }
-        
-        // Event listeners
-        fastForwardBtn.addEventListener('click', handleFastForward);
-        rerecordBtn.addEventListener('click', handleRerecord);
-        stopBtn.addEventListener('click', handleStop);
-        
-        // Initialize
-        document.addEventListener('DOMContentLoaded', async function() {
-            console.log('Data Collection Monitor initialized');
-            await initializeApiUrl(); // Initialize API URL first
-            
-            // Set up scroll detection for episode charts container
-            episodeChartsContainer.addEventListener('scroll', function() {
-                userIsScrolling = true;
-                
-                // Clear any existing timeout
-                if (scrollTimeout) {
-                    clearTimeout(scrollTimeout);
-                }
-                
-                // Reset scroll state after user stops scrolling for 3 seconds
-                scrollTimeout = setTimeout(() => {
-                    userIsScrolling = false;
-                }, 3000);
+
+        // Init
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initializeApiUrl();
+            episodeChartsContainer.addEventListener('scroll', () => {
+                userIsScrolling = true; if (scrollTimeout) clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(()=>userIsScrolling=false, 3000);
             });
-            
-            // Initial fetch of episode data with force refresh
-            await fetchPendingStatesInfo(); // Initial episode data fetch
-            fetchLatestState(); // Initial fetch for latest state info
-            
-            startAutoRefresh(); // Start auto-refresh immediately
-            
-            // Additional force refresh after a short delay to ensure everything is loaded
-            setTimeout(async () => {
-                console.log('🔄 Force refreshing charts after page load...');
-                await fetchPendingStatesInfo(); // Force another refresh
-            }, 500);
+            await fetchPendingStatesInfo();
+            fetchLatestState();
+            startAutoRefresh();
+            setTimeout(fetchPendingStatesInfo, 500);
         });
-        
-        // Handle page visibility changes to pause/resume auto-refresh
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) {
-                console.log('Page hidden, pausing auto-refresh');
-                stopAutoRefresh();
-            } else {
-                console.log('Page visible, resuming auto-refresh');
-                startAutoRefresh();
-            }
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) stopAutoRefresh();
+            else startAutoRefresh();
         });
     </script>
 </body>

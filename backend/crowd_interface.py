@@ -527,11 +527,6 @@ class CrowdInterface():
             pass
         return (max_idx + 1) if max_idx > 0 else 1
 
-    @staticmethod
-    def _guess_ext_from_mime_or_name(mime: str | None, name: str | None, fallback: str = ".webm") -> str:
-        # VP9-only system: always use .webm
-        return ".webm"
-
     def _next_video_filename(self, ext: str) -> tuple[str, int]:
         """Return ('{index}{ext}', index) and atomically increment the counter."""
         if not ext.startswith("."):
@@ -1188,18 +1183,14 @@ class CrowdInterface():
         """Prompt placeholder task name (from --task-name)."""
         return (self.prompt_task_name or "").strip()
 
-    def _task_dir(self, task_name: str | None = None) -> Path | None:
-        tn = (task_name or self._task_name())
-        if not tn:
-            return None
+    def _task_dir(self, task_name: str | None = None) -> Path:
+        tn = task_name or self._task_name()
         return (self._prompts_root_dir() / tn).resolve()
 
     def _demo_images_for_task(self, task_name: str | None = None) -> list[str]:
         """Return numerically sorted image file paths from prompts/demo/{task-name}/snapshots."""
-        tn = (task_name or self._task_name())
+        tn = task_name or self._task_name()
         demo_dir = (self._prompts_root_dir() / tn / "snapshots").resolve()
-        if not demo_dir.exists():
-            return []
         exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         
         # Collect image files and sort them numerically by extracting numeric part
@@ -1210,35 +1201,26 @@ class CrowdInterface():
         
         # Sort numerically by extracting the numeric part from filename
         def numeric_sort_key(path):
-            try:
-                # Extract numeric part from filename (e.g., "000001" from "000001.jpg")
-                stem = path.stem
-                # Find all digits in the filename
-                import re
-                numbers = re.findall(r'\d+', stem)
-                if numbers:
-                    return int(numbers[0])  # Use first numeric sequence
-                return float('inf')  # Put non-numeric files at the end
-            except:
-                return float('inf')
+            # Extract numeric part from filename (e.g., "000001" from "000001.jpg")
+            stem = path.stem
+            # Find all digits in the filename
+            import re
+            numbers = re.findall(r'\d+', stem)
+            if numbers:
+                return int(numbers[0])  # Use first numeric sequence
+            return float('inf')  # Put non-numeric files at the end
         
         sorted_files = sorted(image_files, key=numeric_sort_key)
         return [str(p) for p in sorted_files]
 
-    def _load_text(self, path: Path, fallback: str = "") -> str:
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except Exception:
-            return fallback
+    def _load_text(self, path: Path) -> str:
+        return path.read_text(encoding="utf-8").strip()
 
     def _count_sequence_descriptions(self, sequence_text: str) -> int:
         """
         Count the number of numbered descriptions in a sequence_description text.
         Expected format: "1. description", "2. description", etc.
         """
-        if not sequence_text:
-            return 0
-        
         count = 0
         lines = sequence_text.strip().split('\n')
         for line in lines:
@@ -1251,15 +1233,11 @@ class CrowdInterface():
     def _substitute_placeholders(self, template: str, task_name: str | None = None) -> str:
         """
         Replace every {x} in 'template' with contents of prompts/{task-name}/x.txt.
-        Runs up to 3 passes to allow simple nested references; leaves unknown {x} intact.
+        Runs up to 3 passes to allow simple nested references.
         Special handling for {sequence_description} to add copying instructions.
         """
-        if not template:
-            return ""
-        tn = (task_name or self._task_name())
+        tn = task_name or self._task_name()
         tdir = self._task_dir(tn)
-        if tdir is None:
-            return template
 
         pat = re.compile(r"\{([A-Za-z0-9_\-]+)\}")
         out = template
@@ -1268,22 +1246,17 @@ class CrowdInterface():
             def repl(m):
                 placeholder = m.group(1)
                 fname = placeholder + ".txt"
-                fpath = (tdir / fname)
-                if fpath.exists():
-                    try:
-                        content = fpath.read_text(encoding="utf-8").strip()
-                        
-                        # Special handling for sequence_description to add copying instructions
-                        if placeholder == "sequence_description":
-                            example_count = self._count_sequence_descriptions(content)
-                            if example_count > 0:
-                                copying_instruction = f"\nFor the first {example_count} frame pairs, DO NOT generate new descriptions. Instead, you MUST copy exactly these descriptions word-for-word from the examples above. Only after you have copied all {example_count} examples should you generate new descriptions for any remaining frames.\n\nExamples to copy:\n\n{content}"
-                                return copying_instruction
-                        
-                        return content
-                    except Exception:
-                        return ""
-                return m.group(0)  # leave as-is if there is no file
+                fpath = tdir / fname
+                content = fpath.read_text(encoding="utf-8").strip()
+                
+                # Special handling for sequence_description to add copying instructions
+                if placeholder == "sequence_description":
+                    example_count = self._count_sequence_descriptions(content)
+                    if example_count > 0:
+                        copying_instruction = f"\nFor the first {example_count} frame pairs, DO NOT generate new descriptions. Instead, you MUST copy exactly these descriptions word-for-word from the examples above. Only after you have copied all {example_count} examples should you generate new descriptions for any remaining frames.\n\nExamples to copy:\n\n{content}"
+                        return copying_instruction
+                
+                return content
             new_out = pat.sub(repl, out)
             if new_out != out:
                 changed = True
@@ -1326,12 +1299,12 @@ class CrowdInterface():
         result = template.replace("[gripper_description]", gripper_desc)
         return result
 
-    def _load_prompt_with_subst(self, fname: str, fallback: str = "") -> str:
+    def _load_prompt_with_subst(self, fname: str) -> str:
         """
         Load prompts/{fname} and apply {x} substitution using prompts/{task-name}/x.txt.
         """
         p = (self._prompts_root_dir() / fname).resolve()
-        raw = self._load_text(p, fallback)
+        raw = self._load_text(p)
         return self._substitute_placeholders(raw, self._task_name())
 
     def _get_vlm_context_cache_path(self, task_name: str) -> Path:
@@ -1434,12 +1407,10 @@ class CrowdInterface():
             # Choose prompt based on whether this is the first query or continuation
             if is_first_query:
                 # First query: use context.txt
-                prompt = self._load_prompt_with_subst("context.txt", 
-                    "Add one description to the description bank for the given frame(s).")
+                prompt = self._load_prompt_with_subst("context.txt")
             else:
                 # Continuation queries: use context_continued.txt
-                prompt = self._load_prompt_with_subst("context_continued.txt",
-                    "Continue building the description bank with the next frame(s).")
+                prompt = self._load_prompt_with_subst("context_continued.txt")
             
             # Build content for this query
             content = [{"type": "input_text", "text": prompt}] + [
@@ -1580,17 +1551,14 @@ class CrowdInterface():
         Scan the target directory and return next numeric index (1-based).
         Accepts files like 000001.jpg / 42.png / 7.jpeg, ignoring non-numeric stems.
         """
-        try:
-            nums = []
-            for p in self._prompt_seq_dir.iterdir():
-                if not p.is_file():
-                    continue
-                m = re.match(r"^(\d+)$", p.stem)
-                if m:
-                    nums.append(int(m.group(1)))
-            return (max(nums) + 1) if nums else 1
-        except Exception:
-            return 1
+        nums = []
+        for p in self._prompt_seq_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = re.match(r"^(\d+)$", p.stem)
+            if m:
+                nums.append(int(m.group(1)))
+        return (max(nums) + 1) if nums else 1
 
     def _save_important_maincam_frame_on_label(self, episode_id: str, state_id: int, obs_path: str | None):
         """
@@ -1640,71 +1608,6 @@ class CrowdInterface():
                     
             except Exception as e:
                 print(f"⚠️ Error saving IMPORTANT cam_main frame on label: {e}")
-
-    def _save_important_maincam_frame(self, episode_id: str, state_id: int, obs_path: str | None):
-        """
-        Legacy function - no longer saves immediately when state becomes important.
-        Saving now happens only when labels are received via _save_important_maincam_frame_on_label.
-        """
-        # This function is now intentionally empty - saving happens on label receipt
-        pass
-
-    def _build_episode_maincam_video(self, episode_id: str, up_to_state_id: int) -> str | None:
-        """
-        Assemble MP4 from cam_main frames for states in [start .. up_to_state_id] of `episode_id`.
-        Returns output file path or None if no frames found.
-        """
-        # Collect (sid, obs_path) from both pending and completed buffers
-        paths: list[tuple[int, str]] = []
-        with self.state_lock:
-            pend = self.pending_states_by_episode.get(episode_id, {})
-            for sid, info in pend.items():
-                if sid <= up_to_state_id and info.get("obs_path"):
-                    paths.append((sid, info["obs_path"]))
-            buf = self.completed_states_buffer_by_episode.get(episode_id, {})
-            for sid, manifest in buf.items():
-                if sid <= up_to_state_id and isinstance(manifest, dict) and manifest.get("obs_path"):
-                    paths.append((sid, manifest["obs_path"]))
-        if not paths:
-            print(f"⚠️ No obs paths found to build video ep={episode_id} up_to={up_to_state_id}")
-            return None
-
-        paths.sort(key=lambda x: x[0])
-        frames: list[np.ndarray] = []
-        for sid, p in paths:
-            obs = self._load_obs_from_disk(p)
-            img = self._load_main_cam_from_obs(obs)
-            if img is not None:
-                frames.append(img)
-        if not frames:
-            print(f"⚠️ No cam_main frames found ep={episode_id} up_to={up_to_state_id}")
-            return None
-
-        H, W = frames[0].shape[:2]
-        # fps: prefer dataset metadata; fall back to 8
-        try:
-            fps = float(getattr(self.dataset, "fps", None) or getattr(self.dataset.meta, "fps", None) or 8.0)
-        except Exception:
-            fps = 8.0
-
-        out_dir = self._episode_cache_dir(episode_id)
-        out_path = out_dir / f"{up_to_state_id:06d}_maincam.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (W, H))
-        if not writer.isOpened():
-            print("⚠️ VideoWriter failed to open; trying MJPG AVI fallback")
-            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-            out_path = out_dir / f"{up_to_state_id:06d}_maincam.avi"
-            writer = cv2.VideoWriter(str(out_path), fourcc, fps, (W, H))
-
-        for rgb in frames:
-            if rgb.shape[:2] != (H, W):
-                rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_AREA)
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            writer.write(bgr)
-        writer.release()
-        print(f"🎞️ Wrote episode video → {out_path}")
-        return str(out_path)
 
     def _gather_important_maincam_sequence(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
         """
@@ -1801,34 +1704,13 @@ class CrowdInterface():
         return seq_urls, seq_ids
 
     # ---------- VLM prompt helpers ----------
-    def _load_prompt_text(self, filename: str, fallback: str = "") -> str:
-        """
-        Load prompt text from prompts/{filename}.
-        Returns fallback text if file doesn't exist or can't be read.
-        """
-        try:
-            base_dir = Path(__file__).resolve().parent
-            prompt_path = (base_dir / ".." / "prompts" / filename).resolve()
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                return content if content else fallback
-        except Exception as e:
-            print(f"⚠️ Failed to load prompt from {filename}: {e}")
-            return fallback
-
     def _get_episode_history_prompt(self) -> str:
         """History prompt (applies {x} → prompts/{task-name}/x.txt)."""
-        return self._load_prompt_with_subst(
-            "history.txt",
-            "These are the important-state cam_main frames in chronological order for {task}."
-        )
+        return self._load_prompt_with_subst("history.txt")
 
     def _get_current_state_prompt(self, episode_id: str = None, state_id: int = None) -> str:
         """Current-state prompt (applies {x} → prompts/{task-name}/x.txt and dynamic placeholders)."""
-        base_prompt = self._load_prompt_with_subst(
-            "current.txt",
-            "These are four synchronized views related to {task}."
-        )
+        base_prompt = self._load_prompt_with_subst("current.txt")
         
         # Apply dynamic placeholders if we have episode and state info
         if episode_id is not None and state_id is not None:
@@ -1877,6 +1759,48 @@ class CrowdInterface():
             cleaned += '.'
         
         return cleaned, video_id
+
+    # --- PATCH: VLM modal helpers -----------------------------------------------
+
+    def _parse_description_bank_entries(self, text: str) -> list[dict]:
+        """
+        Parse a numbered description bank.
+        Each block looks like:
+          "1. <context sentences...> thus: <VLM action sentence>"
+        We return: [{"id": int, "text": "<after 'thus:' cleaned>", "full": "<full block>"}]
+        """
+        if not text:
+            return []
+        entries = []
+        # Split into numbered blocks (greedy until next number or end)
+        blocks = list(re.finditer(r'^\s*(\d+)\.\s*([\s\S]*?)(?=^\s*\d+\.\s*|$)', text, flags=re.M))
+        for m in blocks:
+            vid = int(m.group(1))
+            body = (m.group(2) or "").strip()
+            # Prefer the tail after "thus:" (case-insensitive)
+            tail = re.search(r'thus:\s*([\s\S]*)$', body, flags=re.I)
+            vlm_raw = (tail.group(1).strip() if tail and tail.group(1) else body)
+            cleaned, _ = self._clean_vlm_response_format(vlm_raw)
+            entries.append({"id": vid, "text": cleaned, "full": f"{vid}. {body}"})
+        entries.sort(key=lambda x: x["id"])
+        return entries
+
+    def get_description_bank(self) -> dict:
+        """
+        Return both the raw description-bank text and its parsed entries.
+        Prefers in-memory context if present, otherwise falls back to cached context for the current task.
+        """
+        # in-memory context (if VLM context step was run this process)
+        raw = getattr(self, "_vlm_context_text", None)
+        if not raw:
+            # fall back to cached file (if available)
+            task = self._task_name() or ""
+            raw = self._load_cached_vlm_context(task) or ""
+        return {
+            "raw_text": raw,
+            "entries": self._parse_description_bank_entries(raw)
+        }
+    # --- END PATCH ---------------------------------------------------------------
 
     def _write_vlm_log(self,
                        episode_id: str,
@@ -2144,9 +2068,16 @@ class CrowdInterface():
                         print(f"🧠 VLM attached to state {state_id} (ep {episode_id})" +
                               (f" with video {video_id}" if video_id else ""))
                     else:
-                        # state may have completed/been removed
+                        # state may have completed/been removed → backfill completed metadata if present
+                        comp_ep = self.completed_states_by_episode.get(episode_id)
+                        if comp_ep is not None and state_id in comp_ep:
+                            comp_meta = comp_ep[state_id]
+                            comp_meta["vlm_text"] = frontend_text
+                            comp_meta["vlm_video_id"] = video_id
+                            comp_meta["vlm_ready"] = True
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id})")
+                        print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id}); "
+                              f"backfilled completed metadata.")
 
             except Exception as e:
                 print(f"❌ VLM worker error: {e}")
@@ -2398,19 +2329,6 @@ class CrowdInterface():
         self.cams = {}
 
 
-    def _grab_frame(self, cap, size=(64, 64)) -> np.ndarray | None:
-        # retrieve() after grab(); falls back to read() if needed
-        ok, frame = cap.retrieve()
-        if not ok or frame is None:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                return None
-        # Resize then convert to RGB; INTER_AREA is efficient for downscale
-        if size is not None:
-            frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame
-    
     def _grab_frame_raw(self, cap) -> np.ndarray | None:
         """
         Retrieve a raw BGR frame at native resolution with no resize,
@@ -2969,8 +2887,6 @@ class CrowdInterface():
                 segmentation_needed = False
 
         # enqueue heavy work after releasing the lock
-        # NEW: save cam_main frame for this IMPORTANT state (ordered sequence)
-        self._save_important_maincam_frame(episode_id_local, state_id_local, obs_path_local)
         if segmentation_needed:
             self._enqueue_segmentation_job(episode_id_local, state_id_local, view_paths_local, joints_local)
         # Enqueue VLM (if needed) after releasing the lock
@@ -3503,10 +3419,25 @@ class CrowdInterface():
                 # Move to completed states
                 if found_episode not in self.completed_states_by_episode:
                     self.completed_states_by_episode[found_episode] = {}
+                
+                # --- NEW: carry VLM artifacts into completed metadata (if present now) ---
+                is_imp = bool(state_info.get("important", False))
+                vlm_text_str = (state_info.get("vlm_text") or "").strip()
+                # prefer 'vlm_video_id', fall back to 'video_id'
+                _vid_raw = state_info.get("vlm_video_id", state_info.get("video_id"))
+                try:
+                    vlm_vid = int(_vid_raw) if _vid_raw is not None else None
+                except Exception:
+                    vlm_vid = None
+
                 self.completed_states_by_episode[found_episode][state_id] = {
                     "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
-                    "is_important": state_info.get("important", False)
+                    "is_important": is_imp,
+                    # Persist VLM status so the monitor can color correctly after completion
+                    "vlm_ready": bool(state_info.get("vlm_ready", False)),
+                    "vlm_text": (vlm_text_str if vlm_text_str else None),
+                    "vlm_video_id": vlm_vid,
                 }
                 
                 # Remove from pending
@@ -3551,22 +3482,49 @@ class CrowdInterface():
                 # Add pending states from this episode
                 if episode_id in self.pending_states_by_episode:
                     for state_id, info in self.pending_states_by_episode[episode_id].items():
-                        required_responses = (self.required_responses_per_important_state 
-                                            if info['important'] else self.required_responses_per_state)
+                        required_responses = (
+                            self.required_responses_per_important_state
+                            if info.get('important', False)
+                            else self.required_responses_per_state
+                        )
+                        # --- NEW: compute VLM presence for pending states ---
+                        # text: prefer inline 'vlm_text', then fall back to cache
+                        _txt = info.get("vlm_text") or \
+                               self._vlm_text_by_episode.get(episode_id, {}).get(state_id)
+                        has_vlm_text = bool(str(_txt or "").strip())
+                        # id: prefer 'vlm_video_id', then 'video_id'
+                        _vid = info.get("vlm_video_id", info.get("video_id"))
+                        has_video_id = (_vid is not None)
+
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": required_responses - info["responses_received"],
-                            "is_important": info.get("important", False)
+                            "is_important": bool(info.get("important", False)),
+                            # --- NEW fields consumed by the frontend ---
+                            "has_vlm_text": has_vlm_text,
+                            "has_video_id": has_video_id,
                         }
                         total_pending += 1
                 
                 # Add completed states from this episode
                 if episode_id in self.completed_states_by_episode:
                     for state_id, info in self.completed_states_by_episode[episode_id].items():
+                        # --- NEW: compute VLM presence for completed states ---
+                        # text: from completed metadata, or fall back to cache if metadata is older
+                        _txt = info.get("vlm_text") or \
+                               self._vlm_text_by_episode.get(episode_id, {}).get(state_id)
+                        has_vlm_text = bool(str(_txt or "").strip())
+                        # id: from metadata (we backfill on late completion in the VLM worker)
+                        _vid = info.get("vlm_video_id", info.get("video_id"))
+                        has_video_id = (_vid is not None)
+
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": 0,  # Completed
-                            "is_important": info.get("is_important", False)
+                            "is_important": bool(info.get("is_important", False)),
+                            # --- NEW fields consumed by the frontend ---
+                            "has_vlm_text": has_vlm_text,
+                            "has_video_id": has_video_id,
                         }
                 
                 episodes_info[episode_id] = {
@@ -3797,27 +3755,20 @@ class CrowdInterface():
     def _load_gripper_tip_calibration(self) -> dict:
         """
         Load manual gripper tip calibration from ../calib/manual_gripper_tips.json
-        Returns {"left":{"x":..,"y":..,"z":..}, "right":{...}}; falls back to defaults.
+        Returns {"left":{"x":..,"y":..,"z":..}, "right":{...}}.
         """
-        try:
-            p = self._calib_dir() / "manual_gripper_tips.json"
-            if p.exists():
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                # Minimal validation and float casting
-                def _clean(side):
-                    s = (data.get(side) or {})
-                    return {
-                        "x": float(s.get("x", 0.03)),
-                        "y": float(s.get("y", 0.0)),
-                        "z": float(s.get("z", 0.0)),
-                    }
-                return {"left": _clean("left"), "right": _clean("right")}
-        except Exception as e:
-            print(f"⚠️  failed to load manual_gripper_tips.json: {e}")
-        # Defaults if missing
-        return {"left": {"x": 0.03, "y": 0.0, "z": 0.0},
-                "right":{"x": 0.03, "y": 0.0, "z": 0.0}}
+        p = self._calib_dir() / "manual_gripper_tips.json"
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Minimal validation and float casting
+        def _clean(side):
+            s = data[side]
+            return {
+                "x": float(s["x"]),
+                "y": float(s["y"]),
+                "z": float(s["z"]),
+            }
+        return {"left": _clean("left"), "right": _clean("right")}
 
     def save_gripper_tip_calibration(self, calib: dict) -> str:
         """
@@ -4439,6 +4390,182 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         """Debug endpoint to see pending states information"""
         info = crowd_interface.get_pending_states_info()
         return jsonify(info)
+    
+    # --- PATCH: Endpoints for monitor modal -------------------------------------
+
+    @app.route("/api/description-bank", methods=["GET"])
+    def api_description_bank():
+        """
+        Return the description bank for the current task as both:
+          - 'entries': [{id, text, full}]
+          - 'raw_text': the unparsed text (for debugging or custom parsing)
+        """
+        try:
+            if crowd_interface._shutting_down:
+                return jsonify({"ok": False, "error": "shutting_down"}), 503
+            bank = crowd_interface.get_description_bank()
+            return jsonify({"ok": True, "task_name": (crowd_interface._task_name() or "default"),
+                            "entries": bank["entries"], "raw_text": bank["raw_text"]})
+        except Exception as e:
+            print(f"❌ /api/description-bank error: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+
+    @app.route("/api/state-details", methods=["GET"])
+    def api_state_details():
+        """
+        Query params: episode_id=<str>, state_id=<int>
+        Returns:
+          - maincam_data_url: data:image/jpeg;base64,... (if we can load the observation)
+          - is_important: bool
+          - vlm_text: str (may be empty)
+          - vlm_video_id: int | null
+          - description_bank: [{id, text, full}]
+          - description_bank_text: str (raw)
+        """
+        try:
+            if crowd_interface._shutting_down:
+                return jsonify({"ok": False, "error": "shutting_down"}), 503
+
+            ep = request.args.get("episode_id", type=int)
+            sid = request.args.get("state_id", type=int)
+            if ep is None or sid is None:
+                return jsonify({"ok": False, "error": "episode_id and state_id are required"}), 400
+
+            # Defaults
+            vlm_text = ""
+            vlm_video_id = None
+            is_imp = False
+            obs_path = None
+
+            with crowd_interface.state_lock:
+                # Prefer pending
+                p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
+                p_info = p_ep.get(sid)
+                if p_info is not None:
+                    is_imp = bool(p_info.get("important", False))
+                    obs_path = p_info.get("obs_path")
+                    # Text: inline or cache fallback
+                    vlm_text = (p_info.get("vlm_text")
+                                or crowd_interface._vlm_text_by_episode.get(ep, {}).get(sid)
+                                or "")
+                    # Video id: prefer explicit vlm_video_id, fall back to 'video_id' if present
+                    raw_vid = p_info.get("vlm_video_id", p_info.get("video_id"))
+                    try:
+                        vlm_video_id = int(raw_vid) if raw_vid is not None else None
+                    except Exception:
+                        vlm_video_id = None
+                else:
+                    # Completed: metadata + manifest buffer for obs_path
+                    c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
+                    c_meta = c_ep.get(sid)
+                    if c_meta is None:
+                        return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
+                    is_imp = bool(c_meta.get("is_important", False))
+                    vlm_text = (c_meta.get("vlm_text")
+                                or crowd_interface._vlm_text_by_episode.get(ep, {}).get(sid)
+                                or "")
+                    raw_vid = c_meta.get("vlm_video_id", c_meta.get("video_id"))
+                    try:
+                        vlm_video_id = int(raw_vid) if raw_vid is not None else None
+                    except Exception:
+                        vlm_video_id = None
+                    # obs path lives in the "manifest" buffer
+                    man = crowd_interface.completed_states_buffer_by_episode.get(ep, {}).get(sid)
+                    if isinstance(man, dict):
+                        obs_path = man.get("obs_path")
+
+            # Load maincam image (if possible)
+            maincam_url = None
+            if obs_path:
+                obs = crowd_interface._load_obs_from_disk(obs_path)
+                img = crowd_interface._load_main_cam_from_obs(obs)
+                if img is not None:
+                    maincam_url = crowd_interface._encode_jpeg_base64(img)
+
+            # Description bank
+            bank = crowd_interface.get_description_bank()
+
+            return jsonify({
+                "ok": True,
+                "episode_id": ep,
+                "state_id": sid,
+                "is_important": is_imp,
+                "vlm_text": vlm_text,
+                "vlm_video_id": vlm_video_id,
+                "maincam_data_url": maincam_url,
+                "description_bank": bank["entries"],
+                "description_bank_text": bank["raw_text"]
+            })
+        except Exception as e:
+            print(f"❌ /api/state-details error: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+
+    @app.route("/api/update-vlm-selection", methods=["POST"])  # alias for convenience
+    def api_state_vlm_selection():
+        """
+        Body JSON: {
+          "episode_id": <str>,
+          "state_id": <int>,
+          "video_id": <int>,
+          "vlm_text": <str>   # optional, but recommended (what you display in the dropdown)
+        }
+        Updates the state's VLM artifacts in-memory (pending or completed metadata).
+        """
+        try:
+            if crowd_interface._shutting_down:
+                return jsonify({"ok": False, "error": "shutting_down"}), 503
+
+            data = request.get_json(force=True, silent=True) or {}
+            ep = int(data.get("episode_id"))
+            sid = data.get("state_id")
+            vid = data.get("video_id")
+            txt = (data.get("vlm_text") or "").strip()
+
+            if sid is None or vid is None or ep is None:
+                return jsonify({"ok": False, "error": "episode_id, state_id, video_id are required"}), 400
+
+            try:
+                sid = int(sid)
+                vid = int(vid)
+            except Exception:
+                return jsonify({"ok": False, "error": "state_id and video_id must be integers"}), 400
+
+            updated = False
+            with crowd_interface.state_lock:
+                # Pending path
+                p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
+                p_info = p_ep.get(sid)
+                if p_info is not None:
+                    if txt:
+                        p_info["vlm_text"] = txt
+                        crowd_interface._vlm_text_by_episode.setdefault(ep, {})[sid] = txt
+                    p_info["vlm_video_id"] = vid
+                    p_info["video_id"] = vid  # alias used elsewhere
+                    p_info["vlm_ready"] = True
+                    updated = True
+                else:
+                    # Completed metadata path
+                    c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
+                    c_info = c_ep.get(sid)
+                    if c_info is not None:
+                        if txt:
+                            c_info["vlm_text"] = txt
+                            crowd_interface._vlm_text_by_episode.setdefault(ep, {})[sid] = txt
+                        c_info["vlm_video_id"] = vid
+                        c_info["vlm_ready"] = True
+                        updated = True
+
+            if not updated:
+                return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
+
+            return jsonify({"ok": True, "episode_id": ep, "state_id": sid, "vlm_video_id": vid})
+        except Exception as e:
+            print(f"❌ /api/state-vlm-selection error: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+    
+    # --- END PATCH ---------------------------------------------------------------
     
     @app.route("/api/monitor/latest-state", methods=["GET"])
     def monitor_latest_state():

@@ -2,7 +2,10 @@ High level:
 
 If any items can be picked directly into the drawer without repositioning (entirely on the left of the arm base, to leave ample space; otherwise they risk being in an inconvenient location near or under the drawer when opened opens), open the MIDDLE drawer (MIDDLE only). Pick and place each valid items into the drawer. Close the drawer. If there are still objects left (those not directly pickable without repositioning), move them to be entirely on the left of the robot one to one. Then open the middle drawer, pick and place each, and close the drawer.
 
-Success condition: no objects are on the table. The middle drawer is closed. The robot is in home position.
+Success conditions:
+1) No objects are on the table.
+2) The middle drawer is closed.
+3) The robot is in home position.
 
 
 Lower level:
@@ -13,7 +16,7 @@ Move object left protocol:
 
 2. Lower and pitch the gripper till vertical to be ~3cm above the object, or its grasp point.
 
-3. Optional: Rotate (rotate-only) the gripper to align with grasp angle. If the object is round (e.g. a tennis ball), there's no need to rotate.
+3. Optional: Rotate (rotate-only) the gripper to align with grasp angle. If the object is round (e.g. a tennis ball), or if the gripper is already aligned with the grasp angle of the object, there's no need to rotate.
 
 4. Lower the gripper to prepare for grasp.
 
@@ -25,9 +28,11 @@ Move object left protocol:
 
 8. Open the gripper.
 
+9. Raise the gripper vertically to be ~5cm above the object so that moving in any direction won't collide with the object.
+
 Open drawer protocol:
 
-1. If the gripper is not higher than the middle drawer's handle, raise the gripper such that it is. Else, move to step 2. This is to ensure that when we execute step 2 we get the correct grasp (one finger on top of the handle, one finger underneath the handle).
+1. If the gripper is not at the home position, go to the home position. Else, move to step 2. This is to ensure that when we execute step 2 we get the correct grasp (one finger on top of the handle, one finger underneath the handle), because the home position is a great starting point to get into such position for grasping.
 
 2. Position the gripper to grasp to the middle drawer's handle.
 
@@ -47,7 +52,7 @@ Pick and place item into drawer protocol:
 
 2. Lower and pitch the gripper till vertical to be ~3cm above the object, or its grasp point.
 
-3. Rotate (rotate-only) the gripper to align with grasp angle.
+3. Rotate (rotate-only) the gripper to align with grasp angle. If the object is round (e.g. a tennis ball), or if the gripper is already aligned with the grasp angle of the object, there's no need to rotate.
 
 4. Lower the gripper to prepare for grasp.
 
@@ -59,10 +64,12 @@ Pick and place item into drawer protocol:
 
 8. Open gripper to release object into the drawer.
 
+9. Raise the gripper vertically to be ~5cm above the object so that moving in any direction won't collide with the object.
+
 
 Close drawer protocol:
 
-1. Move such that the gripper is a) above the open drawer and b) can move down to be on the same level as the open drawer without collision.
+1. Move such that the gripper is a) above the open drawer and b) can move down to be on the same level as the open drawer without collision. When the gripper is rotated (tilt, pitch, yaw), it is best to return to the home position to reset the rotation neatly, otherwise, if we are already above the open drawer (maybe directly above it), move directly to the left of the open drawer to prepare for the following steps.
 
 2. Move down the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
 
