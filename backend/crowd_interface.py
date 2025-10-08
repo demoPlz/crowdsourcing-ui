@@ -125,30 +125,35 @@ class CrowdInterface():
                  autofill_important_states: bool = False,
                  num_autofill_actions: int | None = None,
                  use_vlm_prompt: bool = False,
+                 use_manual_prompt: bool = False,
                  leader_mode: bool = False,
                  n_leaders: int | None = None,
-                 # --- NEW: saving important-state cam_main frames ---
+                 # --- saving important-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
                  prompt_sequence_clear: bool = False,
-                 # NEW: used ONLY for prompt substitution and demo assets
+                 # used ONLY for prompt substitution and demo assets
                  prompt_task_name: str | None = None,
-                 # --- NEW: demo video recording ---
+                 # --- demo video recording ---
                  record_demo_videos: bool = False,
                  demo_videos_dir: str | None = None,
                  demo_videos_clear: bool = False,
-                 # --- NEW: read-only demo video display (independent of recording) ---
+                 # --- read-only demo video display (independent of recording) ---
                  show_demo_videos: bool = False,
                  show_videos_dir: str | None = None,
                  # --- NEW ---
                  save_vlm_logs: bool = False,
                  vlm_logs_dir: str | None = None):
 
-        # --- UI prompt mode (simple vs VLM) ---
+        # --- UI prompt mode (simple vs VLM vs MANUAL) ---
         self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
+        self.use_manual_prompt = bool(use_manual_prompt or int(os.getenv("USE_MANUAL_PROMPT", "0")))
+        if self.use_vlm_prompt and self.use_manual_prompt:
+            raise ValueError("use_vlm_prompt and use_manual_prompt are mutually exclusive")
+
         self._vlm_enabled = False  # becomes True only if VLM is requested AND configured
 
-        # --- NEW: Leader Mode controls ---
+        # --- Leader Mode controls ---
         self.leader_mode = bool(leader_mode)
         try:
             self.n_leaders = int(n_leaders) if (n_leaders is not None) else 1
@@ -156,9 +161,9 @@ class CrowdInterface():
             self.n_leaders = 1
         if self.n_leaders < 1:
             self.n_leaders = 1
-        # If enabled without VLM prompt, disable with a warning (CLI should prevent this already)
-        if self.leader_mode and not self.use_vlm_prompt:
-            print("⚠️  --leader-mode ignored because --use-vlm-prompt is not enabled.")
+        # If enabled without VLM or manual prompt, disable with a warning (CLI should prevent this already)
+        if self.leader_mode and not (self.use_vlm_prompt or self.use_manual_prompt):
+            print("⚠️  --leader-mode ignored because neither --use-vlm-prompt nor --use-manual-prompt is enabled.")
             self.leader_mode = False
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
@@ -267,25 +272,27 @@ class CrowdInterface():
         self._seg_worker_running = False
         self._start_segmentation_worker()
 
-        # --- VLM worker wiring (only if enabled) ---
+        # --- VLM worker wiring / Manual mode routing ---
         self._vlm_queue = queue.Queue(maxsize=_safe_int(os.getenv("VLM_QUEUE_SIZE", "8"), 8))
         self._vlm_worker_running = False
         self._vlm_worker_thread = None
         self._aoai_client = None
         self._aoai_deployment = None
-        # Track VLM job de-duplication / in-flight pairs
         self._vlm_jobs_inflight: set[tuple[str, int]] = set()
+
         if self.use_vlm_prompt:
             # Try to verify creds early; if unavailable, fall back to simple prompts.
             if self._ensure_azure_openai_client() is not None:
                 self._vlm_enabled = True
                 self._start_vlm_worker()
+                print("🤖 VLM prompt mode enabled")
             else:
                 self._vlm_enabled = False
-                print("⚠️ VLM prompts requested but Azure OpenAI is not configured; "
-                      "falling back to simple task prompts.")
+                print("⚠️ VLM prompts requested but Azure OpenAI is not configured; falling back to simple task prompts.")
+        elif self.use_manual_prompt:
+            print("📝 Manual prompt mode enabled (frontend will set flex_text_prompt + flex_video_id; no VLM queries).")
         else:
-            print("🧪 VLM prompts disabled (use_vlm_prompt=False).")
+            print("🧪 Simple prompt mode (no VLM/manual gating).")
 
         self._vlm_context_done = False
         self._vlm_context_text = None
@@ -335,8 +342,8 @@ class CrowdInterface():
         # track masks on disk: episode_id -> { state_id -> {view_name -> mask_path_png} }
         self._segmentation_paths_by_episode: dict[str, dict[int, dict[str, str]]] = {}
 
-        # --- VLM text cache (state-specific): episode_id -> { state_id -> text }
-        self._vlm_text_by_episode: dict[str, dict[int, str]] = {}
+        # --- Per-state text cache with new naming ---
+        self._flex_text_by_episode: dict[str, dict[int, str]] = {}
 
         # segmentation tunables
         self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "10"))     # px
@@ -506,6 +513,35 @@ class CrowdInterface():
         except Exception:
             # If not inside the repo root, return the basename as a safe hint.
             return os.path.basename(str(p))
+
+    # ---------- Prompt-mode helpers (manual or VLM) ----------
+    def _prompt_mode_requires_gate(self) -> bool:
+        """True if important states must wait for a prompt (manual or VLM)."""
+        gate_required = bool(self.use_manual_prompt or (self.use_vlm_prompt and self._vlm_enabled))
+        return gate_required
+
+    def _is_prompt_ready(self, info: dict) -> bool:
+        """
+        In either mode, require BOTH a non-empty text AND a video_id.
+        We respect 'flex_ready' if present; else derive from fields.
+        """
+        if info.get("flex_ready") is not None:
+            return bool(info.get("flex_ready"))
+        # derive from fields
+        text = (info.get("flex_text_prompt") or "").strip()
+        vid = info.get("flex_video_id")
+        ready = bool(text) and (vid is not None)
+        return ready
+
+    def _set_prompt_ready(self, info: dict, episode_id: str, state_id: int,
+                          text: str | None, video_id: int | None) -> None:
+        """Set flex_* fields and mark as ready."""
+        if text is not None:
+            info["flex_text_prompt"] = text
+            self._flex_text_by_episode.setdefault(episode_id, {})[state_id] = text
+        if video_id is not None:
+            info["flex_video_id"] = video_id
+        info["flex_ready"] = True
 
     def _compute_next_video_index(self) -> int:
         """
@@ -1066,7 +1102,7 @@ class CrowdInterface():
             info = ep_states.get(state_id)
             if info is None:
                 return False
-            if info.get("vlm_ready", False):
+            if info.get("flex_ready", False):
                 info["vlm_queued"] = False
                 return False
             key = (episode_id, state_id)
@@ -1889,7 +1925,7 @@ class CrowdInterface():
                 with self.state_lock:
                     ep_states = self.pending_states_by_episode.get(episode_id, {})
                     info = ep_states.get(state_id)
-                    if info is None or info.get("vlm_ready", False):
+                    if info is None or info.get("flex_ready", False):
                         # State gone or already ready: clean up and skip.
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
                         if info is not None:
@@ -2053,31 +2089,28 @@ class CrowdInterface():
 
                 # Attach to pending state and mark ready (frontend gets only current response)
                 with self.state_lock:
-                    self._vlm_text_by_episode.setdefault(episode_id, {})[state_id] = frontend_text
                     ep_states = self.pending_states_by_episode.get(episode_id)
                     if ep_states and state_id in ep_states:
                         info = ep_states[state_id]
-                        # Do not clobber if results already exist.
-                        if not (info.get("vlm_ready", False) and isinstance(info.get("vlm_text"), str) and info["vlm_text"].strip()):
-                            info["vlm_text"] = frontend_text
-                            info["vlm_video_id"] = video_id  # Store video ID
-                            info["video_id"] = video_id      # Alias for UI wording
-                            info["vlm_ready"] = True
+                        # only set if not already present
+                        self._set_prompt_ready(info, episode_id, state_id,
+                                               frontend_text if (frontend_text or "").strip() else None,
+                                               video_id)
                         info["vlm_queued"] = False
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        print(f"🧠 VLM attached to state {state_id} (ep {episode_id})" +
+                        print(f"🧠 Prompt attached to state {state_id} (ep {episode_id})" +
                               (f" with video {video_id}" if video_id else ""))
                     else:
-                        # state may have completed/been removed → backfill completed metadata if present
+                        # state may have completed/been removed → backfill metadata
                         comp_ep = self.completed_states_by_episode.get(episode_id)
                         if comp_ep is not None and state_id in comp_ep:
                             comp_meta = comp_ep[state_id]
-                            comp_meta["vlm_text"] = frontend_text
-                            comp_meta["vlm_video_id"] = video_id
-                            comp_meta["vlm_ready"] = True
+                            if (frontend_text or "").strip():
+                                comp_meta["flex_text_prompt"] = frontend_text
+                            comp_meta["flex_video_id"] = video_id
+                            comp_meta["flex_ready"] = True
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        print(f"ℹ️ VLM finished after state {state_id} left pending set (ep {episode_id}); "
-                              f"backfilled completed metadata.")
+                        print(f"ℹ️ Prompt finished after state {state_id} left pending set (ep {episode_id}); backfilled metadata.")
 
             except Exception as e:
                 print(f"❌ VLM worker error: {e}")
@@ -2139,7 +2172,7 @@ class CrowdInterface():
 
             # Abort if the episode is no longer empty
             if self.pending_states_by_episode.get(episode_id):
-                print(f"🛑 Finalize aborted for episode {episode_id} — new states arrived.")
+                print(f"🛑 Finalize aborted for episode {episode_id} - new states arrived.")
                 return
 
             self.episodes_being_completed.add(episode_id)
@@ -2257,7 +2290,7 @@ class CrowdInterface():
         for name, idx in CAM_IDS.items():
             # Only attempt indices that look like webcams
             if not _is_webcam_idx(idx):
-                print(f"⏭️  skipping '{name}' (/dev/video{idx}) — not a webcam")
+                print(f"⏭️  skipping '{name}' (/dev/video{idx}) - not a webcam")
                 continue
 
             cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
@@ -2445,7 +2478,7 @@ class CrowdInterface():
         # --- NEW: attach example video URL (direct file URL; byte-range capable) ---
         if self.show_demo_videos:
             # Prefer a VLM-selected clip if available and present
-            video_id = state.get("vlm_video_id")
+            video_id = state.get("flex_video_id")
             chosen_url = None
             if video_id is not None:
                 p, _ = self._find_show_video_by_id(video_id)
@@ -2608,11 +2641,11 @@ class CrowdInterface():
                 # Clear gates/features that only matter for important states
                 info["segmentation_ready"] = True
                 info["segmentation_paths"] = {}
-                # VLM state (no longer relevant for normal states)
-                info["vlm_ready"] = True
+                # Clear prompt state (no longer relevant for normal states)
+                info["flex_ready"] = True
                 info["vlm_queued"] = False
-                info["vlm_text"] = None
-                info.pop("vlm_video_id", None)
+                info["flex_text_prompt"] = None
+                info.pop("flex_video_id", None)
                 info.pop("video_id", None)
                 # Leader mode bookkeeping
                 info["leader_submissions"] = 0
@@ -2841,20 +2874,20 @@ class CrowdInterface():
                 return
             info["important"] = True
             info["segmentation_ready"] = False
-            # VLM readiness handling (do not clobber existing results)
-            if self._vlm_enabled:
-                has_vlm = bool(info.get("vlm_ready", False) and isinstance(info.get("vlm_text"), str) and info["vlm_text"])
-                if not has_vlm:
-                    info.setdefault("vlm_text", None)
-                    info["vlm_ready"] = False
-                    info["vlm_queued"] = info.get("vlm_queued", False)
-                else:
-                    # Already has results → leave vlm_ready/text as-is
-                    pass
+
+            # --- Prompt-mode gating (manual or VLM) ---
+            if self._prompt_mode_requires_gate():
+                # If we already have both fields (rare), honor them; else mark not ready.
+                has = self._is_prompt_ready(info)
+                info.setdefault("flex_text_prompt", None)
+                info.setdefault("flex_video_id", None)
+                info["flex_ready"] = bool(has)
+                # Do NOT auto-queue anything in manual mode
             else:
-                # VLM disabled → treat as ready to avoid gating
-                info.setdefault("vlm_text", None)
-                info["vlm_ready"] = True
+                # Simple mode: do not gate on prompts
+                info.setdefault("flex_text_prompt", None)
+                info.setdefault("flex_video_id", None)
+                info["flex_ready"] = True
             print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
 
             # always queue auto-labeling
@@ -2873,17 +2906,17 @@ class CrowdInterface():
             should_queue_vlm = False
             if self._vlm_enabled and (not self.leader_mode):
                 info_now = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                if (not info_now.get("vlm_ready", False)) and (not info_now.get("vlm_queued", False)):
+                if (not info_now.get("flex_ready", False)) and (not info_now.get("vlm_queued", False)):
                     should_queue_vlm = True
 
             st_obj = info["state"]
-            # Do not return early — we want to save the important-state image regardless.
+            # Do not return early - we want to save the important-state image regardless.
             segmentation_needed = True
             if not self._gripper_is_grasped(st_obj):
                 info["segmentation_paths"] = {}
                 info["segmentation_ready"] = True
                 fv = self._extract_grip_force_N(st_obj)
-                print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) — not grasped (force={fv!r})")
+                print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) - not grasped (force={fv!r})")
                 segmentation_needed = False
 
         # enqueue heavy work after releasing the lock
@@ -3080,34 +3113,26 @@ class CrowdInterface():
                 latest_state_id = random_state_id
                 selected_episode = self.current_serving_episode
             
-            # ---- Strict VLM gating for important states ----
-            # In leader_mode: allow serving before the leader threshold is met.
-            # Once >= n_leaders unique submissions have happened, block re-serving
-            # until VLM is ready so the next time the user sees it, the VLM prompt is present.
-            need_vlm_gate = (
-                self._vlm_enabled
-                and state_info.get("important", False)
-                and not state_info.get("vlm_ready", False)
+            # ---- Strict prompt gating for important states (manual or VLM) ----
+            need_prompt_gate = (
+                state_info.get("important", False)
+                and self._prompt_mode_requires_gate()
+                and not self._is_prompt_ready(state_info)
             )
 
-            if self.leader_mode and need_vlm_gate:
+            if self.leader_mode and need_prompt_gate:
                 leaders_so_far = int(state_info.get("leader_submissions", 0))
-                # Skip gating only while we are still collecting the required leaders
                 if leaders_so_far < int(self.n_leaders):
-                    need_vlm_gate = False
-                # Optional safety: if a threshold is met but VLM hasn't actually been queued yet
-                # (e.g., transient queue full), don't block. Uncomment if you want to fail open.
-                # elif not state_info.get("vlm_queued", False):
-                #     need_vlm_gate = False
+                    need_prompt_gate = False  # allow serving until leader threshold is met
 
-            if need_vlm_gate:
-                best_pref = None  # preferred: non-important, or important with VLM+segmentation ready
-                best_any  = None  # fallback: important with VLM ready (segmentation may still be pending)
+            if need_prompt_gate:
+                best_pref = None  # prefer non-important, or important with prompt+seg ready
+                best_any  = None  # fallback: important with prompt ready (seg may still be pending)
 
                 for ep_id, ep_states in self.pending_states_by_episode.items():
                     for sid, si in ep_states.items():
-                        # STRICT rule: skip important states whose VLM text isn't ready
-                        if si.get("important", False) and not si.get("vlm_ready", False):
+                        # STRICT rule: skip important states whose prompt isn't ready
+                        if si.get("important", False) and not self._is_prompt_ready(si):
                             continue
 
                         ts = si.get("timestamp", 0.0)
@@ -3129,7 +3154,8 @@ class CrowdInterface():
                     selected_episode = best_ep
                 else:
                     # No safe alternatives; block serving for now
-                    print(f"⏸️ VLM not ready for important state {latest_state_id}; holding back serving.")
+                    mode = "manual" if self.use_manual_prompt else ("VLM" if self.use_vlm_prompt else "unknown")
+                    print(f"⏸️ Prompt not ready for important state {latest_state_id} ({mode} mode); holding back serving.")
                     return {}
 
             # (Soft) preference to avoid unsegmented important states (kept for when VLM is ready)
@@ -3174,24 +3200,29 @@ class CrowdInterface():
             state = state_info["state"].copy()
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
-            # expose importance and VLM text for THIS state only
+            # expose importance and prompt text for THIS state only
             state["is_important"] = bool(state_info.get("important", False))
-            state["vlm_text"] = (
-                state_info.get("vlm_text")
-                or self._vlm_text_by_episode.get(serving_episode, {}).get(latest_state_id)
-            )
-            # expose pending flags so UI can show status (VLM only if enabled)
+            # prefer inline flex_text_prompt; else cache fallback
+            cached_text = self._flex_text_by_episode.get(serving_episode, {}).get(latest_state_id)
+            state["flex_text_prompt"] = state_info.get("flex_text_prompt") or cached_text
+
+            # expose pending flags so UI can show status (prompt-mode only)
             state["segmentation_pending"] = bool(
+                state_info.get("important", False) and not state_info.get("segmentation_ready", False)
+            )
+            prompt_pending = (
                 state_info.get("important", False)
-                                                 and not state_info.get("segmentation_ready", False))
-            # --- NEW: 'vlm_pending' respects Leader Mode threshold ---
-            vlm_pending = (
-                self._vlm_enabled and state_info.get("important", False)
-                and not state_info.get("vlm_ready", False)
+                and self._prompt_mode_requires_gate()
+                and not self._is_prompt_ready(state_info)
             )
             if self.leader_mode:
-                vlm_pending = vlm_pending and (int(state_info.get("leader_submissions", 0)) >= self.n_leaders)
-            state["vlm_pending"] = bool(vlm_pending)
+                prompt_pending = prompt_pending and (int(state_info.get("leader_submissions", 0)) >= self.n_leaders)
+            state["flex_pending"] = bool(prompt_pending)
+
+            # attach video id
+            vid = state_info.get("flex_video_id")
+            state["flex_video_id"] = vid
+
             # (Optional) surface leader progress for UI/monitoring
             if self.leader_mode and state_info.get("important", False):
                 state["leaders_so_far"] = int(state_info.get("leader_submissions", 0))
@@ -3208,9 +3239,6 @@ class CrowdInterface():
             segp = state_info.get("segmentation_paths")
             if segp:
                 state["segmentation_paths"] = segp
-            # expose both keys for video id (alias)
-            state["vlm_video_id"] = state_info.get("vlm_video_id")
-            state["video_id"] = state_info.get("vlm_video_id")
             
             if self.is_async_collection:
                 status = "async_collection"
@@ -3335,7 +3363,7 @@ class CrowdInterface():
                     state_info["leader_submissions"] = int(state_info.get("leader_submissions", 0)) + 1
                 # Stage VLM enqueue when threshold is reached
                 if (self._vlm_enabled
-                    and not state_info.get("vlm_ready", False)
+                    and not state_info.get("flex_ready", False)
                     and not state_info.get("vlm_queued", False)
                     and int(state_info.get("leader_submissions", 0)) >= self.n_leaders):
                     queue_vlm_payload = (
@@ -3420,24 +3448,22 @@ class CrowdInterface():
                 if found_episode not in self.completed_states_by_episode:
                     self.completed_states_by_episode[found_episode] = {}
                 
-                # --- NEW: carry VLM artifacts into completed metadata (if present now) ---
+                # --- carry prompt artifacts into completed metadata (if present now) ---
                 is_imp = bool(state_info.get("important", False))
-                vlm_text_str = (state_info.get("vlm_text") or "").strip()
-                # prefer 'vlm_video_id', fall back to 'video_id'
-                _vid_raw = state_info.get("vlm_video_id", state_info.get("video_id"))
+                text_str = (state_info.get("flex_text_prompt") or "").strip()
+                _vid_raw = state_info.get("flex_video_id")
                 try:
-                    vlm_vid = int(_vid_raw) if _vid_raw is not None else None
+                    vid_val = int(_vid_raw) if _vid_raw is not None else None
                 except Exception:
-                    vlm_vid = None
+                    vid_val = None
 
                 self.completed_states_by_episode[found_episode][state_id] = {
                     "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
                     "is_important": is_imp,
-                    # Persist VLM status so the monitor can color correctly after completion
-                    "vlm_ready": bool(state_info.get("vlm_ready", False)),
-                    "vlm_text": (vlm_text_str if vlm_text_str else None),
-                    "vlm_video_id": vlm_vid,
+                    "flex_ready": self._is_prompt_ready(state_info) if self._prompt_mode_requires_gate() else True,
+                    "flex_text_prompt": (text_str if text_str else None),
+                    "flex_video_id": vid_val,
                 }
                 
                 # Remove from pending
@@ -3487,44 +3513,43 @@ class CrowdInterface():
                             if info.get('important', False)
                             else self.required_responses_per_state
                         )
-                        # --- NEW: compute VLM presence for pending states ---
-                        # text: prefer inline 'vlm_text', then fall back to cache
-                        _txt = info.get("vlm_text") or \
-                               self._vlm_text_by_episode.get(episode_id, {}).get(state_id)
-                        has_vlm_text = bool(str(_txt or "").strip())
-                        # id: prefer 'vlm_video_id', then 'video_id'
-                        _vid = info.get("vlm_video_id", info.get("video_id"))
-                        has_video_id = (_vid is not None)
+                        # --- NEW: compute prompt presence for pending states ---
+                        _txt = (info.get("flex_text_prompt")
+                                or self._flex_text_by_episode.get(episode_id, {}).get(state_id))
+                        has_flex_text = bool(str(_txt or "").strip())
+                        _vid = info.get("flex_video_id")
+                        has_flex_video = (_vid is not None)
 
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": required_responses - info["responses_received"],
                             "is_important": bool(info.get("important", False)),
-                            # --- NEW fields consumed by the frontend ---
-                            "has_vlm_text": has_vlm_text,
-                            "has_video_id": has_video_id,
+                            "has_flex_text": has_flex_text,
+                            "has_flex_video": has_flex_video,
+                            # Legacy aliases to avoid breaking older monitor UI
+                            "has_vlm_text": has_flex_text,
+                            "has_video_id": has_flex_video,
                         }
                         total_pending += 1
                 
                 # Add completed states from this episode
                 if episode_id in self.completed_states_by_episode:
                     for state_id, info in self.completed_states_by_episode[episode_id].items():
-                        # --- NEW: compute VLM presence for completed states ---
-                        # text: from completed metadata, or fall back to cache if metadata is older
-                        _txt = info.get("vlm_text") or \
-                               self._vlm_text_by_episode.get(episode_id, {}).get(state_id)
-                        has_vlm_text = bool(str(_txt or "").strip())
-                        # id: from metadata (we backfill on late completion in the VLM worker)
-                        _vid = info.get("vlm_video_id", info.get("video_id"))
-                        has_video_id = (_vid is not None)
+                        # --- NEW: compute prompt presence for completed states ---
+                        _txt = (info.get("flex_text_prompt")
+                                or self._flex_text_by_episode.get(episode_id, {}).get(state_id))
+                        has_flex_text = bool(str(_txt or "").strip())
+                        _vid = info.get("flex_video_id")
+                        has_flex_video = (_vid is not None)
 
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": 0,  # Completed
                             "is_important": bool(info.get("is_important", False)),
-                            # --- NEW fields consumed by the frontend ---
-                            "has_vlm_text": has_vlm_text,
-                            "has_video_id": has_video_id,
+                            "has_flex_text": has_flex_text,
+                            "has_flex_video": has_flex_video,
+                            "has_vlm_text": has_flex_text,   # legacy
+                            "has_video_id": has_flex_video,  # legacy
                         }
                 
                 episodes_info[episode_id] = {
@@ -4333,12 +4358,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         state = crowd_interface.get_latest_state(session_id)
         payload = crowd_interface._state_to_json(state)
         
-        # Use state-specific VLM text if present for THIS state; otherwise fall back
-        use_vlm = bool(getattr(crowd_interface, "use_vlm_prompt", False)
-                       and getattr(crowd_interface, "_vlm_enabled", False))
-        vlm_text = payload.get("vlm_text")
-        if use_vlm and isinstance(vlm_text, str) and vlm_text.strip():
-            payload["prompt"] = f"{vlm_text.strip()}"
+        # Prefer flex_text_prompt (manual or VLM), otherwise simple fallback
+        text = payload.get("flex_text_prompt")
+        if isinstance(text, str) and text.strip():
+            payload["prompt"] = text.strip()
         else:
             payload["prompt"] = f"Task: {crowd_interface.task}. What should the arm do next?"
 
@@ -4414,14 +4437,13 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/state-details", methods=["GET"])
     def api_state_details():
         """
-        Query params: episode_id=<str>, state_id=<int>
+        Query params: episode_id=<str|int>, state_id=<int>
         Returns:
-          - maincam_data_url: data:image/jpeg;base64,... (if we can load the observation)
-          - is_important: bool
-          - vlm_text: str (may be empty)
-          - vlm_video_id: int | null
-          - description_bank: [{id, text, full}]
-          - description_bank_text: str (raw)
+          - maincam_data_url
+          - is_important
+          - flex_text_prompt
+          - flex_video_id
+          - description_bank / description_bank_text
         """
         try:
             if crowd_interface._shutting_down:
@@ -4433,8 +4455,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 return jsonify({"ok": False, "error": "episode_id and state_id are required"}), 400
 
             # Defaults
-            vlm_text = ""
-            vlm_video_id = None
+            flex_text = ""
+            flex_video_id = None
             is_imp = False
             obs_path = None
 
@@ -4445,32 +4467,31 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 if p_info is not None:
                     is_imp = bool(p_info.get("important", False))
                     obs_path = p_info.get("obs_path")
-                    # Text: inline or cache fallback
-                    vlm_text = (p_info.get("vlm_text")
-                                or crowd_interface._vlm_text_by_episode.get(ep, {}).get(sid)
-                                or "")
-                    # Video id: prefer explicit vlm_video_id, fall back to 'video_id' if present
-                    raw_vid = p_info.get("vlm_video_id", p_info.get("video_id"))
+                    # Text: prefer new, then cache
+                    flex_text = (p_info.get("flex_text_prompt")
+                                 or crowd_interface._flex_text_by_episode.get(ep, {}).get(sid)
+                                 or "")
+                    # Video id
+                    raw_vid = p_info.get("flex_video_id")
                     try:
-                        vlm_video_id = int(raw_vid) if raw_vid is not None else None
+                        flex_video_id = int(raw_vid) if raw_vid is not None else None
                     except Exception:
-                        vlm_video_id = None
+                        flex_video_id = None
                 else:
-                    # Completed: metadata + manifest buffer for obs_path
+                    # Completed metadata
                     c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
                     c_meta = c_ep.get(sid)
                     if c_meta is None:
                         return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
                     is_imp = bool(c_meta.get("is_important", False))
-                    vlm_text = (c_meta.get("vlm_text")
-                                or crowd_interface._vlm_text_by_episode.get(ep, {}).get(sid)
-                                or "")
-                    raw_vid = c_meta.get("vlm_video_id", c_meta.get("video_id"))
+                    flex_text = (c_meta.get("flex_text_prompt")
+                                 or crowd_interface._flex_text_by_episode.get(ep, {}).get(sid)
+                                 or "")
+                    raw_vid = c_meta.get("flex_video_id")
                     try:
-                        vlm_video_id = int(raw_vid) if raw_vid is not None else None
+                        flex_video_id = int(raw_vid) if raw_vid is not None else None
                     except Exception:
-                        vlm_video_id = None
-                    # obs path lives in the "manifest" buffer
+                        flex_video_id = None
                     man = crowd_interface.completed_states_buffer_by_episode.get(ep, {}).get(sid)
                     if isinstance(man, dict):
                         obs_path = man.get("obs_path")
@@ -4491,8 +4512,8 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "episode_id": ep,
                 "state_id": sid,
                 "is_important": is_imp,
-                "vlm_text": vlm_text,
-                "vlm_video_id": vlm_video_id,
+                "flex_text_prompt": flex_text,
+                "flex_video_id": flex_video_id,
                 "maincam_data_url": maincam_url,
                 "description_bank": bank["entries"],
                 "description_bank_text": bank["raw_text"]
@@ -4501,69 +4522,73 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             print(f"❌ /api/state-details error: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
 
-
-    @app.route("/api/update-vlm-selection", methods=["POST"])  # alias for convenience
-    def api_state_vlm_selection():
+    @app.route("/api/update-flex-selection", methods=["POST"])
+    def api_update_flex_selection():
         """
-        Body JSON: {
-          "episode_id": <str>,
+        Body JSON:
+        {
+          "episode_id": <str or int>,
           "state_id": <int>,
-          "video_id": <int>,
-          "vlm_text": <str>   # optional, but recommended (what you display in the dropdown)
+          "flex_video_id": <int>
+          "flex_text_prompt": <str>
         }
-        Updates the state's VLM artifacts in-memory (pending or completed metadata).
         """
         try:
             if crowd_interface._shutting_down:
                 return jsonify({"ok": False, "error": "shutting_down"}), 503
 
             data = request.get_json(force=True, silent=True) or {}
-            ep = int(data.get("episode_id"))
+            ep_raw = data.get("episode_id")
+            if ep_raw is None:
+                return jsonify({"ok": False, "error": "episode_id is required"}), 400
+            ep = int(ep_raw)
+
             sid = data.get("state_id")
-            vid = data.get("video_id")
-            txt = (data.get("vlm_text") or "").strip()
+            if sid is None:
+                return jsonify({"ok": False, "error": "state_id is required"}), 400
+            sid = int(sid)
 
-            if sid is None or vid is None or ep is None:
-                return jsonify({"ok": False, "error": "episode_id, state_id, video_id are required"}), 400
+            vid = data.get("flex_video_id")
+            if vid is None:
+                return jsonify({"ok": False, "error": "flex_video_id is required"}), 400
+            vid = int(vid)
 
-            try:
-                sid = int(sid)
-                vid = int(vid)
-            except Exception:
-                return jsonify({"ok": False, "error": "state_id and video_id must be integers"}), 400
+            txt = (data.get("flex_text_prompt") or "").strip()
 
             updated = False
             with crowd_interface.state_lock:
-                # Pending path
+                # pending?
                 p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
                 p_info = p_ep.get(sid)
                 if p_info is not None:
-                    if txt:
-                        p_info["vlm_text"] = txt
-                        crowd_interface._vlm_text_by_episode.setdefault(ep, {})[sid] = txt
-                    p_info["vlm_video_id"] = vid
-                    p_info["video_id"] = vid  # alias used elsewhere
-                    p_info["vlm_ready"] = True
+                    crowd_interface._set_prompt_ready(p_info, str(ep), sid, txt if txt else None, vid)
                     updated = True
                 else:
-                    # Completed metadata path
+                    # completed metadata path
                     c_ep = crowd_interface.completed_states_by_episode.get(ep, {})
                     c_info = c_ep.get(sid)
                     if c_info is not None:
+                        # metadata mirrors
                         if txt:
-                            c_info["vlm_text"] = txt
-                            crowd_interface._vlm_text_by_episode.setdefault(ep, {})[sid] = txt
-                        c_info["vlm_video_id"] = vid
-                        c_info["vlm_ready"] = True
+                            c_info["flex_text_prompt"] = txt
+                            crowd_interface._flex_text_by_episode.setdefault(str(ep), {})[sid] = txt
+                        c_info["flex_video_id"] = vid
+                        c_info["flex_ready"] = True
                         updated = True
 
             if not updated:
                 return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
 
-            return jsonify({"ok": True, "episode_id": ep, "state_id": sid, "vlm_video_id": vid})
+            return jsonify({"ok": True, "episode_id": ep, "state_id": sid,
+                            "flex_video_id": vid, "flex_text_prompt": txt or None})
         except Exception as e:
-            print(f"❌ /api/state-vlm-selection error: {e}")
+            print(f"❌ /api/update-flex-selection error: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/update-vlm-selection", methods=["POST"])  # legacy alias
+    def api_state_vlm_selection():
+        # Delegate to the new handler (accepts both field name variants)
+        return api_update_flex_selection()
     
     # --- END PATCH ---------------------------------------------------------------
     

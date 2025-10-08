@@ -713,9 +713,9 @@
     text-transform: none;
     white-space:nowrap;
   }
-  .view-container .grip-hud .badge.free    { background:#9ca3af; }  /* gray */
+  .view-container .grip-hud .badge.free    { background:#22c55e; }  /* green */
   .view-container .grip-hud .badge.contact { background:#f59e0b; }  /* amber */
-  .view-container .grip-hud .badge.grasped { background:#22c55e; }  /* green */
+  .view-container .grip-hud .badge.grasped { background:#ef4444; }  /* red */
 
   .view-container .grip-hud .toggle{
     appearance:none; border:0; border-radius:9px;
@@ -731,12 +731,12 @@
 
   /* Toggle tints (current commanded state) */
   .view-container .grip-hud .toggle.open {
-    background:#10b981;              /* green */
-    border-color:#059669;
+    background:#3b82f6;              /* blue */
+    border-color:#2563eb;
   }
   .view-container .grip-hud .toggle.close{
-    background:#ef4444;              /* red */
-    border-color:#dc2626;
+    background:#3b82f6;              /* blue */
+    border-color:#2563eb;
   }
 
   /* Disabled gating */
@@ -753,7 +753,7 @@
     box-shadow:none;
   }
 
-  /* In-view Pose Reset (lower-right) and Home HUD (lower-left) — liquid glass look */
+  /* In-view Pose Reset (lower-right) and Home HUD (lower-left) - liquid glass look */
   .view-container .pose-reset,
   .view-container .home-hud{
     position: absolute;
@@ -1852,7 +1852,7 @@ const CanvasRecording = (() => {
 
     // Toggle (Open/Close)
     const isOpen = btnEl.classList.contains('open');
-    const btnColor = isOpen ? '#10b981' : '#ef4444';
+    const btnColor = isOpen ? '#3b82f6' : '#3b82f6';
     roundRect(ctx, baseX + T.x, baseY + T.y, T.w, T.h, 9);
     ctx.fillStyle = btnColor;
     ctx.fill();
@@ -1861,7 +1861,7 @@ const CanvasRecording = (() => {
     ctx.font = '700 12px system-ui, -apple-system, Segoe UI, Roboto';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(btnEl.textContent?.trim() || (isOpen ? 'Open' : 'Close'),
+    ctx.fillText(btnEl.textContent?.trim() || (isOpen ? 'Grasp' : 'Release'),
                  baseX + T.x + T.w/2, baseY + T.y + T.h/2);
 
     ctx.restore();
@@ -1940,7 +1940,7 @@ const CanvasRecording = (() => {
       const v = cell.view;
       // 1) camera snapshot (cover fit)
       if (v._snapshotImg) drawCover(v._snapshotImg, cell.x, cell.y, cell.w, cell.h);
-      // 2) overlays — your WebGL renderer canvas
+      // 2) overlays - your WebGL renderer canvas
       const c = v.renderer?.domElement;
       if (c && c.width && c.height){
         ctx.drawImage(c, cell.x, cell.y, cell.w, cell.h);
@@ -3132,7 +3132,7 @@ loader.load(
     let userHasAdjustedPose = false; // set to true on first translation/rotation change
 
     function revealMinimalRobotFromPose() {
-      // Idempotent — call when the user actually adjusts the pose (drag/slider)
+      // Idempotent - call when the user actually adjusts the pose (drag/slider)
       if (!userHasAdjustedPose) userHasAdjustedPose = true;
       if (userHasAdjustedPose) {
         // Show the full robot (body + gripper) and ensure it's opaque.
@@ -3271,15 +3271,15 @@ loader.load(
       return raw;
     }
 
-    // Only show the button if there's a VLM-processed video ID for this state
-    const hasVlmVideo = !!(state?.vlm_video_id);
-    const rawExampleUrl = hasVlmVideo ? getExampleVideoUrlFromState(state) : null;
-    const exampleUrl = hasVlmVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
+    // Only show the button if there's a flex-processed video ID for this state
+    const hasFlexVideo = !!(state?.flex_video_id);
+    const rawExampleUrl = hasFlexVideo ? getExampleVideoUrlFromState(state) : null;
+    const exampleUrl = hasFlexVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
 
     // Debug logging for video ID
-    if (state?.vlm_video_id) {
-      console.log(`🎬 Example video ID: ${state.vlm_video_id}`, {
-        vlm_video_id: state.vlm_video_id,
+    if (state?.flex_video_id) {
+      console.log(`🎬 Example video ID: ${state.flex_video_id}`, {
+        flex_video_id: state.flex_video_id,
         video_id: state.video_id, // alias
         rawUrl: rawExampleUrl,
         resolvedUrl: exampleUrl,
@@ -3287,7 +3287,7 @@ loader.load(
       });
     }
 
-    if (hasVlmVideo && exampleUrl) {
+    if (hasFlexVideo && exampleUrl) {
       // 1) Build the toggle button now (it did not exist before)
       exampleToggle = document.createElement('button');
       exampleToggle.className = 'prompt-example-toggle never-activated';
@@ -3324,12 +3324,12 @@ loader.load(
 
       // Do not auto-open the dock; let the user click the toggle
       exampleVideo.addEventListener('error', () => {
-        console.error(`❌ Example video failed to load (ID: ${state?.vlm_video_id}):`, exampleVideo?.error, exampleUrl);
+        console.error(`❌ Example video failed to load (ID: ${state?.flex_video_id}):`, exampleVideo?.error, exampleUrl);
       });
 
       exampleVideo.addEventListener('loadedmetadata', () => {
         // noop; keep dock hidden until user clicks
-        console.log(`✅ Example video loaded successfully (ID: ${state?.vlm_video_id}):`, {
+        console.log(`✅ Example video loaded successfully (ID: ${state?.flex_video_id}):`, {
           duration: exampleVideo.duration,
           videoWidth: exampleVideo.videoWidth,
           videoHeight: exampleVideo.videoHeight,
@@ -3342,11 +3342,11 @@ loader.load(
       // Wire the toggle now that it exists
       exampleToggle.addEventListener('click', () => toggleExampleDock());
     } else {
-      // No VLM video for this state ⇒ do NOT render any example UI at all.
+      // No flex video for this state ⇒ do NOT render any example UI at all.
       console.log(`🚫 No example video available for this state:`, {
         state_id: state.state_id,
-        vlm_video_id: state?.vlm_video_id,
-        hasVlmVideo: hasVlmVideo,
+        flex_video_id: state?.flex_video_id,
+        hasFlexVideo: hasFlexVideo,
         rawExampleUrl: rawExampleUrl
       });
       // Ensure full-width prompt text:
@@ -4525,12 +4525,12 @@ loader.load(
         badge.classList.add(status);
         badge.textContent = status;
 
-        btn.textContent = isOpen ? 'Open' : 'Close';
+        btn.textContent = isOpen ? 'Grasp' : 'Release';
         btn.classList.toggle('open',  isOpen);
         btn.classList.toggle('close', !isOpen);
         btn.setAttribute('aria-pressed', String(isOpen));
 
-        el.title  = (lastGripForceN != null) ? `Grip strength: ${absF.toFixed(1)} N` : 'Grip force unavailable';
+        el.title = status === 'grasped' ? 'Gripper is grasping' : 'Gripper is not grasping';
         btn.title = `Click to ${isOpen ? 'close' : 'open'} gripper`;
       });
 
@@ -5051,7 +5051,7 @@ loader.load(
       // Press: start rotation or translation drag
       el.addEventListener('pointerdown', (evt) => {
         if (slidersLocked || calibrationMode) return;
-        // START recording — this drag will alter the pose
+        // START recording - this drag will alter the pose
         maybeRecord('pose-drag');
         
         const hits = pickAll(evt);
@@ -5215,7 +5215,7 @@ loader.load(
             name: viewName,
             poseKey,
             texture: viewTextures[viewName],      // keep if you need size/aspect
-            imageSrc: state.views?.[viewName],     // <— add the base64 JPEG for CSS bg
+            imageSrc: state.views?.[viewName],     // <- add the base64 JPEG for CSS bg
             model: cameraModels[viewName],
             pose: camPoses[poseKey]
           });

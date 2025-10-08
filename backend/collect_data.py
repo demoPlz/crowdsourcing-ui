@@ -65,9 +65,24 @@ def _pop_crowd_cli_overrides(argv=None):
         help="For IMPORTANT states, per unique submission fill this many actions in total "
              "(1 actual + N-1 clones). Default = required-responses-per-important-state."
     )
-    ap.add_argument(
-        "--use-vlm-prompt", action="store_true", dest="crowd_use_vlm_prompt",
-        help="If set, the UI will use VLM-generated prompts (requires Azure OpenAI). Otherwise the simple task prompt is used.")
+
+    # === NEW: prompt mode flags (mutually exclusive) ===
+    prompt_group = ap.add_mutually_exclusive_group()
+    prompt_group.add_argument(
+        "--use-vlm-prompt",
+        action="store_true",
+        dest="crowd_use_vlm_prompt",
+        help="Use VLM-generated prompts: only serve IMPORTANT states once vlm_text and vlm_video_id exist "
+             "(requires Azure OpenAI). Default if neither flag is provided is the simple task prompt."
+    )
+    prompt_group.add_argument(
+        "--use-manual-prompt",
+        action="store_true",
+        dest="crowd_use_manual_prompt",
+        help="Manual mode: do NOT query the VLM. Only serve IMPORTANT states after the frontend (monitor) "
+             "manually sets vlm_text and vlm_video_id. Mutually exclusive with --use-vlm-prompt."
+    )
+
     # --- NEW: save cam_main frames for important states as an ordered image sequence ---
     ap.add_argument(
         "--save-important-maincam-sequence",
@@ -107,7 +122,8 @@ def _pop_crowd_cli_overrides(argv=None):
         "--n-leaders",
         type=int,
         dest="crowd_n_leaders",
-        help="Number of unique submissions before first VLM query for an IMPORTANT state (default: 1). Must be <= --required-responses-per-important-state."
+        help="Number of unique submissions before first VLM query for an IMPORTANT state (default: 1). "
+             "Must be <= --required-responses-per-important-state."
     )
     # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
     ap.add_argument(
@@ -147,6 +163,7 @@ def _pop_crowd_cli_overrides(argv=None):
         dest="crowd_save_vlm_logs",
         help="If set, save the full three-part VLM conversation per important state to output/vlm_logs.",
     )
+
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
     # Strip our flags before LeRobot parses CLI
     sys.argv = [sys.argv[0]] + remaining
@@ -295,14 +312,30 @@ def control_robot(cfg: ControlPipelineConfig):
         ci_kwargs["autofill_important_states"] = True
     if getattr(_CROWD_OVERRIDES, "crowd_num_autofill_actions", None) is not None:
         ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
-    if getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
-        ci_kwargs["use_vlm_prompt"] = True
+
+    # Prompt mode selection (manual vs VLM vs simple)
+    use_vlm    = bool(getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False))
+    use_manual = bool(getattr(_CROWD_OVERRIDES, "crowd_use_manual_prompt", False))
+    if use_vlm and use_manual:
+        # Redundant with argparse's mutual exclusion, but explicit here too.
+        raise SystemExit("--use-manual-prompt and --use-vlm-prompt are mutually exclusive")
+
+    if use_vlm:
+        ci_kwargs["use_vlm_prompt"] = True  # existing wiring
+
+    if use_manual:
+        ci_kwargs['use_manual_prompt'] = True
+
+    selected_mode = "manual" if use_manual else ("vlm" if use_vlm else "simple")
+    logging.info(f"[Crowd] Prompt mode selected: {selected_mode}")
 
     # --- NEW: Leader Mode wiring and early validation ---
     if getattr(_CROWD_OVERRIDES, "crowd_leader_mode", False):
-        # Enforce: only valid when --use-vlm-prompt is on
-        if not getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False):
-            raise SystemExit("--leader-mode requires --use-vlm-prompt")
+        # Enforce: only valid when either --use-vlm-prompt or --use-manual-prompt is on
+        use_vlm_prompt = getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False)
+        use_manual_prompt = getattr(_CROWD_OVERRIDES, "crowd_use_manual_prompt", False)
+        if not (use_vlm_prompt or use_manual_prompt):
+            raise SystemExit("--leader-mode requires either --use-vlm-prompt or --use-manual-prompt")
 
         n_leaders_cli = getattr(_CROWD_OVERRIDES, "crowd_n_leaders", None)
         rrpis_cli = getattr(_CROWD_OVERRIDES, "crowd_rrpis", None)

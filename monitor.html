@@ -178,9 +178,6 @@
         .state-bar-container.clicked .state-bar {
             box-shadow:0 0 0 2px rgba(16,185,129,.9) inset, 0 0 8px rgba(16,185,129,.3) !important;
         }
-        .state-bar-container.clicked::after {
-            content:'✓'; position:absolute; top:2px; right:2px; font-size:10px; line-height:1; color:#16a34a; font-weight:700;
-        }
 
         /* === NEW: Hover preview popover === */
         .preview-popover {
@@ -194,6 +191,85 @@
         }
         /* Sticky header improvement for the toolbar */
         .states-header { position:sticky; top:0; background:white; z-index:5; }
+
+        /* === Manual entry UI === */
+        .input, .textarea {
+            width:100%;
+            padding:10px 12px;
+            border:1px solid #cbd5e1;
+            border-radius:10px;
+            font-size:14px;
+            color:#0f172a;
+            background:#fff;
+        }
+        .textarea { min-height:110px; resize:vertical; }
+        .segmented.small button { font-size:12px; padding:6px 10px; }
+
+        /* Optional: chip if you later show a "Locked (manual)" pill */
+        .lock-chip {
+            display:inline-flex; align-items:center; gap:6px;
+            background:#ecfccb; color:#3f6212; border:1px solid #bef264;
+            border-radius:999px; padding:4px 8px; font-size:12px; font-weight:600;
+        }
+
+        /* Keep the bar clickable even if awaiting VLM */
+        .state-bar-container.is-important .state-bar.important-awaiting-vlm {
+            cursor:pointer;
+            box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
+        }
+
+        /* When modal is open, stop keyboard toggle from firing */
+        body.modal-open { overflow: hidden; }
+
+        /* === Modal Navigation Bar === */
+        .modal-nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex: 1; /* Take up remaining space in header */
+        }
+        .modal-nav-squares {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .modal-nav-square {
+            width: 12px;
+            height: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 2px;
+            background: #e2e8f0;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+        }
+        .modal-nav-square:hover {
+            background: #cbd5e1;
+            border-color: #94a3b8;
+        }
+        .modal-nav-square.current {
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.8);
+            border-color: #1d4ed8;
+        }
+        .modal-nav-square.visited {
+            background: #10b981;
+            border-color: #059669;
+        }
+        .modal-nav-square.unlabeled {
+            background: #ef4444 !important;
+            border-color: #dc2626 !important;
+        }
+        .modal-nav-square.checking-label-status {
+            background: #f59e0b;
+            border-color: #d97706;
+            animation: pulse 1s infinite;
+        }
+        .modal-nav-info {
+            font-size: 12px;
+            color: #64748b;
+            margin-left: 12px;
+        }
     </style>
 </head>
 <body>
@@ -259,7 +335,15 @@
     <div class="modal-overlay" id="vlm-modal">
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="vlm-modal-title">
             <div class="modal-header">
-                <div class="modal-title" id="vlm-modal-title">VLM Details</div>
+                <!-- Navigation bar showing important states - replaces title -->
+                <div class="modal-nav-bar" id="modal-nav-bar">
+                    <div class="modal-nav-squares" id="modal-nav-squares">
+                        <!-- Squares will be populated dynamically -->
+                    </div>
+                    <div class="modal-nav-info" id="modal-nav-info">
+                        State <span id="nav-current-index">1</span> of <span id="nav-total-count">1</span>
+                    </div>
+                </div>
                 <button class="modal-close-btn" id="vlm-modal-close" aria-label="Close">✕</button>
             </div>
             <div class="modal-main">
@@ -267,22 +351,44 @@
                     <img id="modal-maincam" class="modal-maincam" alt="Main camera observation" />
                 </div>
                 <div class="modal-right">
+                    <!-- Source toggle -->
                     <div>
+                        <div class="field-label">Source of description:</div>
+                        <div class="segmented small" id="vlm-source-toggle">
+                            <button id="src-bank" type="button" class="active">Pick from bank</button>
+                            <button id="src-manual" type="button">Manual entry</button>
+                        </div>
+                    </div>
+
+                    <!-- BANK MODE -->
+                    <div id="bank-fields">
                         <div class="field-label">Pick description (number = VLM video id):</div>
                         <div class="select-wrap">
                             <select id="modal-description-select" class="select-el"></select>
                         </div>
+                        <div style="margin-top:8px;">
+                            <div class="field-label">Current text prompt:</div>
+                            <div id="modal-prompt-text" class="prompt-box"></div>
+                        </div>
                     </div>
-                    <div>
-                        <div class="field-label">Current text prompt:</div>
-                        <div id="modal-prompt-text" class="prompt-box"></div>
+
+                    <!-- MANUAL MODE -->
+                    <div id="manual-fields" style="display:none;">
+                        <div class="field-label">Manual text prompt:</div>
+                        <textarea id="modal-manual-text" class="textarea" placeholder="Type the description you want to save..."></textarea>
+
+                        <div class="field-label" style="margin-top:8px;">Manual video id (optional):</div>
+                        <input id="modal-manual-video" class="input" type="number" placeholder="Leave blank if unknown" />
+                        <div class="muted" style="margin-top:6px;">Saving in manual mode locks this state against auto-overwrites.</div>
                     </div>
+
+                    <!-- Key/values footer -->
                     <div class="kv-line">
-                        <span class="muted">Episode:</span> <span id="kv-episode">—</span>
+                        <span class="muted">Episode:</span> <span id="kv-episode">-</span>
                         &nbsp;&nbsp;|&nbsp;&nbsp;
-                        <span class="muted">State:</span> <span id="kv-state">—</span>
+                        <span class="muted">State:</span> <span id="kv-state">-</span>
                         &nbsp;&nbsp;|&nbsp;&nbsp;
-                        <span class="muted">Video ID:</span> <span id="kv-video">—</span>
+                        <span class="muted">Video ID:</span> <span id="kv-video">-</span>
                     </div>
                 </div>
             </div>
@@ -385,7 +491,6 @@
         const vlmModalCancel = document.getElementById('vlm-modal-cancel');
         const vlmModalSave = document.getElementById('vlm-modal-save');
         const modalMaincam = document.getElementById('modal-maincam');
-        const modalTitle   = document.getElementById('vlm-modal-title');
         const modalSelect  = document.getElementById('modal-description-select');
         const modalPrompt  = document.getElementById('modal-prompt-text');
         const kvEp         = document.getElementById('kv-episode');
@@ -393,7 +498,40 @@
         const kvVid        = document.getElementById('kv-video');
         const appToast     = document.getElementById('app-toast');
 
+        // Navigation elements
+        const modalNavSquares = document.getElementById('modal-nav-squares');
+        const navCurrentIndex = document.getElementById('nav-current-index');
+        const navTotalCount = document.getElementById('nav-total-count');
+
+        // Source toggle + fields
+        const srcToggleEl     = document.getElementById('vlm-source-toggle');
+        const srcBankBtn      = document.getElementById('src-bank');
+        const srcManualBtn    = document.getElementById('src-manual');
+        const bankFieldsEl    = document.getElementById('bank-fields');
+        const manualFieldsEl  = document.getElementById('manual-fields');
+        const manualTextEl    = document.getElementById('modal-manual-text');
+        const manualVideoEl   = document.getElementById('modal-manual-video');
+
         let modalContext = { episodeId:null, stateId:null, selectedVideoId:null, selectedText:null, bank:[] };
+
+        let isManualMode = false;
+        function setSourceMode(manual) {
+            isManualMode = !!manual;
+            srcBankBtn.classList.toggle('active', !manual);
+            srcManualBtn.classList.toggle('active', manual);
+            bankFieldsEl.style.display   = manual ? 'none' : '';
+            manualFieldsEl.style.display = manual ? '' : 'none';
+        }
+        srcBankBtn.addEventListener('click',  () => setSourceMode(false));
+        srcManualBtn.addEventListener('click', () => setSourceMode(true));
+
+        // Keep kv video id in sync in manual mode
+        if (manualVideoEl) {
+            manualVideoEl.addEventListener('input', () => {
+                const v = manualVideoEl.value.trim();
+                kvVid.textContent = v === '' ? '-' : v;
+            });
+        }
 
         function showToast(msg, timeout=1600) {
             appToast.textContent = msg;
@@ -401,7 +539,7 @@
             setTimeout(() => appToast.classList.remove('show'), timeout);
         }
 
-        // ——— Camera plumbing (unchanged) ———
+        // --- Camera plumbing (unchanged) ---
         function ensureCameraBuffers(cameraName) {
             const container = cameraViews[cameraName];
             if (!container) return null;
@@ -498,7 +636,7 @@
             }
         }
 
-        // ——— Episode charts ———
+        // --- Episode charts ---
         function createEpisodeChartElement(episode) {
             const episodeDiv = document.createElement('div');
             episodeDiv.className = 'episode-chart'; episodeDiv.id = `episode-${episode.id}`;
@@ -551,6 +689,11 @@
                 episode.barEls[st].classList.add('clicked');
                 episode.barEls[st].setAttribute('aria-pressed', 'true');
                 // Remove title modification to eliminate hover text tooltip
+            }
+            
+            // Update modal navigation if modal is open
+            if (vlmModal.classList.contains('show')) {
+                updateModalNavigation();
             }
         }
 
@@ -639,25 +782,18 @@
         // Bind click once for eligible bars
         function bindBarClickIfEligible(barContainer, episodeId, stateId, isImportant, hasVlmBoth) {
             barContainer.dataset.episodeId = String(episodeId);
-            barContainer.dataset.stateId = String(stateId);
-            barContainer.classList.toggle('is-important', !!isImportant); /* NEW */
-            barContainer.classList.toggle('is-regular', !isImportant);    /* NEW */
+            barContainer.dataset.stateId   = String(stateId);
+            barContainer.classList.toggle('is-important', !!isImportant);
+            barContainer.classList.toggle('is-regular',   !isImportant);
 
-            // clickable only if important and has both VLM text + video id
-            if (isImportant && hasVlmBoth) {
+            // NEW: important states are always clickable (even if VLM is missing)
+            if (isImportant) {
                 barContainer.classList.add('clickable');
                 if (barContainer.dataset.clickBound !== '1') {
-                    barContainer.setAttribute('tabindex', '0'); // keyboard focusable
-                    barContainer.addEventListener('click', () => {
-                        markClickedImportant(episodeId, stateId);
-                        openVlmModal(episodeId, stateId);
-                    });
-                    barContainer.addEventListener('keydown', (e) => {
-                        if (e.key === 'Enter') {
-                            markClickedImportant(episodeId, stateId);
-                            openVlmModal(episodeId, stateId);
-                        }
-                    });
+                    barContainer.setAttribute('tabindex', '0'); // keyboard focus
+                    const openFn = () => { markClickedImportant(episodeId, stateId); openVlmModal(episodeId, stateId); };
+                    barContainer.addEventListener('click', openFn);
+                    barContainer.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFn(); });
                     barContainer.dataset.clickBound = '1';
                 }
             } else {
@@ -665,29 +801,23 @@
                 barContainer.removeAttribute('tabindex');
             }
 
-            /* NEW: Hover preview for important bars - obs view only, no text */
+            // Hover preview (unchanged): only for important bars
             if (isImportant && barContainer.dataset.hoverBound !== '1') {
                 let hoverMoveHandler = null;
                 let hoverEnterTimeout = null;
                 barContainer.addEventListener('mouseenter', (e) => {
                     if (!importantOnlyMode) return;
-                    showPopover(e.clientX, e.clientY, null); // show loading (no text tag)
-                    // gentle delay to avoid noisy fetches
+                    showPopover(e.clientX, e.clientY, null); // loading
                     hoverEnterTimeout = setTimeout(async () => {
                         const url = await getMaincamPreview(episodeId, stateId);
-                        if (currentPopover) {
-                            showPopover(e.clientX, e.clientY, null, url); // no text tag, just image
-                        }
+                        if (currentPopover) showPopover(e.clientX, e.clientY, null, url);
                     }, 140);
                     hoverMoveHandler = (ev) => positionPopover(ev.clientX, ev.clientY);
                     document.addEventListener('mousemove', hoverMoveHandler);
                 });
                 barContainer.addEventListener('mouseleave', () => {
                     if (hoverEnterTimeout) { clearTimeout(hoverEnterTimeout); hoverEnterTimeout = null; }
-                    if (hoverMoveHandler) {
-                        document.removeEventListener('mousemove', hoverMoveHandler);
-                        hoverMoveHandler = null;
-                    }
+                    if (hoverMoveHandler) { document.removeEventListener('mousemove', hoverMoveHandler); hoverMoveHandler = null; }
                     hidePopover();
                 });
                 barContainer.dataset.hoverBound = '1';
@@ -827,8 +957,8 @@
                     for (const [sidStr, info] of Object.entries(episodeData.states)) {
                         const sid = parseInt(sidStr, 10);
                         const isImportant = !!(info.is_important || false);
-                        const hasVlmBoth = Boolean(info.has_vlm_text) && Boolean(info.has_video_id);
-                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isImportant, false, (isImportant ? hasVlmBoth : true));
+                        const hasFlexBoth = Boolean(info.has_flex_text) && Boolean(info.has_flex_video);
+                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isImportant, false, (isImportant ? hasFlexBoth : true));
                     }
                 }
 
@@ -849,9 +979,14 @@
 
             /* NEW: ensure filter is applied after updates */
             applyImportantOnlyMode();
+            
+            /* Update modal navigation if modal is open */
+            if (vlmModal.classList.contains('show')) {
+                updateModalNavigation();
+            }
         }
 
-        // ——— Fetchers ———
+        // --- Fetchers ---
         async function fetchLatestState() {
             try {
                 const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, { headers:{ 'Accept':'application/json' }});
@@ -900,11 +1035,11 @@
             }
         }
 
-        // ——— Description bank helpers ———
+        // --- Description bank helpers ---
         function extractThusText(s) {
             if (!s) return '';
             const idx = s.toLowerCase().indexOf('thus:');
-            if (idx >= 0) return s.slice(idx + 5).trim().replace(/^[\s–—:,]+/, '');
+            if (idx >= 0) return s.slice(idx + 5).trim().replace(/^[\s-:,]+/, '');
             return s.trim();
         }
         function parseDescriptionBank(raw) {
@@ -943,16 +1078,16 @@
             }
         }
 
-        // ——— Modal logic ———
-        function openModal() { vlmModal.classList.add('show'); }
-        function closeModal() { vlmModal.classList.remove('show'); }
+        // --- Modal logic ---
+        function openModal()  { vlmModal.classList.add('show'); document.body.classList.add('modal-open'); }
+        function closeModal() { vlmModal.classList.remove('show'); document.body.classList.remove('modal-open'); }
 
         function populateDropdown(items, selectedId) {
             modalSelect.innerHTML = '';
             for (const it of items) {
                 const opt = document.createElement('option');
                 opt.value = String(it.id);
-                opt.textContent = `${it.id} — ${it.thus_text}`;
+                opt.textContent = `${it.id} - ${it.thus_text}`;
                 if (it.id === selectedId) opt.selected = true;
                 modalSelect.appendChild(opt);
             }
@@ -972,12 +1107,11 @@
         async function openVlmModal(episodeId, stateId) {
             try {
                 // Prime modal
-                modalTitle.textContent = `Important state ${stateId} — Episode ${episodeId}`;
                 modalMaincam.src = '';
                 modalPrompt.textContent = '…';
                 kvEp.textContent = episodeId;
                 kvSt.textContent = stateId;
-                kvVid.textContent = '—';
+                kvVid.textContent = '-';
                 modalContext = { episodeId, stateId, selectedVideoId:null, selectedText:null, bank:[] };
                 openModal();
 
@@ -988,11 +1122,13 @@
                     modalMaincam.src = details.maincam_data_url;
                 }
 
-                const currentText = details.vlm_text || '';
-                const currentVid  = (typeof details.vlm_video_id === 'number') ? details.vlm_video_id : null;
+                const currentText = details.flex_text_prompt || '';
+                const currentVid  = (typeof details.flex_video_id === 'number') ? details.flex_video_id : null;
 
-                modalPrompt.textContent = currentText || '(no VLM text found)';
-                kvVid.textContent = (currentVid !== null ? String(currentVid) : '—');
+                // Show "NOT SET" if both text and video ID are not ready
+                const isFlexReady = currentText.trim() && (currentVid !== null);
+                modalPrompt.textContent = isFlexReady ? currentText : 'NOT SET';
+                kvVid.textContent = (currentVid !== null ? String(currentVid) : '-');
 
                 let bank = [];
                 if (details.description_bank) {
@@ -1011,13 +1147,25 @@
                 modalContext.selectedVideoId = currentVid;
                 modalContext.selectedText = currentText;
 
-                // If there is no current vid but we have a bank, pick the first as visible choice (no auto save)
-                if (currentVid === null && bank.length) {
-                    modalPrompt.textContent = bank[0].thus_text;
-                    kvVid.textContent = String(bank[0].id);
-                    modalContext.selectedVideoId = bank[0].id;
-                    modalContext.selectedText = bank[0].thus_text;
+                // NEW: Prefill manual fields & choose default source mode
+                manualTextEl.value  = currentText || '';
+                manualVideoEl.value = (currentVid !== null && currentVid !== undefined) ? String(currentVid) : '';
+
+                // Always default to "Pick from bank" mode
+                setSourceMode(false); // false = bank mode, true = manual mode
+
+                // Keep modalContext aligned with current view
+                modalContext.selectedVideoId = currentVid ?? (bank[0]?.id ?? null);
+                modalContext.selectedText    = currentText || (bank[0]?.thus_text ?? null);
+
+                // Only show first bank entry if flex is actually ready, otherwise keep "NOT SET"
+                if (!isFlexReady && currentVid === null && bank.length) {
+                    // Don't override the "NOT SET" text - keep it as is
+                    kvVid.textContent = '-';
                 }
+
+                // Update navigation display
+                updateModalNavigation();
             } catch (e) {
                 console.error('Error in openVlmModal:', e);
                 showToast('Failed to load VLM details.');
@@ -1039,28 +1187,47 @@
 
         // Save selection to backend
         async function saveVlmSelection() {
-            const { episodeId, stateId, selectedVideoId, selectedText } = modalContext;
-            if (selectedVideoId == null || !selectedText) {
-                showToast('Pick a description first.');
-                return;
+            const { episodeId, stateId } = modalContext;
+
+            let payload = { episode_id: episodeId, state_id: stateId };
+            if (isManualMode) {
+                const txt = (manualTextEl.value || '').trim();
+                if (!txt) { showToast('Enter manual text.'); return; }
+
+                let vid = null;
+                const raw = (manualVideoEl.value || '').trim();
+                if (raw !== '') {
+                    const num = Number(raw);
+                    if (!Number.isFinite(num)) { showToast('Video ID must be a number.'); return; }
+                    vid = num;
+                }
+                payload.flex_text_prompt = txt;
+                payload.flex_video_id = vid;             // may be null
+                payload.manual_override = true;          // NEW: tells backend to lock this state
+                payload.source = 'manual';               // optional: for auditing
+            } else {
+                const txt = modalContext.selectedText;
+                const vid = modalContext.selectedVideoId;
+                if (!txt) { showToast('Pick a description first.'); return; }
+                payload.flex_text_prompt = txt;
+                payload.flex_video_id = vid;
+                payload.manual_override = false;
+                payload.source = 'bank';
             }
+
             try {
-                const resp = await fetch(`${API_BASE_URL}/api/update-vlm-selection`, {
+                const resp = await fetch(`${API_BASE_URL}/api/update-flex-selection`, {
                     method:'POST',
                     headers:{ 'Content-Type':'application/json' },
-                    body: JSON.stringify({
-                        episode_id: episodeId,
-                        state_id: stateId,
-                        video_id: selectedVideoId,
-                        vlm_text: selectedText
-                    })
+                    body: JSON.stringify(payload)
                 });
                 const data = await resp.json();
                 if (!resp.ok || !data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Save failed');
-                showToast('Updated VLM selection.');
+
+                markClickedImportant(episodeId, stateId);
+                showToast(isManualMode ? 'Saved (manual override locked).' : 'Updated VLM selection.');
                 closeModal();
-                // Optional: refresh info so tooltips reflect any change
-                fetchPendingStatesInfo();
+                fetchPendingStatesInfo(); // refresh so bars/tooltips reflect new status
             } catch (e) {
                 console.error(e);
                 showToast('Failed to save selection.');
@@ -1073,8 +1240,126 @@
         vlmModalSave.addEventListener('click', saveVlmSelection);
         vlmModal.addEventListener('click', (e) => { if (e.target === vlmModal) closeModal(); });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && vlmModal.classList.contains('show')) closeModal(); });
+        
+        // Navigation between important states with arrow keys
+        function getAllImportantStates() {
+            const states = [];
+            for (const episode of episodes) {
+                for (const [stateId, stateInfo] of Object.entries(episode.states || {})) {
+                    if (stateInfo.isImportant) {
+                        states.push({
+                            episodeId: episode.id,
+                            stateId: parseInt(stateId, 10),
+                            hasVlmArtifacts: stateInfo.hasVlmArtifacts,
+                            sortKey: `${episode.id.padStart(6, '0')}_${stateId.padStart(6, '0')}`
+                        });
+                    }
+                }
+            }
+            return states.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+        }
 
-        // ——— Controls ———
+        function updateModalNavigation() {
+            const allImportant = getAllImportantStates();
+            const currentIndex = allImportant.findIndex(s => 
+                s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
+            );
+
+            // Update squares
+            modalNavSquares.innerHTML = '';
+            allImportant.forEach((state, index) => {
+                const square = document.createElement('div');
+                square.className = 'modal-nav-square';
+                
+                const isVisited = clickedImportantStates.has(stateKey(state.episodeId, state.stateId));
+                const isCurrent = index === currentIndex;
+                
+                // Start with default gray appearance, no flashing
+                if (isVisited) square.classList.add('visited');
+                if (isCurrent) square.classList.add('current');
+                
+                square.title = `Episode ${state.episodeId}, State ${state.stateId}`;
+                square.addEventListener('click', () => {
+                    openVlmModal(state.episodeId, state.stateId);
+                });
+                
+                // Check label status asynchronously without initial visual indication
+                checkStateLabelStatus(state.episodeId, state.stateId, square, isVisited);
+                
+                modalNavSquares.appendChild(square);
+            });
+
+            // Update info text
+            navCurrentIndex.textContent = currentIndex + 1;
+            navTotalCount.textContent = allImportant.length;
+        }
+
+        async function checkStateLabelStatus(episodeId, stateId, square, isVisited) {
+            try {
+                const details = await fetchStateDetails(episodeId, stateId);
+                const hasText = details.flex_text_prompt && details.flex_text_prompt.trim();
+                const hasVideoId = details.flex_video_id !== null && details.flex_video_id !== undefined;
+                const isLabeled = hasText && hasVideoId;
+                
+                // Add unlabeled styling if not labeled (regardless of visited status)
+                // Visited states keep their green color, but unlabeled ones show red
+                if (!isLabeled) {
+                    square.classList.add('unlabeled');
+                    square.title += ' (Unlabeled)';
+                }
+            } catch (e) {
+                // If we can't fetch details, assume unlabeled
+                square.classList.add('unlabeled');
+                square.title += ' (Unlabeled)';
+            }
+        }
+
+        function navigateToAdjacentImportantState(direction) {
+            if (!vlmModal.classList.contains('show') || !modalContext.episodeId || !modalContext.stateId) return;
+            
+            const allImportant = getAllImportantStates();
+            if (allImportant.length <= 1) return;
+            
+            const currentIndex = allImportant.findIndex(s => 
+                s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
+            );
+            
+            if (currentIndex === -1) return;
+            
+            let nextIndex;
+            if (direction === 'next') {
+                nextIndex = (currentIndex + 1) % allImportant.length;
+            } else {
+                nextIndex = (currentIndex - 1 + allImportant.length) % allImportant.length;
+            }
+            
+            const nextState = allImportant[nextIndex];
+            openVlmModal(nextState.episodeId, nextState.stateId);
+        }
+
+        // Quick save with Ctrl+Enter / ⌘+Enter while modal is open
+        // Arrow key navigation between important states
+        document.addEventListener('keydown', (e) => {
+            if (!vlmModal.classList.contains('show')) return;
+            
+            // Navigation with arrow keys
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                navigateToAdjacentImportantState('prev');
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                navigateToAdjacentImportantState('next');
+            }
+            
+            // Quick save
+            const meta = e.ctrlKey || e.metaKey;
+            if (meta && e.key === 'Enter') {
+                e.preventDefault();
+                saveVlmSelection();
+            }
+        });
+
+        // --- Controls ---
         async function handleFastForward() {
             const buttonText = fastForwardBtn.textContent;
             const isStartEpisode = buttonText.includes('Start Episode');
@@ -1161,7 +1446,7 @@
             }
         });
 
-        // ——— Auto-refresh ———
+        // --- Auto-refresh ---
         function startAutoRefresh() {
             stopAutoRefresh();
             autoRefreshInterval = {
