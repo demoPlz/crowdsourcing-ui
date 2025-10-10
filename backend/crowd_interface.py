@@ -121,14 +121,14 @@ class CrowdInterface():
     '''
     def __init__(self, 
                  required_responses_per_state= REQUIRED_RESPONSES_PER_STATE,
-                 required_responses_per_important_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
-                 autofill_important_states: bool = False,
+                 required_responses_per_critical_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
+                 autofill_critical_states: bool = False,
                  num_autofill_actions: int | None = None,
                  use_vlm_prompt: bool = False,
                  use_manual_prompt: bool = False,
                  leader_mode: bool = False,
                  n_leaders: int | None = None,
-                 # --- saving important-state cam_main frames ---
+                 # --- saving critical-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
                  prompt_sequence_clear: bool = False,
@@ -191,24 +191,24 @@ class CrowdInterface():
         
         # N responses pattern
         self.required_responses_per_state = required_responses_per_state
-        self.required_responses_per_important_state = required_responses_per_important_state
-        self.autofill_important_states = bool(autofill_important_states)
+        self.required_responses_per_critical_state = required_responses_per_critical_state
+        self.autofill_critical_states = bool(autofill_critical_states)
         # If not specified, default to "complete on first submission"
         if num_autofill_actions is None:
-            self.num_autofill_actions = self.required_responses_per_important_state
+            self.num_autofill_actions = self.required_responses_per_critical_state
         else:
             self.num_autofill_actions = int(num_autofill_actions)
-        # Clamp to [1, required_responses_per_important_state]
+        # Clamp to [1, required_responses_per_critical_state]
         self.num_autofill_actions = max(1, min(self.num_autofill_actions,
-                                               self.required_responses_per_important_state))
+                                               self.required_responses_per_critical_state))
         
-        # Clamp n_leaders to required_responses_per_important_state
-        if self.n_leaders > self.required_responses_per_important_state:
-            print(f"⚠️  n_leaders={self.n_leaders} > required_responses_per_important_state={self.required_responses_per_important_state}; clamping.")
-            self.n_leaders = self.required_responses_per_important_state
+        # Clamp n_leaders to required_responses_per_critical_state
+        if self.n_leaders > self.required_responses_per_critical_state:
+            print(f"⚠️  n_leaders={self.n_leaders} > required_responses_per_critical_state={self.required_responses_per_critical_state}; clamping.")
+            self.n_leaders = self.required_responses_per_critical_state
         
         # Episode-based state management
-        self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int, timestamp: float}}
+        self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int}}
         self.completed_states_by_episode = {}  # episode_id -> {state_id -> {responses_received: int, completion_time: float}}
         self.completed_states_buffer_by_episode = {}  # episode_id -> {state_id -> completed_state_dict} - buffer for chronological add_frame
         self.served_states_by_episode = {}  # episode_id -> {session_id -> state_id}
@@ -516,7 +516,7 @@ class CrowdInterface():
 
     # ---------- Prompt-mode helpers (manual or VLM) ----------
     def _prompt_mode_requires_gate(self) -> bool:
-        """True if important states must wait for a prompt (manual or VLM)."""
+        """True if critical states must wait for a prompt (manual or VLM)."""
         gate_required = bool(self.use_manual_prompt or (self.use_vlm_prompt and self._vlm_enabled))
         return gate_required
 
@@ -543,15 +543,15 @@ class CrowdInterface():
             info["flex_video_id"] = video_id
         info["flex_ready"] = True
         
-        # Check if this is an important state with "end." text - auto-fill with current position
+        # Check if this is an critical state with "end." text - auto-fill with current position
         if (text and text.strip().lower() == "end." and 
-            info.get("important", False) and 
-            info["responses_received"] < self.required_responses_per_important_state):
+            info.get("critical", False) and 
+            info["responses_received"] < self.required_responses_per_critical_state):
             self._auto_fill_end_state_locked(info, episode_id, state_id)
 
     def _auto_fill_end_state_locked(self, info: dict, episode_id: str, state_id: int) -> None:
         """
-        Auto-fill an important state labeled as "end." with multiple copies of its current position.
+        Auto-fill an critical state labeled as "end." with multiple copies of its current position.
         MUST be called with self.state_lock already held.
         """
         try:
@@ -572,12 +572,12 @@ class CrowdInterface():
             
             # Fill remaining responses with this position
             responses_before = info["responses_received"]
-            while info["responses_received"] < self.required_responses_per_important_state:
+            while info["responses_received"] < self.required_responses_per_critical_state:
                 info["actions"].append(position_action.clone())
                 info["responses_received"] += 1
             
             responses_added = info["responses_received"] - responses_before
-            print(f"🎯 Auto-filled 'end.' state {state_id} in episode {episode_id} with {responses_added} position copies (total: {info['responses_received']}/{self.required_responses_per_important_state})")
+            print(f"🎯 Auto-filled 'end.' state {state_id} in episode {episode_id} with {responses_added} position copies (total: {info['responses_received']}/{self.required_responses_per_critical_state})")
             
         except Exception as e:
             print(f"❌ Error auto-filling end state {state_id} in episode {episode_id}: {e}")
@@ -871,14 +871,14 @@ class CrowdInterface():
         while self.auto_label_worker_running and not self._shutting_down:
             try:
                 # Wait for a task from the queue (blocking)
-                important_state_id = self.auto_label_queue.get(timeout=1.0)
+                critical_state_id = self.auto_label_queue.get(timeout=1.0)
                 
                 # None is our stop signal
-                if important_state_id is None:
+                if critical_state_id is None:
                     break
                 
                 # Process the auto-labeling task
-                self._process_auto_labeling(important_state_id)
+                self._process_auto_labeling(critical_state_id)
                 
                 # Mark task as done
                 self.auto_label_queue.task_done()
@@ -890,58 +890,58 @@ class CrowdInterface():
                 print(f"❌ Error in auto-labeling worker: {e}")
                 traceback.print_exc()
     
-    def _process_auto_labeling(self, important_state_id):
-        """Process auto-labeling for states before the given important state ID (episode-aware)"""
+    def _process_auto_labeling(self, critical_state_id):
+        """Process auto-labeling for states before the given critical state ID (episode-aware)"""
         try:
             if self._shutting_down:
                 return
             with self.state_lock:
-                # Find which episode the important state belongs to
+                # Find which episode the critical state belongs to
                 target_episode_id = None
                 for episode_id, episode_states in self.pending_states_by_episode.items():
-                    if important_state_id in episode_states:
+                    if critical_state_id in episode_states:
                         target_episode_id = episode_id
                         break
                 
                 if target_episode_id is None:
-                    print(f"⚠️  Important state {important_state_id} not found in any episode")
+                    print(f"⚠️  Important state {critical_state_id} not found in any episode")
                     return
                 
                 episode_states = self.pending_states_by_episode[target_episode_id]
                 
-                # Find the PREVIOUS important state to get its action as template
+                # Find the PREVIOUS critical state to get its action as template
                 template_action = None
-                previous_important_states = []
+                previous_critical_states = []
                 
                 # Check pending states in this episode
                 for state_id, state_info in episode_states.items():
-                    if (state_id < important_state_id and 
-                        state_info.get("important", False) and 
+                    if (state_id < critical_state_id and 
+                        state_info.get("critical", False) and 
                         state_info.get("actions")):
-                        previous_important_states.append((state_id, state_info))
+                        previous_critical_states.append((state_id, state_info))
                 
                 # ---- Check completed states in this episode (recover from completed buffer) ----
                 if target_episode_id in self.completed_states_by_episode:
                     buf = self.completed_states_buffer_by_episode.get(target_episode_id, {})
                     for sid, cinfo in self.completed_states_by_episode[target_episode_id].items():
-                        if sid < important_state_id and cinfo.get("is_important", False):
+                        if sid < critical_state_id and cinfo.get("is_critical", False):
                             m = buf.get(sid)
                             if isinstance(m, dict) and "action" in m:
-                                act = m["action"]  # concatenated 1D tensor: (required_responses_per_important_state * action_dim,)
+                                act = m["action"]  # concatenated 1D tensor: (required_responses_per_critical_state * action_dim,)
                                 action_dim = len(JOINT_NAMES)
                                 first = act[:action_dim]
                                 if not isinstance(first, torch.Tensor):
                                     first = torch.as_tensor(first, dtype=torch.float32)
                                 # Emulate pending-state structure expected later
-                                previous_important_states.append((sid, {"actions": [first]}))
+                                previous_critical_states.append((sid, {"actions": [first]}))
                 
-                if previous_important_states:
-                    # Use the most recent previous important state's first action as template
-                    latest_important_state_id = max(previous_important_states, key=lambda x: x[0])
-                    template_action = latest_important_state_id[1]["actions"][0]
-                    print(f"🎯 Using template from previous important state {latest_important_state_id[0]}")
+                if previous_critical_states:
+                    # Use the most recent previous critical state's first action as template
+                    latest_critical_state_id = max(previous_critical_states, key=lambda x: x[0])
+                    template_action = latest_critical_state_id[1]["actions"][0]
+                    print(f"🎯 Using template from previous critical state {latest_critical_state_id[0]}")
                 else:
-                    # No previous important state - convert FIRST state's joint positions to tensor
+                    # No previous critical state - convert FIRST state's joint positions to tensor
                     if not episode_states:
                         return
                     
@@ -965,17 +965,17 @@ class CrowdInterface():
                     template_action = torch.tensor(goal_positions, dtype=torch.float32)
                     print(f"🎯 Using template from first state {first_state_id} joint positions")
                 
-                # Find all unimportant states in this episode that are earlier than the important state
+                # Find all uncritical states in this episode that are earlier than the critical state
                 states_to_label = []
                 for state_id, state_info in episode_states.items():
-                    if (state_id < important_state_id and 
-                        not state_info.get("important", False) and 
+                    if (state_id < critical_state_id and 
+                        not state_info.get("critical", False) and 
                         state_info["responses_received"] < self.required_responses_per_state):
                         states_to_label.append(state_id)
                 
-                print(f"🏷️  Auto-labeling {len(states_to_label)} unimportant states in episode {target_episode_id} before important state {important_state_id}")
+                print(f"🏷️  Auto-labeling {len(states_to_label)} uncritical states in episode {target_episode_id} before critical state {critical_state_id}")
                 
-                # Label each unimportant state with the template action
+                # Label each uncritical state with the template action
                 for state_id in states_to_label:
                     state_info = episode_states[state_id]
                     
@@ -989,8 +989,8 @@ class CrowdInterface():
                         # Concatenate all action responses into a 1D tensor
                         all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
                         
-                        # Pad with inf values to match important state shape
-                        missing_responses = self.required_responses_per_important_state - self.required_responses_per_state
+                        # Pad with inf values to match critical state shape
+                        missing_responses = self.required_responses_per_critical_state - self.required_responses_per_state
                         action_dim = len(JOINT_NAMES)
                         padding_size = missing_responses * action_dim
                         padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
@@ -1098,7 +1098,7 @@ class CrowdInterface():
                     info["segmentation_ready"] = True
                     self._segmentation_paths_by_episode.setdefault(episode_id_local, {})
                     self._segmentation_paths_by_episode[episode_id_local][state_id_local] = seg_paths
-                    print(f"✅ segmentation ready for important state {state_id_local} in episode {episode_id_local}")
+                    print(f"✅ segmentation ready for critical state {state_id_local} in episode {episode_id_local}")
                 else:
                     # state may have completed/been removed while we were segmenting
                     print(f"ℹ️ segmentation finished but state {state_id_local} is no longer pending")
@@ -1134,7 +1134,7 @@ class CrowdInterface():
         print("🛑 Stopped VLM worker")
 
     def _enqueue_vlm_job(self, episode_id: str, state_id: int, view_paths: dict[str, str]):
-        """Queue a VLM job for (episode, important_state) with dedupe and readiness checks."""
+        """Queue a VLM job for (episode, critical_state) with dedupe and readiness checks."""
         # Double-check under lock: skip if ready or already queued/in-flight
         with self.state_lock:
             ep_states = self.pending_states_by_episode.get(episode_id, {})
@@ -1620,7 +1620,7 @@ class CrowdInterface():
         # Return descriptions if we found any, otherwise None
         return descriptions if descriptions else None
 
-    # --- NEW: helpers for important-state image sequence ---
+    # --- NEW: helpers for critical-state image sequence ---
     def _compute_next_prompt_seq_index(self) -> int:
         """
         Scan the target directory and return next numeric index (1-based).
@@ -1635,11 +1635,11 @@ class CrowdInterface():
                 nums.append(int(m.group(1)))
         return (max(nums) + 1) if nums else 1
 
-    def _save_important_maincam_frame_on_label(self, episode_id: str, state_id: int, obs_path: str | None):
+    def _save_critical_maincam_frame_on_label(self, episode_id: str, state_id: int, obs_path: str | None):
         """
-        Save important main camera frame when a response is received, but only if:
+        Save critical main camera frame when a response is received, but only if:
         1. This state has received at least one label
-        2. No later important state has already been saved (maintain chronological order)
+        2. No later critical state has already been saved (maintain chronological order)
         """
         if not self.save_maincam_sequence:
             return
@@ -1684,7 +1684,7 @@ class CrowdInterface():
             except Exception as e:
                 print(f"⚠️ Error saving IMPORTANT cam_main frame on label: {e}")
 
-    def _gather_important_maincam_sequence(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
+    def _gather_critical_maincam_sequence(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
         """
         Return (image_data_urls, state_ids) for IMPORTANT states in this episode
         with state_id <= up_to_state_id, in ascending order of state_id.
@@ -1703,7 +1703,7 @@ class CrowdInterface():
         return self._gather_from_obs_cache(episode_id, up_to_state_id)
     
     def _gather_from_sequence_directory(self, up_to_state_id: int) -> tuple[list[str], list[int]]:
-        """Read important main camera frames from the saved sequence directory."""
+        """Read critical main camera frames from the saved sequence directory."""
         seq_urls: list[str] = []
         seq_ids: list[int] = []
         
@@ -1738,17 +1738,17 @@ class CrowdInterface():
         return seq_urls, seq_ids
     
     def _gather_from_obs_cache(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
-        """Read important main camera frames from the observation disk cache."""
-        # Collect (sid -> obs_path) for important states from both pending and completed buffers
+        """Read critical main camera frames from the observation disk cache."""
+        # Collect (sid -> obs_path) for critical states from both pending and completed buffers
         paths_by_sid: dict[int, str] = {}
 
         with self.state_lock:
-            # Completed states metadata tells us which were important; the obs paths live in the buffer
+            # Completed states metadata tells us which were critical; the obs paths live in the buffer
             completed_meta = self.completed_states_by_episode.get(episode_id, {})
             completed_buf  = self.completed_states_buffer_by_episode.get(episode_id, {})
 
             for sid, meta in completed_meta.items():
-                if sid <= up_to_state_id and meta.get("is_important", False):
+                if sid <= up_to_state_id and meta.get("is_critical", False):
                     man = completed_buf.get(sid)
                     if isinstance(man, dict) and man.get("obs_path"):
                         paths_by_sid[sid] = man["obs_path"]
@@ -1756,7 +1756,7 @@ class CrowdInterface():
             # Pending states: read directly
             pending = self.pending_states_by_episode.get(episode_id, {})
             for sid, info in pending.items():
-                if sid <= up_to_state_id and info.get("important", False):
+                if sid <= up_to_state_id and info.get("critical", False):
                     p = info.get("obs_path")
                     if p:
                         paths_by_sid[sid] = p
@@ -1890,7 +1890,7 @@ class CrowdInterface():
                        curr_raw: str | None,
                        video_id: int | None):
         """
-        Persist a compact JSON of the full 3-part conversation for one important state.
+        Persist a compact JSON of the full 3-part conversation for one critical state.
         Images are NOT embedded; we store references (seq ids and view_paths).
         """
         if not self.save_vlm_logs:
@@ -1946,7 +1946,7 @@ class CrowdInterface():
     def _vlm_worker(self):
         """
         For each queued (episode_id, state_id, view_paths):
-          1) Gather chronological sequence of important-state cam_main frames up to current state
+          1) Gather chronological sequence of critical-state cam_main frames up to current state
           2) Prepare four views from that state
           3) Call Azure OpenAI Responses API (two user messages)
           4) Save raw response JSON in the episode cache
@@ -1971,12 +1971,12 @@ class CrowdInterface():
                             info["vlm_queued"] = False
                         print(f"↩️ VLM skip ep={episode_id} sid={state_id} (missing or already ready)")
                         continue
-                # 1) Gather important-state keyframes (cam_main) for this episode up to current important state
-                seq_urls, seq_ids = self._gather_important_maincam_sequence(episode_id, state_id)
+                # 1) Gather critical-state keyframes (cam_main) for this episode up to current critical state
+                seq_urls, seq_ids = self._gather_critical_maincam_sequence(episode_id, state_id)
                 if not seq_urls:
-                    print(f"⛔ VLM: no important-state cam_main sequence; skipping ep={episode_id} sid={state_id}")
+                    print(f"⛔ VLM: no critical-state cam_main sequence; skipping ep={episode_id} sid={state_id}")
                     continue
-                print(f"🖼️ VLM: using {len(seq_urls)} important-state cam_main frames (sids={seq_ids})")
+                print(f"🖼️ VLM: using {len(seq_urls)} critical-state cam_main frames (sids={seq_ids})")
 
                 # 2) Collect four views (front/left/right/perspective in this order)
                 ordered = ["front", "left", "right", "perspective"]
@@ -2298,7 +2298,7 @@ class CrowdInterface():
             from lerobot.common.datasets.utils import get_hf_features_from_features
             
             original_action_dim = self.dataset.features["action"]["shape"][-1]  # Get the last dimension (joint count)
-            new_action_shape = (self.required_responses_per_important_state * original_action_dim,)
+            new_action_shape = (self.required_responses_per_critical_state * original_action_dim,)
             
             # Update both the dataset features and metadata
             self.dataset.features["action"]["shape"] = new_action_shape
@@ -2320,7 +2320,7 @@ class CrowdInterface():
                 # Replace the old dataset
                 self.dataset.hf_dataset = new_hf_dataset
 
-            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_important_state}, joints={original_action_dim})")
+            print(f"📐 Updated dataset action shape to {new_action_shape} (crowd_responses={self.required_responses_per_critical_state}, joints={original_action_dim})")
 
     ### ---Camera Management---
     def init_cameras(self):
@@ -2665,9 +2665,9 @@ class CrowdInterface():
                 max_id = k if max_id is None or k > max_id else max_id
         return max_id
     
-    def _demote_earlier_unanswered_importants_locked(self, episode_id: str, pivot_state_id: int) -> list[int]:
+    def _demote_earlier_unanswered_criticals_locked(self, episode_id: str, pivot_state_id: int) -> list[int]:
         """
-        Demote earlier important states with 0 responses to normal.
+        Demote earlier critical states with 0 responses to normal.
         MUST be called with self.state_lock already held.
         Returns a sorted list of demoted state_ids.
         """
@@ -2675,9 +2675,9 @@ class CrowdInterface():
         demoted: list[int] = []
 
         for sid, info in list(ep_states.items()):
-            if sid < pivot_state_id and info.get("important", False) and int(info.get("responses_received", 0)) == 0:
-                info["important"] = False
-                # Clear gates/features that only matter for important states
+            if sid < pivot_state_id and info.get("critical", False) and int(info.get("responses_received", 0)) == 0:
+                info["critical"] = False
+                # Clear gates/features that only matter for critical states
                 info["segmentation_ready"] = True
                 info["segmentation_paths"] = {}
                 # Clear prompt state (no longer relevant for normal states)
@@ -2693,10 +2693,10 @@ class CrowdInterface():
 
         if demoted:
             demoted.sort()
-            print(f"⬇️  Demoted earlier important states with 0 responses → normal in episode {episode_id}: {demoted}")
+            print(f"⬇️  Demoted earlier critical states with 0 responses → normal in episode {episode_id}: {demoted}")
         return demoted
 
-    def _auto_label_states_like_unimportant_locked(self, episode_id: str, pivot_state_id: int, state_ids: list[int]) -> None:
+    def _auto_label_states_like_uncritical_locked(self, episode_id: str, pivot_state_id: int, state_ids: list[int]) -> None:
         """
         Auto-label the given 'state_ids' as if they were normal, using the SAME rules as _process_auto_labeling:
           - template = most-recent earlier IMPORTANT state's first label (pending or completed)
@@ -2712,31 +2712,31 @@ class CrowdInterface():
 
         # --- Build the template action exactly like _process_auto_labeling ---
         template_action = None
-        previous_important_states = []
+        previous_critical_states = []
 
-        # 1) From PENDING: earlier important states that already have actions
+        # 1) From PENDING: earlier critical states that already have actions
         for sid, sinfo in episode_states.items():
-            if sid < pivot_state_id and sinfo.get("important", False) and sinfo.get("actions"):
-                previous_important_states.append((sid, sinfo))
+            if sid < pivot_state_id and sinfo.get("critical", False) and sinfo.get("actions"):
+                previous_critical_states.append((sid, sinfo))
 
-        # 2) From COMPLETED buffer: earlier important states (recover first action)
+        # 2) From COMPLETED buffer: earlier critical states (recover first action)
         if episode_id in self.completed_states_by_episode:
             buf = self.completed_states_buffer_by_episode.get(episode_id, {})
             for sid, cinfo in self.completed_states_by_episode[episode_id].items():
-                if sid < pivot_state_id and cinfo.get("is_important", False):
+                if sid < pivot_state_id and cinfo.get("is_critical", False):
                     man = buf.get(sid)
                     if isinstance(man, dict) and "action" in man:
-                        act = man["action"]  # 1D tensor: (required_responses_per_important_state * action_dim,)
+                        act = man["action"]  # 1D tensor: (required_responses_per_critical_state * action_dim,)
                         action_dim = len(JOINT_NAMES)
                         first = act[:action_dim]
                         if not isinstance(first, torch.Tensor):
                             first = torch.as_tensor(first, dtype=torch.float32)
-                        previous_important_states.append((sid, {"actions": [first]}))
+                        previous_critical_states.append((sid, {"actions": [first]}))
 
-        if previous_important_states:
-            latest_sid, latest_info = max(previous_important_states, key=lambda x: x[0])
+        if previous_critical_states:
+            latest_sid, latest_info = max(previous_critical_states, key=lambda x: x[0])
             template_action = latest_info["actions"][0]
-            print(f"🎯 Auto-label template from previous important state {latest_sid}")
+            print(f"🎯 Auto-label template from previous critical state {latest_sid}")
         else:
             # Fallback: joint positions of the FIRST pending state in the episode
             first_state_id = min(episode_states.keys())
@@ -2765,9 +2765,9 @@ class CrowdInterface():
                 sinfo["actions"].append(template_action.clone())
                 sinfo["responses_received"] += 1
 
-            # Concatenate + pad (pad to important-shape with NaNs so tensors are uniform)
+            # Concatenate + pad (pad to critical-shape with NaNs so tensors are uniform)
             all_actions = torch.cat(sinfo["actions"][:self.required_responses_per_state], dim=0)
-            missing = self.required_responses_per_important_state - self.required_responses_per_state
+            missing = self.required_responses_per_critical_state - self.required_responses_per_state
             if missing > 0:
                 padding = torch.full((missing * action_dim,), float('nan'), dtype=torch.float32)
                 all_actions = torch.cat([all_actions, padding], dim=0)
@@ -2784,134 +2784,93 @@ class CrowdInterface():
             self.completed_states_by_episode.setdefault(episode_id, {})[sid] = {
                 "responses_received": sinfo["responses_received"],
                 "completion_time": time.time(),
-                "is_important": False  # now normal
+                "is_critical": False  # now normal
             }
             # Remove from pending
             del episode_states[sid]
             print(f"🏷️  Auto-labeled (demoted) state {sid} in episode {episode_id}")
 
     # --- State Management ---
-    def add_state(self, 
-                  joint_positions: dict, 
-                  gripper_motion: int = None, 
+    def add_state(self,
+                  joint_positions: dict,
+                  gripper_motion: int = None,
                   obs_dict: dict[str, torch.Tensor] = None,
                   episode_id: str = None,
                   left_carriage_external_force: float | None = None):
-        # Fix: Ensure episode_id is never None to prevent None key in dictionary
-        if episode_id is None:
-            episode_id = "0"  # Default episode ID
-            
-        if gripper_motion is not None:
-            self._gripper_motion = int(gripper_motion)
+        '''
+        Called by lerobot code to add states to backend.
+        '''
+        joint_positions_float = {k: float(v) for k, v in joint_positions.items()}
 
-        # Cheap, explicit cast of the 7 scalars to built-in floats
-        jp = {k: float(v) for k, v in joint_positions.items()}
-
-        # Frontend state (lightweight, no observations/actions)
         frontend_state = {
-            "joint_positions": jp,
-            "gripper": self._gripper_motion,
-            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'],
-            "left_carriage_external_force": (
-                float(left_carriage_external_force) if left_carriage_external_force is not None else None
-            )
+            "joint_positions": joint_positions_float,
+            "gripper": gripper_motion,
+            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'], # legacy
+            "left_carriage_external_force": left_carriage_external_force
         }
-        
-        # Episode-based state management - fast path to minimize latency
+
         state_id = self.next_state_id
         self.next_state_id += 1
 
-        # Persist a snapshot of the camera views to disk for THIS state.
-        # (Keeps index.html aligned with the exact observation that produced the state.)
-        try:
-            view_paths = self._persist_views_to_disk(episode_id, state_id, self._snapshot_latest_views())
-        except Exception: view_paths = {}
-
-        # Non-blocking: enqueue obs camera previews for background JPEG encoding
-        try:
-            if obs_dict is not None:
-                self._push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
-                self._push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
-        except Exception:
-            pass
+        # Persist views to disk to avoid storing in memory
+        view_paths = self._persist_views_to_disk(episode_id, state_id, self._snapshot_latest_views()) # legacy
         
-        # Deep copy obs_dict tensors (necessary for correctness) and spill to disk
-        if obs_dict is not None:
-            obs_dict_deep_copy = {}
-            for key, value in obs_dict.items():
-                if isinstance(value, torch.Tensor):
-                    obs_dict_deep_copy[key] = value.clone().detach()
-                else:
-                    obs_dict_deep_copy[key] = value
-            # Spill heavy observations to disk now and drop from RAM
-            obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
-            # Explicitly release the deep copy to encourage GC
-            del obs_dict_deep_copy
-        else:
-            obs_path = None
+        # Persist obs to disk
+        obs_dict_deep_copy = {}
+        for key, value in obs_dict.items():
+            obs_dict_deep_copy[key] = value.clone().detach()
+        obs_path = self._persist_obs_to_disk(episode_id, state_id, obs_dict_deep_copy)
+        del obs_dict_deep_copy
 
+        # Push obs to monitoring frontend
+        self._push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
+        self._push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+        
         state_info = {
             "state": frontend_state.copy(),
-            "observations": None,           # kept on disk only
-            "obs_path": obs_path,           # pointer to disk cache
+            "observations": None,
+            "obs_path": obs_path,
             "view_paths": view_paths,
             "actions": [],
             "responses_received": 0,
-            "timestamp": time.time(),
-            "served_during_stationary": None,
-            "important": False,
-            "episode_id": episode_id,
-            # NEW: segmentation bookkeeping
-            "segmentation_ready": True,   # normal states don't block serving
-            "segmentation_paths": {},     # view_name -> png path (filled if marked important)
-            "leader_submissions": 0       # --- NEW: count unique (human) submissions for Leader Mode ---
+            "critical": False,
+            "episode_id": episode_id
         }
-        
-        # Quick episode-based assignment with minimal lock time
+
         with self.state_lock:
             # Initialize episode containers if needed
             if episode_id not in self.pending_states_by_episode:
                 self.pending_states_by_episode[episode_id] = {}
                 self.completed_states_by_episode[episode_id] = {}
-                self.served_states_by_episode[episode_id] = {}
-            
-            # Add state to episode
+                
+            # Add state to pending states
             self.pending_states_by_episode[episode_id][state_id] = state_info
-            
-            # Set current serving episode if none set
-            if self.current_serving_episode is None:
-                self.current_serving_episode = episode_id
 
-            self._cancel_episode_finalize_timer_locked(episode_id)
-        
-        print(f"🟢 State {state_id} added to episode {episode_id}. Pending: {len(self.pending_states_by_episode.get(episode_id, {}))}")
+            self.current_serving_episode = episode_id
 
-    def set_last_state_to_important(self):
-        """Mark the most recent state as important (across all episodes)."""
+    def set_last_state_to_critical(self):
+        """Mark the most recent state as critical (across all episodes)."""
         with self.state_lock:
             latest_state_id = None
             latest_episode_id = None
-            latest_timestamp = -1.0
-            for episode_id, episode_states in self.pending_states_by_episode.items():
-                if not episode_states:
-                    continue
-                for sid, sinfo in episode_states.items():
-                    ts = sinfo.get("timestamp", 0.0)
-                    if ts > latest_timestamp:
-                        latest_timestamp = ts
-                        latest_state_id = sid
-                        latest_episode_id = episode_id
+            
+            # Find the latest episode and latest state within that episode
+            if self.pending_states_by_episode:
+                latest_episode_id = max(self.pending_states_by_episode.keys())
+                episode_states = self.pending_states_by_episode[latest_episode_id]
+                if episode_states:
+                    latest_state_id = max(episode_states.keys())
 
             if latest_state_id is None or latest_episode_id is None:
-                print("⚠️  No pending states to mark as important")
+                print("⚠️  No pending states to mark as critical")
                 return
 
             info = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-            if info.get('important', False):
-                # Already important: do not clobber or re-enqueue.
-                print(f"ℹ️ State {latest_state_id} already marked important; leaving VLM status unchanged.")
+            if info.get('critical', False):
+                # Already critical: do not clobber or re-enqueue.
+                print(f"ℹ️ State {latest_state_id} already marked critical; leaving VLM status unchanged.")
                 return
-            info["important"] = True
+            info["critical"] = True
             info["segmentation_ready"] = False
 
             # --- Prompt-mode gating (manual or VLM) ---
@@ -2927,7 +2886,7 @@ class CrowdInterface():
                 info.setdefault("flex_text_prompt", None)
                 info.setdefault("flex_video_id", None)
                 info["flex_ready"] = True
-            print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as important")
+            print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as critical")
 
             # always queue auto-labeling
             self.auto_label_previous_states(latest_state_id)
@@ -2940,7 +2899,7 @@ class CrowdInterface():
             obs_path_local = info.get("obs_path")
 
             # Decide whether to queue VLM after leaving the lock
-            # Default behavior: queue immediately on mark-important.
+            # Default behavior: queue immediately on mark-critical.
             # Leader Mode: do NOT queue yet; wait for n_leaders unique submissions.
             should_queue_vlm = False
             if self._vlm_enabled and (not self.leader_mode):
@@ -2949,7 +2908,7 @@ class CrowdInterface():
                     should_queue_vlm = True
 
             st_obj = info["state"]
-            # Do not return early - we want to save the important-state image regardless.
+            # Do not return early - we want to save the critical-state image regardless.
             segmentation_needed = True
             if not self._gripper_is_grasped(st_obj):
                 info["segmentation_paths"] = {}
@@ -3075,19 +3034,19 @@ class CrowdInterface():
 
         return saved
 
-    def auto_label_previous_states(self, important_state_id):
+    def auto_label_previous_states(self, critical_state_id):
         """
-        Queue an auto-labeling task for unimportant pending states that are 
-        earlier than the given important state ID.
+        Queue an auto-labeling task for uncritical pending states that are 
+        earlier than the given critical state ID.
         """
         try:
             if self._shutting_down:
                 return
             # Add the task to the queue (non-blocking)
-            self.auto_label_queue.put_nowait(important_state_id)
-            print(f"📝 Queued auto-labeling task for states before {important_state_id}")
+            self.auto_label_queue.put_nowait(critical_state_id)
+            print(f"📝 Queued auto-labeling task for states before {critical_state_id}")
         except queue.Full:
-            print(f"⚠️  Auto-labeling queue is full, skipping task for state {important_state_id}")
+            print(f"⚠️  Auto-labeling queue is full, skipping task for state {critical_state_id}")
         except Exception as e:
             print(f"❌ Error queuing auto-labeling task: {e}")
     
@@ -3113,7 +3072,7 @@ class CrowdInterface():
                 if not available_episodes:
                     return {
                         "status": "no_pending_states", 
-                        "blocked_important_states": False
+                        "blocked_critical_states": False
                     }  # No episodes to serve
                 
                 # Move to the earliest available episode (safe since None is filtered out)
@@ -3124,25 +3083,14 @@ class CrowdInterface():
             if not episode_states:
                 return {
                     "status": "no_pending_states_in_episode", 
-                    "blocked_important_states": False
+                    "blocked_critical_states": False
                 }
             
             # Select state based on robot movement status and async collection mode
             if self.robot_is_moving is False and not self.is_async_collection:
                 # Robot not moving and not in async mode - prioritize LATEST state from ALL EPISODES for immediate execution
-                latest_state_id = None
-                latest_timestamp = 0
-                latest_episode = None
-                
-                # Find the most recent state across all episodes
-                for ep_id, ep_states in self.pending_states_by_episode.items():
-                    if not ep_states:
-                        continue
-                    for state_id, state_data in ep_states.items():
-                        if state_data["timestamp"] > latest_timestamp:
-                            latest_timestamp = state_data["timestamp"]
-                            latest_state_id = state_id
-                            latest_episode = ep_id
+                latest_episode = max(self.pending_states_by_episode.keys())
+                latest_state_id = max(self.pending_states_by_episode[latest_episode].keys())
                 
                 if latest_state_id is not None:
                     state_info = self.pending_states_by_episode[latest_episode][latest_state_id]
@@ -3152,7 +3100,7 @@ class CrowdInterface():
                     # Fallback if no states found
                     return {
                         "status": "no_pending_states", 
-                        "blocked_important_states": False
+                        "blocked_critical_states": False
                     }
             else:
                 # Robot moving OR async collection mode - select random state for diverse data collection from current serving episode
@@ -3161,9 +3109,9 @@ class CrowdInterface():
                 latest_state_id = random_state_id
                 selected_episode = self.current_serving_episode
             
-            # ---- Strict prompt gating for important states (manual or VLM) ----
+            # ---- Strict prompt gating for critical states (manual or VLM) ----
             need_prompt_gate = (
-                state_info.get("important", False)
+                state_info.get("critical", False)
                 and self._prompt_mode_requires_gate()
                 and not self._is_prompt_ready(state_info)
             )
@@ -3174,64 +3122,58 @@ class CrowdInterface():
                     need_prompt_gate = False  # allow serving until leader threshold is met
 
             if need_prompt_gate:
-                best_pref = None  # prefer non-important, or important with prompt+seg ready
-                best_any  = None  # fallback: important with prompt ready (seg may still be pending)
+                best_pref = None  # prefer non-critical, or critical with prompt+seg ready
+                best_any  = None  # fallback: critical with prompt ready (seg may still be pending)
 
                 for ep_id, ep_states in self.pending_states_by_episode.items():
                     for sid, si in ep_states.items():
-                        # STRICT rule: skip important states whose prompt isn't ready
-                        if si.get("important", False) and not self._is_prompt_ready(si):
+                        # STRICT rule: skip critical states whose prompt isn't ready
+                        if si.get("critical", False) and not self._is_prompt_ready(si):
                             continue
 
-                        ts = si.get("timestamp", 0.0)
-                        candidate = (ts, sid, ep_id, si)
+                        candidate = (sid, ep_id, si)
 
-                        # Prefer to avoid unsegmented important states (soft preference)
-                        if si.get("important", False) and not si.get("segmentation_ready", False):
-                            if best_any is None or ts > best_any[0]:
+                        # Prefer to avoid unsegmented critical states (soft preference)
+                        if si.get("critical", False) and not si.get("segmentation_ready", False):
+                            if best_any is None or sid > best_any[0]:
                                 best_any = candidate
                         else:
-                            if best_pref is None or ts > best_pref[0]:
+                            if best_pref is None or sid > best_pref[0]:
                                 best_pref = candidate
 
                 chosen = best_pref or best_any
                 if chosen:
-                    _, latest_state_id, best_ep, best_si = chosen
+                    latest_state_id, best_ep, best_si = chosen
                     state_info = best_si
                     episode_states = self.pending_states_by_episode[best_ep]
                     selected_episode = best_ep
                 else:
                     # No safe alternatives; block serving for now
                     mode = "manual" if self.use_manual_prompt else ("VLM" if self.use_vlm_prompt else "unknown")
-                    print(f"⏸️ Prompt not ready for important state {latest_state_id} ({mode} mode); holding back serving.")
+                    print(f"⏸️ Prompt not ready for critical state {latest_state_id} ({mode} mode); holding back serving.")
                     
-                    # Return info about blocked important states for frontend polling optimization
+                    # Return info about blocked critical states for frontend polling optimization
                     return {
                         "status": "no_ready_states",
-                        "blocked_important_states": True,
+                        "blocked_critical_states": True,
                         "prompt_mode": mode
                     }
 
-            # (Soft) preference to avoid unsegmented important states (kept for when VLM is ready)
-            if state_info.get("important", False) and not state_info.get("segmentation_ready", False):
-                best_sid = None; best_ep = None; best_ts = -1.0
+            # (Soft) preference to avoid unsegmented critical states (kept for when VLM is ready)
+            if state_info.get("critical", False) and not state_info.get("segmentation_ready", False):
+                best_sid = None; best_ep = None; best_sid_max = -1
                 for ep_id, ep_states in self.pending_states_by_episode.items():
                     for sid, si in ep_states.items():
-                        if si.get("important", False) and not si.get("segmentation_ready", False):
+                        if si.get("critical", False) and not si.get("segmentation_ready", False):
                             continue  # prefer others first
-                        ts = si.get("timestamp", 0.0)
-                        if ts > best_ts:
-                            best_ts, best_sid, best_ep, best_si = ts, sid, ep_id, si
+                        if sid > best_sid_max:
+                            best_sid_max, best_sid, best_ep, best_si = sid, sid, ep_id, si
                 if best_sid is not None:
                     state_info = best_si
                     latest_state_id = best_sid
                     episode_states = self.pending_states_by_episode[best_ep]
                     selected_episode = best_ep
-                # else: keep the original important state even though segmentation is pending
-            
-            # Mark state as served
-            if state_info["served_during_stationary"] is None:
-                state_info["served_during_stationary"] = not (self.robot_is_moving or self.is_async_collection)
+                # else: keep the original critical state even though segmentation is pending
             
             # Track which state was served to this session (episode-aware)
             serving_episode = selected_episode if (self.robot_is_moving is False and not self.is_async_collection) else self.current_serving_episode
@@ -3239,15 +3181,12 @@ class CrowdInterface():
                 self.served_states_by_episode[serving_episode] = {}
             self.served_states_by_episode[serving_episode][session_id] = latest_state_id
 
-            # Snapshot an execution gate for this session so only this (fresh) state
-            # can trigger immediate motion, and only if no newer state appears.
-            if state_info["served_during_stationary"]:
-                self._exec_gate_by_session[session_id] = {
-                    "state_id": latest_state_id,
-                    "episode_id": serving_episode,
-                    # Snapshot of "newest existing state" at serve time; if this changes, gate fails.
-                    "served_max_state_id": self._global_max_existing_state_id(),
-                }
+            self._exec_gate_by_session[session_id] = {
+                "state_id": latest_state_id,
+                "episode_id": serving_episode,
+                # Snapshot of "newest existing state" at serve time; if this changes, gate fails.
+                "served_max_state_id": self._global_max_existing_state_id(),
+            }
 
             
             # Prepare response
@@ -3255,17 +3194,17 @@ class CrowdInterface():
             state["state_id"] = latest_state_id
             state["episode_id"] = serving_episode
             # expose importance and prompt text for THIS state only
-            state["is_important"] = bool(state_info.get("important", False))
+            state["is_critical"] = bool(state_info.get("critical", False))
             # prefer inline flex_text_prompt; else cache fallback
             cached_text = self._flex_text_by_episode.get(serving_episode, {}).get(latest_state_id)
             state["flex_text_prompt"] = state_info.get("flex_text_prompt") or cached_text
 
             # expose pending flags so UI can show status (prompt-mode only)
             state["segmentation_pending"] = bool(
-                state_info.get("important", False) and not state_info.get("segmentation_ready", False)
+                state_info.get("critical", False) and not state_info.get("segmentation_ready", False)
             )
             prompt_pending = (
-                state_info.get("important", False)
+                state_info.get("critical", False)
                 and self._prompt_mode_requires_gate()
                 and not self._is_prompt_ready(state_info)
             )
@@ -3278,7 +3217,7 @@ class CrowdInterface():
             state["flex_video_id"] = vid
 
             # (Optional) surface leader progress for UI/monitoring
-            if self.leader_mode and state_info.get("important", False):
+            if self.leader_mode and state_info.get("critical", False):
                 state["leaders_so_far"] = int(state_info.get("leader_submissions", 0))
                 state["n_leaders"] = int(self.n_leaders)
             else:
@@ -3339,12 +3278,12 @@ class CrowdInterface():
                 return False
             
             # --- capture BEFORE incrementing ---
-            was_important = bool(state_info.get("important", False))
+            was_critical = bool(state_info.get("critical", False))
             prior_responses = int(state_info.get("responses_received", 0))
-            first_response_to_important = (was_important and prior_responses == 0)
+            first_response_to_critical = (was_critical and prior_responses == 0)
             
-            required_responses = (self.required_responses_per_important_state 
-                                if state_info['important'] else self.required_responses_per_state)
+            required_responses = (self.required_responses_per_critical_state 
+                                if state_info['critical'] else self.required_responses_per_state)
             
             # Extract joint positions and gripper action from response
             joint_positions = response_data.get("joint_positions", {})
@@ -3383,7 +3322,7 @@ class CrowdInterface():
 
             # Set as goal only if this is the exact state last served to THIS session,
             # and no newer state has been added since serving (no TTL).
-            if state_info["responses_received"] == 0 and state_info["served_during_stationary"] is True:
+            if state_info["responses_received"] == 0:
                 gate = self._exec_gate_by_session.get(session_id)
                 current_max = self._global_max_existing_state_id()
                 gate_ok = (
@@ -3409,7 +3348,7 @@ class CrowdInterface():
             state_info["responses_received"] += 1
 
             # --- Leader Mode: count unique leaders (per-session) and stage VLM enqueue ---
-            if state_info.get("important", False) and self.leader_mode:
+            if state_info.get("critical", False) and self.leader_mode:
                 # Track unique sessions to avoid a single user satisfying all leaders.
                 leader_sessions = state_info.setdefault("leader_sessions", set())
                 if session_id not in leader_sessions:
@@ -3443,24 +3382,24 @@ class CrowdInterface():
                   f"({state_info['responses_received']}/{required_responses})")
 
             # NEW: if this was the FIRST response to an IMPORTANT state:
-            #       1) demote earlier important states with 0 responses
+            #       1) demote earlier critical states with 0 responses
             #       2) auto-label those demoted states exactly like normal states
-            if first_response_to_important:
-                demoted_ids = self._demote_earlier_unanswered_importants_locked(found_episode, state_id)
+            if first_response_to_critical:
+                demoted_ids = self._demote_earlier_unanswered_criticals_locked(found_episode, state_id)
                 if demoted_ids:
                     # Auto-label the newly demoted states right now (same rules as _process_auto_labeling)
-                    self._auto_label_states_like_unimportant_locked(found_episode, state_id, demoted_ids)
+                    self._auto_label_states_like_uncritical_locked(found_episode, state_id, demoted_ids)
 
-            # Stage important maincam save on first label
-            if state_info.get("important", False) and state_info["responses_received"] == 1:
+            # Stage critical maincam save on first label
+            if state_info.get("critical", False) and state_info["responses_received"] == 1:
                 obs_path_first = state_info.get("obs_path")
                 if obs_path_first:
                     save_on_label_args = (found_episode, state_id, obs_path_first)
                 else:
-                    print(f"⚠️ No obs_path found for important state {state_id}")
+                    print(f"⚠️ No obs_path found for critical state {state_id}")
 
             # --- Progressive autofill for IMPORTANT states ---
-            if state_info.get("important", False) and self.autofill_important_states:
+            if state_info.get("critical", False) and self.autofill_critical_states:
                 # Per submission, total filled should advance by `num_autofill_actions`
                 # (1 real submission already counted above, plus (N-1) clones).
                 remaining = max(0, required_responses - state_info["responses_received"])
@@ -3477,9 +3416,9 @@ class CrowdInterface():
                 # Complete the state and add to dataset
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
-                if required_responses < self.required_responses_per_important_state:
+                if required_responses < self.required_responses_per_critical_state:
                     # Pad with inf values
-                    missing_responses = self.required_responses_per_important_state - required_responses
+                    missing_responses = self.required_responses_per_critical_state - required_responses
                     action_dim = len(JOINT_NAMES)
                     padding_size = missing_responses * action_dim
                     padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
@@ -3503,7 +3442,7 @@ class CrowdInterface():
                     self.completed_states_by_episode[found_episode] = {}
                 
                 # --- carry prompt artifacts into completed metadata (if present now) ---
-                is_imp = bool(state_info.get("important", False))
+                is_imp = bool(state_info.get("critical", False))
                 text_str = (state_info.get("flex_text_prompt") or "").strip()
                 _vid_raw = state_info.get("flex_video_id")
                 try:
@@ -3514,7 +3453,7 @@ class CrowdInterface():
                 self.completed_states_by_episode[found_episode][state_id] = {
                     "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
-                    "is_important": is_imp,
+                    "is_critical": is_imp,
                     "flex_ready": self._is_prompt_ready(state_info) if self._prompt_mode_requires_gate() else True,
                     "flex_text_prompt": (text_str if text_str else None),
                     "flex_video_id": vid_val,
@@ -3536,9 +3475,9 @@ class CrowdInterface():
         if save_on_label_args is not None:
             ep, sid, obs_path = save_on_label_args
             try:
-                self._save_important_maincam_frame_on_label(ep, sid, obs_path)
+                self._save_critical_maincam_frame_on_label(ep, sid, obs_path)
             except Exception as e:
-                print(f"⚠️ Error saving important cam_main on label (ep={ep}, sid={sid}): {e}")
+                print(f"⚠️ Error saving critical cam_main on label (ep={ep}, sid={sid}): {e}")
 
         if queue_vlm_payload is not None:
             ep, sid, vpaths = queue_vlm_payload
@@ -3552,8 +3491,8 @@ class CrowdInterface():
             episodes_info = {}
             total_pending = 0
             
-            # Only expose episodes that still have pending states (hide completed episodes entirely)
-            all_episode_ids = set(self.pending_states_by_episode.keys())
+            # Include episodes that have either pending states OR completed states (so completed states remain visible)
+            all_episode_ids = set(self.pending_states_by_episode.keys()) | set(self.completed_states_by_episode.keys())
             
             # Process each episode
             for episode_id in sorted(all_episode_ids):
@@ -3563,8 +3502,8 @@ class CrowdInterface():
                 if episode_id in self.pending_states_by_episode:
                     for state_id, info in self.pending_states_by_episode[episode_id].items():
                         required_responses = (
-                            self.required_responses_per_important_state
-                            if info.get('important', False)
+                            self.required_responses_per_critical_state
+                            if info.get('critical', False)
                             else self.required_responses_per_state
                         )
                         # --- NEW: compute prompt presence for pending states ---
@@ -3577,7 +3516,7 @@ class CrowdInterface():
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": required_responses - info["responses_received"],
-                            "is_important": bool(info.get("important", False)),
+                            "is_critical": bool(info.get("critical", False)),
                             "has_flex_text": has_flex_text,
                             "has_flex_video": has_flex_video,
                             # Legacy aliases to avoid breaking older monitor UI
@@ -3599,7 +3538,7 @@ class CrowdInterface():
                         episode_states[state_id] = {
                             "responses_received": info["responses_received"],
                             "responses_needed": 0,  # Completed
-                            "is_important": bool(info.get("is_important", False)),
+                            "is_critical": bool(info.get("is_critical", False)),
                             "has_flex_text": has_flex_text,
                             "has_flex_video": has_flex_video,
                             "has_vlm_text": has_flex_text,   # legacy
@@ -3620,7 +3559,7 @@ class CrowdInterface():
                 "total_pending": total_pending,
                 "current_serving_episode": self.current_serving_episode,
                 "required_responses_per_state": self.required_responses_per_state,
-                "required_responses_per_important_state": self.required_responses_per_important_state,
+                "required_responses_per_critical_state": self.required_responses_per_critical_state,
                 "episodes": episodes_info
             }
     
@@ -4497,7 +4436,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         Query params: episode_id=<str|int>, state_id=<int>
         Returns:
           - maincam_data_url
-          - is_important
+          - is_critical
           - flex_text_prompt
           - flex_video_id
           - description_bank / description_bank_text
@@ -4522,7 +4461,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 p_ep = crowd_interface.pending_states_by_episode.get(ep, {})
                 p_info = p_ep.get(sid)
                 if p_info is not None:
-                    is_imp = bool(p_info.get("important", False))
+                    is_imp = bool(p_info.get("critical", False))
                     obs_path = p_info.get("obs_path")
                     # Text: prefer new, then cache
                     flex_text = (p_info.get("flex_text_prompt")
@@ -4540,7 +4479,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                     c_meta = c_ep.get(sid)
                     if c_meta is None:
                         return jsonify({"ok": False, "error": f"state {sid} not found in episode {ep}"}), 404
-                    is_imp = bool(c_meta.get("is_important", False))
+                    is_imp = bool(c_meta.get("is_critical", False))
                     flex_text = (c_meta.get("flex_text_prompt")
                                  or crowd_interface._flex_text_by_episode.get(ep, {}).get(sid)
                                  or "")
@@ -4568,7 +4507,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "ok": True,
                 "episode_id": ep,
                 "state_id": sid,
-                "is_important": is_imp,
+                "is_critical": is_imp,
                 "flex_text_prompt": flex_text,
                 "flex_video_id": flex_video_id,
                 "maincam_data_url": maincam_url,
@@ -4697,14 +4636,14 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                 "state_id": newest_state_id,
                 "episode_id": newest_episode_id,
                 "current_serving_episode": current_episode,
-                "timestamp": newest_state_data["timestamp"],
+                "timestamp": time.time(),  # Use current time since we no longer store state timestamps
                 "responses_received": newest_state_data["responses_received"],
                 "responses_required": (
-                    crowd_interface.required_responses_per_important_state
-                    if newest_state_data.get("important", False)
+                    crowd_interface.required_responses_per_critical_state
+                    if newest_state_data.get("critical", False)
                     else crowd_interface.required_responses_per_state
                 ),
-                "is_important": newest_state_data.get("important", False),
+                "is_critical": newest_state_data.get("critical", False),
                 "views": crowd_interface._snapshot_latest_views(),  # lightweight snapshot (pre-encoded)
                 "joint_positions": newest_state.get("joint_positions", {}),
                 "gripper": newest_state.get("gripper", 0),

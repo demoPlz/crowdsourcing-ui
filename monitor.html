@@ -93,9 +93,9 @@
         .state-bar-container.clickable { cursor:pointer; }
         .state-bar { background:linear-gradient(180deg,#e2e8f0,#cbd5e1); border-radius:2px 2px 0 0; transition:height .3s ease, box-shadow .15s ease, transform .1s ease; position:relative; min-height:2px; width:100%; }
         .state-bar.empty { background:#e2e8f0; height:100% !important; }
-        .state-bar.important-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
-        .state-bar.important-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
-        .state-bar.important-awaiting-vlm { background:linear-gradient(180deg,#f9a8d4,#f472b6) !important; box-shadow:inset 0 0 0 1px rgba(219,39,119,.25); }
+        .state-bar.critical-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
+        .state-bar.critical-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
+        .state-bar.critical-awaiting-vlm { background:linear-gradient(180deg,#f9a8d4,#f472b6) !important; box-shadow:inset 0 0 0 1px rgba(219,39,119,.25); }
         .state-bar.regular-complete { background:linear-gradient(180deg,#2563eb,#1d4ed8) !important; }
         .state-bar.regular-incomplete { background:linear-gradient(180deg,#60a5fa,#2563eb) !important; }
         .state-bar-label { position:absolute; bottom:-16px; left:50%; transform:translateX(-50%); font-size:10px; color:#64748b; white-space:nowrap; }
@@ -149,7 +149,7 @@
         }
         .toast.show { opacity:1; transform:translateY(0); }
 
-        /* === NEW: Segmented toggle for Important-only === */
+        /* === NEW: Segmented toggle for Critical-only === */
         .segmented {
             display:inline-flex; border:1px solid #cbd5e1; border-radius:12px; overflow:hidden; background:#f8fafc;
         }
@@ -160,12 +160,12 @@
         .segmented button + button { border-left:1px solid #e2e8f0; }
         .segmented button.active { background:#2563eb; color:white; }
 
-        /* === NEW: Important-only chart adjustments === */
-        .chart-bars.important-only .state-bar-container.is-regular { display:none; }
-        .chart-bars.important-only .state-bar-container.is-important {
+        /* === NEW: Critical-only chart adjustments === */
+        .chart-bars.critical-only .state-bar-container.is-regular { display:none; }
+        .chart-bars.critical-only .state-bar-container.is-critical {
             width:12px; min-width:12px; max-width:28px;
         }
-        .chart-bars.important-only .state-bar-container.clickable .state-bar {
+        .chart-bars.critical-only .state-bar-container.clickable .state-bar {
             box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
         }
         .state-bar-container.clickable .state-bar {
@@ -213,7 +213,7 @@
         }
 
         /* Keep the bar clickable even if awaiting VLM */
-        .state-bar-container.is-important .state-bar.important-awaiting-vlm {
+        .state-bar-container.is-critical .state-bar.critical-awaiting-vlm {
             cursor:pointer;
             box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
         }
@@ -323,7 +323,7 @@
                     <h2>Pending States</h2>
                     <div class="segmented" role="tablist" aria-label="State visibility mode">
                         <button id="toggle-all" role="tab" aria-selected="false">All</button>
-                        <button id="toggle-important" class="active" role="tab" aria-selected="true" title="Keyboard: press I">Important only</button>
+                        <button id="toggle-critical" class="active" role="tab" aria-selected="true" title="Keyboard: press I">Critical only</button>
                     </div>
                 </div>
                 <div class="episode-charts-container" id="episode-charts-container"></div>
@@ -480,7 +480,7 @@
         const episodeChartsContainer = document.getElementById('episode-charts-container');
         let episodes = [];
         let REQUIRED_RESPONSES_PER_STATE = 1;
-        let REQUIRED_RESPONSES_PER_IMPORTANT_STATE = 10;
+        let REQUIRED_RESPONSES_PER_CRITICAL_STATE = 10;
 
         let userIsScrolling = false;
         let scrollTimeout = null;
@@ -650,8 +650,8 @@
                 </div>
                 <div class="chart-container">
                     <div class="chart-y-axis">
-                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_IMPORTANT_STATE}</div>
-                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_IMPORTANT_STATE/2)}</div>
+                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_CRITICAL_STATE}</div>
+                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_CRITICAL_STATE/2)}</div>
                         <div class="y-axis-label">0</div>
                     </div>
                     <div class="chart-bars" id="episode-${episode.id}-bars"></div>
@@ -665,23 +665,23 @@
             episode.statsElement = stats;
             episode.barEls = {};
             episode.responsesTotal = 0;
-            episode.importantCount = 0;
+            episode.criticalCount = 0;
             episode.regularCount = 0;
 
             /* NEW: apply current filter class to new episode containers */
-            if (importantOnlyMode) {
-                bars.classList.add('important-only');
+            if (criticalOnlyMode) {
+                bars.classList.add('critical-only');
             }
         }
 
         // === NEW: clicked/visited state tracking ===
-        const clickedImportantStates = new Set(JSON.parse(localStorage.getItem('clickedImportantStates') || '[]'));
+        const clickedCriticalStates = new Set(JSON.parse(localStorage.getItem('clickedCriticalStates') || '[]'));
         function stateKey(ep, st) { return `${ep}:${st}`; }
-        function markClickedImportant(ep, st) {
+        function markClickedCritical(ep, st) {
             const key = stateKey(ep, st);
-            if (!clickedImportantStates.has(key)) {
-                clickedImportantStates.add(key);
-                localStorage.setItem('clickedImportantStates', JSON.stringify([...clickedImportantStates]));
+            if (!clickedCriticalStates.has(key)) {
+                clickedCriticalStates.add(key);
+                localStorage.setItem('clickedCriticalStates', JSON.stringify([...clickedCriticalStates]));
             }
             // Toggle class if element already exists
             const episode = episodes.find(e => e.id === ep);
@@ -780,18 +780,18 @@
         }
 
         // Bind click once for eligible bars
-        function bindBarClickIfEligible(barContainer, episodeId, stateId, isImportant, hasVlmBoth) {
+        function bindBarClickIfEligible(barContainer, episodeId, stateId, isCritical, hasVlmBoth) {
             barContainer.dataset.episodeId = String(episodeId);
             barContainer.dataset.stateId   = String(stateId);
-            barContainer.classList.toggle('is-important', !!isImportant);
-            barContainer.classList.toggle('is-regular',   !isImportant);
+            barContainer.classList.toggle('is-critical', !!isCritical);
+            barContainer.classList.toggle('is-regular',   !isCritical);
 
-            // NEW: important states are always clickable (even if VLM is missing)
-            if (isImportant) {
+            // NEW: critical states are always clickable (even if VLM is missing)
+            if (isCritical) {
                 barContainer.classList.add('clickable');
                 if (barContainer.dataset.clickBound !== '1') {
                     barContainer.setAttribute('tabindex', '0'); // keyboard focus
-                    const openFn = () => { markClickedImportant(episodeId, stateId); openVlmModal(episodeId, stateId); };
+                    const openFn = () => { markClickedCritical(episodeId, stateId); openVlmModal(episodeId, stateId); };
                     barContainer.addEventListener('click', openFn);
                     barContainer.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFn(); });
                     barContainer.dataset.clickBound = '1';
@@ -801,12 +801,12 @@
                 barContainer.removeAttribute('tabindex');
             }
 
-            // Hover preview (unchanged): only for important bars
-            if (isImportant && barContainer.dataset.hoverBound !== '1') {
+            // Hover preview (unchanged): only for critical bars
+            if (isCritical && barContainer.dataset.hoverBound !== '1') {
                 let hoverMoveHandler = null;
                 let hoverEnterTimeout = null;
                 barContainer.addEventListener('mouseenter', (e) => {
-                    if (!importantOnlyMode) return;
+                    if (!criticalOnlyMode) return;
                     showPopover(e.clientX, e.clientY, null); // loading
                     hoverEnterTimeout = setTimeout(async () => {
                         const url = await getMaincamPreview(episodeId, stateId);
@@ -824,30 +824,30 @@
             }
         }
 
-        function updateEpisodeChart(episodeId, stateId, responsesReceived, isImportant, forceRefresh=false, hasVlmArtifacts /* bool */) {
+        function updateEpisodeChart(episodeId, stateId, responsesReceived, isCritical, forceRefresh=false, hasVlmArtifacts /* bool */) {
             const episode = episodes.find(ep => ep.id === episodeId);
             if (!episode || !episode.barsContainer) return;
 
             if (forceRefresh) {
                 const values = Object.values(episode.states || {});
-                let totalResponses=0, important=0, regular=0;
-                for (const v of values) { totalResponses += v.responses||0; if (v.isImportant) important++; else regular++; }
-                episode.responsesTotal=totalResponses; episode.importantCount=important; episode.regularCount=regular;
+                let totalResponses=0, critical=0, regular=0;
+                for (const v of values) { totalResponses += v.responses||0; if (v.isCritical) critical++; else regular++; }
+                episode.responsesTotal=totalResponses; episode.criticalCount=critical; episode.regularCount=regular;
                 if (episode.statsElement) {
-                    episode.statsElement.textContent = `${values.length} states (🔴${important} 🔵${regular}), ${totalResponses} responses`;
+                    episode.statsElement.textContent = `${values.length} states (🔴${critical} 🔵${regular}), ${totalResponses} responses`;
                 }
                 return;
             }
             if (!episode.states) episode.states = {};
             const prev = episode.states[stateId];
-            if (!prev || prev.responses !== responsesReceived || prev.isImportant !== !!isImportant || prev.hasVlmArtifacts !== (!!hasVlmArtifacts)) {
+            if (!prev || prev.responses !== responsesReceived || prev.isCritical !== !!isCritical || prev.hasVlmArtifacts !== (!!hasVlmArtifacts)) {
                 if (prev) {
                     episode.responsesTotal -= prev.responses||0;
-                    if (prev.isImportant) episode.importantCount--; else episode.regularCount--;
+                    if (prev.isCritical) episode.criticalCount--; else episode.regularCount--;
                 }
                 episode.responsesTotal += (responsesReceived||0);
-                if (isImportant) episode.importantCount++; else episode.regularCount++;
-                episode.states[stateId] = { responses: responsesReceived||0, isImportant:!!isImportant, hasVlmArtifacts:!!hasVlmArtifacts };
+                if (isCritical) episode.criticalCount++; else episode.regularCount++;
+                episode.states[stateId] = { responses: responsesReceived||0, isCritical:!!isCritical, hasVlmArtifacts:!!hasVlmArtifacts };
             }
 
             let barContainer = episode.barEls[stateId];
@@ -868,40 +868,40 @@
             }
 
             const bar = barContainer.firstChild;
-            const required = isImportant ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+            const required = isCritical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
             const hasVlm = (hasVlmArtifacts === undefined) ? true : !!hasVlmArtifacts;
 
             bar.className = 'state-bar';
             if ((responsesReceived||0) === 0) {
                 bar.style.height = '100%';
-                if (isImportant && !hasVlm) bar.classList.add('important-awaiting-vlm');
+                if (isCritical && !hasVlm) bar.classList.add('critical-awaiting-vlm');
                 else bar.classList.add('empty');
             } else {
                 const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
                 bar.style.height = `${pct}%`;
-                if (isImportant && !hasVlm) bar.classList.add('important-awaiting-vlm');
-                else if (isImportant) bar.classList.add(responsesReceived >= required ? 'important-complete' : 'important-incomplete');
+                if (isCritical && !hasVlm) bar.classList.add('critical-awaiting-vlm');
+                else if (isCritical) bar.classList.add(responsesReceived >= required ? 'critical-complete' : 'critical-incomplete');
                 else bar.classList.add(responsesReceived >= required ? 'regular-complete' : 'regular-incomplete');
             }
 
             const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
-            const vlmStr = isImportant ? (hasVlm ? 'VLM ✓ (text+video)' : 'VLM missing') : 'Regular';
-            const clicked = clickedImportantStates.has(stateKey(episodeId, stateId)); /* NEW */
+            const vlmStr = isCritical ? (hasVlm ? 'VLM ✓ (text+video)' : 'VLM missing') : 'Regular';
+            const clicked = clickedCriticalStates.has(stateKey(episodeId, stateId)); /* NEW */
             // Remove title attribute to eliminate hover text tooltip
 
             // NEW: role, state classes, clicked marker
-            barContainer.classList.toggle('is-important', !!isImportant);
-            barContainer.classList.toggle('is-regular', !isImportant);
+            barContainer.classList.toggle('is-critical', !!isCritical);
+            barContainer.classList.toggle('is-regular', !isCritical);
             barContainer.classList.toggle('clicked', clicked);
             if (clicked) barContainer.setAttribute('aria-pressed','true'); else barContainer.removeAttribute('aria-pressed');
 
             // Bind click (if eligible) + hover
-            bindBarClickIfEligible(barContainer, episodeId, stateId, !!isImportant, !!hasVlm);
+            bindBarClickIfEligible(barContainer, episodeId, stateId, !!isCritical, !!hasVlm);
 
             // Header stats
             if (episode.statsElement) {
                 const count = Object.keys(episode.states).length;
-                episode.statsElement.textContent = `${count} states (🔴${episode.importantCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
+                episode.statsElement.textContent = `${count} states (🔴${episode.criticalCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
             }
         }
 
@@ -932,7 +932,7 @@
 
         function processMonitoringData(data) {
             if (data.required_responses_per_state) REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
-            if (data.required_responses_per_important_state) REQUIRED_RESPONSES_PER_IMPORTANT_STATE = data.required_responses_per_important_state;
+            if (data.required_responses_per_critical_state) REQUIRED_RESPONSES_PER_CRITICAL_STATE = data.required_responses_per_critical_state;
             if (!data.episodes) return;
 
             pruneMissingEpisodes(Object.keys(data.episodes));
@@ -956,9 +956,9 @@
                 if (episodeData.states) {
                     for (const [sidStr, info] of Object.entries(episodeData.states)) {
                         const sid = parseInt(sidStr, 10);
-                        const isImportant = !!(info.is_important || false);
+                        const isCritical = !!(info.is_critical || false);
                         const hasFlexBoth = Boolean(info.has_flex_text) && Boolean(info.has_flex_video);
-                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isImportant, false, (isImportant ? hasFlexBoth : true));
+                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isCritical, false, (isCritical ? hasFlexBoth : true));
                     }
                 }
 
@@ -978,7 +978,7 @@
             updateCurrentEpisodeIndicator();
 
             /* NEW: ensure filter is applied after updates */
-            applyImportantOnlyMode();
+            applyCriticalOnlyMode();
             
             /* Update modal navigation if modal is open */
             if (vlmModal.classList.contains('show')) {
@@ -996,9 +996,9 @@
                 if (data.status === 'success') {
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     currentStateId.textContent = data.state_id || '--';
-                    if (data.is_important !== undefined) {
-                        stateType.textContent = data.is_important ? '🔴 Important' : '🔵 Regular';
-                        const required = data.is_important ? REQUIRED_RESPONSES_PER_IMPORTANT_STATE : REQUIRED_RESPONSES_PER_STATE;
+                    if (data.is_critical !== undefined) {
+                        stateType.textContent = data.is_critical ? '🔴 Critical' : '🔵 Regular';
+                        const required = data.is_critical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
                         const received = data.responses_received || 0;
                         stateResponses.textContent = `${received}/${required}`;
                     } else {
@@ -1224,7 +1224,7 @@
                 const data = await resp.json();
                 if (!resp.ok || !data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Save failed');
 
-                markClickedImportant(episodeId, stateId);
+                markClickedCritical(episodeId, stateId);
                 
                 // Update the current text prompt in the modal
                 const savedText = isManualMode ? (manualTextEl.value || '').trim() : modalContext.selectedText;
@@ -1254,12 +1254,12 @@
         vlmModal.addEventListener('click', (e) => { if (e.target === vlmModal) closeModal(); });
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && vlmModal.classList.contains('show')) closeModal(); });
         
-        // Navigation between important states with arrow keys
-        function getAllImportantStates() {
+        // Navigation between critical states with arrow keys
+        function getAllCriticalStates() {
             const states = [];
             for (const episode of episodes) {
                 for (const [stateId, stateInfo] of Object.entries(episode.states || {})) {
-                    if (stateInfo.isImportant) {
+                    if (stateInfo.isCritical) {
                         states.push({
                             episodeId: episode.id,
                             stateId: parseInt(stateId, 10),
@@ -1273,18 +1273,18 @@
         }
 
         function updateModalNavigation() {
-            const allImportant = getAllImportantStates();
-            const currentIndex = allImportant.findIndex(s => 
+            const allCritical = getAllCriticalStates();
+            const currentIndex = allCritical.findIndex(s => 
                 s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
             );
 
             // Update squares
             modalNavSquares.innerHTML = '';
-            allImportant.forEach((state, index) => {
+            allCritical.forEach((state, index) => {
                 const square = document.createElement('div');
                 square.className = 'modal-nav-square';
                 
-                const isVisited = clickedImportantStates.has(stateKey(state.episodeId, state.stateId));
+                const isVisited = clickedCriticalStates.has(stateKey(state.episodeId, state.stateId));
                 const isCurrent = index === currentIndex;
                 
                 // Start with default gray appearance, no flashing
@@ -1304,7 +1304,7 @@
 
             // Update info text
             navCurrentIndex.textContent = currentIndex + 1;
-            navTotalCount.textContent = allImportant.length;
+            navTotalCount.textContent = allCritical.length;
         }
 
         async function checkStateLabelStatus(episodeId, stateId, square, isVisited) {
@@ -1327,13 +1327,13 @@
             }
         }
 
-        function navigateToAdjacentImportantState(direction) {
+        function navigateToAdjacentCriticalState(direction) {
             if (!vlmModal.classList.contains('show') || !modalContext.episodeId || !modalContext.stateId) return;
             
-            const allImportant = getAllImportantStates();
-            if (allImportant.length <= 1) return;
+            const allCritical = getAllCriticalStates();
+            if (allCritical.length <= 1) return;
             
-            const currentIndex = allImportant.findIndex(s => 
+            const currentIndex = allCritical.findIndex(s => 
                 s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
             );
             
@@ -1341,27 +1341,27 @@
             
             let nextIndex;
             if (direction === 'next') {
-                nextIndex = (currentIndex + 1) % allImportant.length;
+                nextIndex = (currentIndex + 1) % allCritical.length;
             } else {
-                nextIndex = (currentIndex - 1 + allImportant.length) % allImportant.length;
+                nextIndex = (currentIndex - 1 + allCritical.length) % allCritical.length;
             }
             
-            const nextState = allImportant[nextIndex];
+            const nextState = allCritical[nextIndex];
             openVlmModal(nextState.episodeId, nextState.stateId);
         }
 
         // Quick save with Ctrl+Enter / ⌘+Enter while modal is open
-        // Arrow key navigation between important states
+        // Arrow key navigation between critical states
         document.addEventListener('keydown', (e) => {
             if (!vlmModal.classList.contains('show')) return;
             
             // Navigation with arrow keys
             if (e.key === 'ArrowLeft') {
                 e.preventDefault();
-                navigateToAdjacentImportantState('prev');
+                navigateToAdjacentCriticalState('prev');
             } else if (e.key === 'ArrowRight') {
                 e.preventDefault();
-                navigateToAdjacentImportantState('next');
+                navigateToAdjacentCriticalState('next');
             }
             
             // Quick save
@@ -1412,50 +1412,50 @@
         rerecordBtn.addEventListener('click', handleRerecord);
         stopBtn.addEventListener('click', handleStop);
 
-        // === NEW: Important-only toggle logic ===
-        let importantOnlyMode = true; // Default to Important only
+        // === NEW: Critical-only toggle logic ===
+        let criticalOnlyMode = true; // Default to Critical only
         const toggleAllBtn = document.getElementById('toggle-all');
-        const toggleImportantBtn = document.getElementById('toggle-important');
+        const toggleCriticalBtn = document.getElementById('toggle-critical');
 
         function updateToggleUI() {
-            if (importantOnlyMode) {
+            if (criticalOnlyMode) {
                 toggleAllBtn.classList.remove('active');
                 toggleAllBtn.setAttribute('aria-selected','false');
-                toggleImportantBtn.classList.add('active');
-                toggleImportantBtn.setAttribute('aria-selected','true');
+                toggleCriticalBtn.classList.add('active');
+                toggleCriticalBtn.setAttribute('aria-selected','true');
             } else {
-                toggleImportantBtn.classList.remove('active');
-                toggleImportantBtn.setAttribute('aria-selected','false');
+                toggleCriticalBtn.classList.remove('active');
+                toggleCriticalBtn.setAttribute('aria-selected','false');
                 toggleAllBtn.classList.add('active');
                 toggleAllBtn.setAttribute('aria-selected','true');
             }
         }
 
-        function applyImportantOnlyMode() {
+        function applyCriticalOnlyMode() {
             for (const ep of episodes) {
                 if (!ep.barsContainer) continue;
-                ep.barsContainer.classList.toggle('important-only', importantOnlyMode);
+                ep.barsContainer.classList.toggle('critical-only', criticalOnlyMode);
             }
         }
 
         toggleAllBtn.addEventListener('click', () => {
-            importantOnlyMode = false;
+            criticalOnlyMode = false;
             updateToggleUI();
-            applyImportantOnlyMode();
+            applyCriticalOnlyMode();
             hidePopover();
         });
-        toggleImportantBtn.addEventListener('click', () => {
-            importantOnlyMode = true;
+        toggleCriticalBtn.addEventListener('click', () => {
+            criticalOnlyMode = true;
             updateToggleUI();
-            applyImportantOnlyMode();
+            applyCriticalOnlyMode();
         });
         // Keyboard shortcut: I toggles mode
         document.addEventListener('keydown', (e) => {
             if (e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
-                importantOnlyMode = !importantOnlyMode;
+                criticalOnlyMode = !criticalOnlyMode;
                 updateToggleUI();
-                applyImportantOnlyMode();
-                if (!importantOnlyMode) hidePopover();
+                applyCriticalOnlyMode();
+                if (!criticalOnlyMode) hidePopover();
             }
         });
 
@@ -1497,7 +1497,7 @@
 
             // Initialize toggle UI state
             updateToggleUI();
-            applyImportantOnlyMode();
+            applyCriticalOnlyMode();
         });
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) stopAutoRefresh();

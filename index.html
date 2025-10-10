@@ -2835,7 +2835,7 @@ promptBar.className = 'prompt-bar';
 
 const promptText = document.createElement('div');
 promptText.className = 'prompt-text';
-promptText.textContent = 'Pick up the red block.'; // Default text, will be updated from server
+promptText.textContent = ''; // Default text, will be updated from server
 
 promptBar.appendChild(promptText);
 
@@ -3453,7 +3453,7 @@ loader.load(
 
     
     // Update prompt text from server state
-    const promptFromServer = state.prompt || 'Pick up the red block.';
+    const promptFromServer = state.prompt;
     promptText.textContent = promptFromServer;
     
     // === Example video gating =====================================================

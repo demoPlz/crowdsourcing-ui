@@ -56,14 +56,14 @@ def _pop_crowd_cli_overrides(argv=None):
     so LeRobot's config parser never sees unknown args.
     """
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--required-responses-per-important-state", type=int, dest="crowd_rrpis")
-    ap.add_argument("--autofill-important-states", action="store_true", dest="crowd_autofill")
+    ap.add_argument("--required-responses-per-critical-state", type=int, dest="crowd_rrpis")
+    ap.add_argument("--autofill-critical-states", action="store_true", dest="crowd_autofill")
     ap.add_argument(
         "--num-autofill-actions",
         type=int,
         dest="crowd_num_autofill_actions",
         help="For IMPORTANT states, per unique submission fill this many actions in total "
-             "(1 actual + N-1 clones). Default = required-responses-per-important-state."
+             "(1 actual + N-1 clones). Default = required-responses-per-critical-state."
     )
 
     # === NEW: prompt mode flags (mutually exclusive) ===
@@ -83,9 +83,9 @@ def _pop_crowd_cli_overrides(argv=None):
              "manually sets vlm_text and vlm_video_id. Mutually exclusive with --use-vlm-prompt."
     )
 
-    # --- NEW: save cam_main frames for important states as an ordered image sequence ---
+    # --- NEW: save cam_main frames for critical states as an ordered image sequence ---
     ap.add_argument(
-        "--save-important-maincam-sequence",
+        "--save-critical-maincam-sequence",
         action="store_true",
         dest="crowd_save_seq",
         help="If set, save observation.images.cam_main at each IMPORTANT state to a directory as 000001.jpg, 000002.jpg, ...",
@@ -123,7 +123,7 @@ def _pop_crowd_cli_overrides(argv=None):
         type=int,
         dest="crowd_n_leaders",
         help="Number of unique submissions before first VLM query for an IMPORTANT state (default: 1). "
-             "Must be <= --required-responses-per-important-state."
+             "Must be <= --required-responses-per-critical-state."
     )
     # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
     ap.add_argument(
@@ -161,7 +161,7 @@ def _pop_crowd_cli_overrides(argv=None):
         "--save-vlm-logs",
         action="store_true",
         dest="crowd_save_vlm_logs",
-        help="If set, save the full three-part VLM conversation per important state to output/vlm_logs.",
+        help="If set, save the full three-part VLM conversation per critical state to output/vlm_logs.",
     )
 
     args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
@@ -307,9 +307,9 @@ def control_robot(cfg: ControlPipelineConfig):
     # Wire our optional CLI overrides into the crowd interface
     ci_kwargs = {}
     if getattr(_CROWD_OVERRIDES, "crowd_rrpis", None) is not None:
-        ci_kwargs["required_responses_per_important_state"] = _CROWD_OVERRIDES.crowd_rrpis
+        ci_kwargs["required_responses_per_critical_state"] = _CROWD_OVERRIDES.crowd_rrpis
     if getattr(_CROWD_OVERRIDES, "crowd_autofill", False):
-        ci_kwargs["autofill_important_states"] = True
+        ci_kwargs["autofill_critical_states"] = True
     if getattr(_CROWD_OVERRIDES, "crowd_num_autofill_actions", None) is not None:
         ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
 
@@ -342,7 +342,7 @@ def control_robot(cfg: ControlPipelineConfig):
         # If both provided, enforce the constraint up-front
         if n_leaders_cli is not None and rrpis_cli is not None and n_leaders_cli > rrpis_cli:
             raise SystemExit(
-                f"--n-leaders ({n_leaders_cli}) must be <= --required-responses-per-important-state ({rrpis_cli})"
+                f"--n-leaders ({n_leaders_cli}) must be <= --required-responses-per-critical-state ({rrpis_cli})"
             )
 
         ci_kwargs["leader_mode"] = True
