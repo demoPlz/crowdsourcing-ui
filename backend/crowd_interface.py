@@ -227,7 +227,7 @@ class CrowdInterface():
         # Dataset
         self.dataset = None
         # Task used for UI fallback and dataset frames → always cfg.single_task (set in init_dataset)
-        self.task = None
+        self.task_text = None
         # Task name used for prompt placeholder substitution and demo images (from --task-name)
         self.prompt_task_name = (prompt_task_name or None)
 
@@ -266,7 +266,7 @@ class CrowdInterface():
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
 
-        # segmentation worker
+        # segmentation worker (LEGACY - DISABLED but kept for compatibility)
         self._seg_queue = queue.Queue()
         self._seg_worker_thread = None
         self._seg_worker_running = False
@@ -523,10 +523,10 @@ class CrowdInterface():
     def _is_prompt_ready(self, info: dict) -> bool:
         """
         In either mode, require BOTH a non-empty text AND a video_id.
-        We respect 'flex_ready' if present; else derive from fields.
+        We respect 'prompt_ready' if present; else derive from fields.
         """
-        if info.get("flex_ready") is not None:
-            return bool(info.get("flex_ready"))
+        if info.get("prompt_ready") is not None:
+            return bool(info.get("prompt_ready"))
         # derive from fields
         text = (info.get("flex_text_prompt") or "").strip()
         vid = info.get("flex_video_id")
@@ -541,7 +541,7 @@ class CrowdInterface():
             self._flex_text_by_episode.setdefault(episode_id, {})[state_id] = text
         if video_id is not None:
             info["flex_video_id"] = video_id
-        info["flex_ready"] = True
+        info["prompt_ready"] = True
         
         # Check if this is an critical state with "end." text - auto-fill with current position
         if (text and text.strip().lower() == "end." and 
@@ -710,13 +710,11 @@ class CrowdInterface():
                 # Sort states by state_id to ensure chronological order
                 for sid in sorted(buffered_states.keys()):
                     entry = buffered_states[sid]
-                    if isinstance(entry, dict) and entry.get("_manifest"):
-                        obs = self._load_obs_from_disk(entry.get("obs_path"))
-                        frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                        self.dataset.add_frame(frame)
-                        self._delete_obs_from_disk(entry.get("obs_path"))
-                    else:
-                        self.dataset.add_frame(entry)
+                    # All entries in the buffer are manifest entries - load observations from disk
+                    obs = self._load_obs_from_disk(entry.get("obs_path"))
+                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                    self.dataset.add_frame(frame)
+                    self._delete_obs_from_disk(entry.get("obs_path"))
                 # Save the episode
                 self.dataset.save_episode()
                 # Purge any leftover cache files for this episode
@@ -998,10 +996,9 @@ class CrowdInterface():
                         
                         # Buffer a MANIFEST entry (avoid materializing observations into RAM)
                         completed_state = {
-                            "_manifest": True,
                             "obs_path": state_info.get("obs_path"),
                             "action": all_actions,
-                            "task": self.task if self.task else "crowdsourced_task",
+                            "task": self.task_text if self.task_text else "crowdsourced_task",
                         }
                         
                         # Buffer completed state for chronological ordering
@@ -1034,13 +1031,13 @@ class CrowdInterface():
             traceback.print_exc()
     
     def _start_segmentation_worker(self):
-        """Start the dedicated segmentation worker thread"""
+        """Start the dedicated segmentation worker thread (LEGACY - DISABLED)"""
         if self._seg_worker_thread is not None and self._seg_worker_thread.is_alive():
             return
         self._seg_worker_running = True
         self._seg_worker_thread = Thread(target=self._segmentation_worker, daemon=True)
         self._seg_worker_thread.start()
-        print("🧵 Started segmentation worker")
+        print("🧵 Started segmentation worker (legacy/disabled mode)")
 
     def _stop_segmentation_worker(self):
         """Stop the segmentation worker thread (idempotent)"""
@@ -1063,15 +1060,14 @@ class CrowdInterface():
         print("🛑 Stopped segmentation worker")
 
     def _enqueue_segmentation_job(self, episode_id, state_id, view_paths, joints):
-        """Enqueue a segmentation job for background processing"""
-        try:
-            self._seg_queue.put_nowait((episode_id, state_id, view_paths, joints))
-            print(f"🗂️ Queued segmentation job ep={episode_id} sid={state_id}")
-        except queue.Full:
-            print(f"⚠️ Segmentation queue full; skipping ep={episode_id} sid={state_id}")
+        """Enqueue a segmentation job for background processing (LEGACY - DISABLED)"""
+        # LEGACY: Segmentation is disabled - do nothing but log
+        print(f"⚠️ Segmentation disabled (legacy) - skipping ep={episode_id} sid={state_id}")
+        return
 
     def _segmentation_worker(self):
-        """Dedicated worker thread that processes segmentation tasks from the queue"""
+        """Dedicated worker thread that processes segmentation tasks from the queue (LEGACY - DISABLED)"""
+        print("⚠️ Segmentation worker started but disabled (legacy mode)")
         while self._seg_worker_running and not self._shutting_down:
             try:
                 item = self._seg_queue.get(timeout=0.5)
@@ -1080,28 +1076,18 @@ class CrowdInterface():
             if item is None:
                 break
             episode_id_local, state_id_local, view_paths_local, joints_local = item
-            try:
-                # heavy work with NO state_lock
-                seg_paths = self._segment_views_for_state(
-                    episode_id_local, state_id_local, view_paths_local, joints_local
-                )
-            except Exception as e:
-                print(f"⚠️ segmentation failed for state {state_id_local}: {e}")
-                seg_paths = {}
-
-            # write results atomically
+            
+            # LEGACY: Skip actual segmentation work
+            print(f"⚠️ Segmentation disabled (legacy) - ignoring job for state {state_id_local}")
+            
+            # Still mark as ready to prevent blocking
             with self.state_lock:
                 ep_states = self.pending_states_by_episode.get(episode_id_local, {})
                 info = ep_states.get(state_id_local)
                 if info is not None:
-                    info["segmentation_paths"] = seg_paths
+                    info["segmentation_paths"] = {}  # Empty paths
                     info["segmentation_ready"] = True
-                    self._segmentation_paths_by_episode.setdefault(episode_id_local, {})
-                    self._segmentation_paths_by_episode[episode_id_local][state_id_local] = seg_paths
-                    print(f"✅ segmentation ready for critical state {state_id_local} in episode {episode_id_local}")
-                else:
-                    # state may have completed/been removed while we were segmenting
-                    print(f"ℹ️ segmentation finished but state {state_id_local} is no longer pending")
+                    print(f"✅ segmentation marked ready (disabled) for state {state_id_local} in episode {episode_id_local}")
             try:
                 self._seg_queue.task_done()
             except Exception:
@@ -1141,7 +1127,7 @@ class CrowdInterface():
             info = ep_states.get(state_id)
             if info is None:
                 return False
-            if info.get("flex_ready", False):
+            if info.get("prompt_ready", False):
                 info["vlm_queued"] = False
                 return False
             key = (episode_id, state_id)
@@ -1911,7 +1897,7 @@ class CrowdInterface():
                     "episode_id": str(episode_id),
                     "state_id": int(state_id),
                     "timestamp": ts,
-                    "task": self.task,
+                    "task": self.task_text,
                     "prompt_task_name": self._task_name() or None,
                     "model": self._aoai_deployment,
                 },
@@ -1964,7 +1950,7 @@ class CrowdInterface():
                 with self.state_lock:
                     ep_states = self.pending_states_by_episode.get(episode_id, {})
                     info = ep_states.get(state_id)
-                    if info is None or info.get("flex_ready", False):
+                    if info is None or info.get("prompt_ready", False):
                         # State gone or already ready: clean up and skip.
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
                         if info is not None:
@@ -2147,7 +2133,7 @@ class CrowdInterface():
                             if (frontend_text or "").strip():
                                 comp_meta["flex_text_prompt"] = frontend_text
                             comp_meta["flex_video_id"] = video_id
-                            comp_meta["flex_ready"] = True
+                            comp_meta["prompt_ready"] = True
                         self._vlm_jobs_inflight.discard((episode_id, state_id))
                         print(f"ℹ️ Prompt finished after state {state_id} left pending set (ep {episode_id}); backfilled metadata.")
 
@@ -2279,7 +2265,7 @@ class CrowdInterface():
             )
 
         # For UI fallback and dataset writes, always use cfg.single_task
-        self.task = getattr(cfg, "single_task", None)
+        self.task_text = getattr(cfg, "single_task", None)
 
         # NEW: run the one-time context query (if enabled/configured)
         try:
@@ -2681,7 +2667,7 @@ class CrowdInterface():
                 info["segmentation_ready"] = True
                 info["segmentation_paths"] = {}
                 # Clear prompt state (no longer relevant for normal states)
-                info["flex_ready"] = True
+                info["prompt_ready"] = True
                 info["vlm_queued"] = False
                 info["flex_text_prompt"] = None
                 info.pop("flex_video_id", None)
@@ -2773,10 +2759,9 @@ class CrowdInterface():
                 all_actions = torch.cat([all_actions, padding], dim=0)
 
             completed_state = {
-                "_manifest": True,
                 "obs_path": sinfo.get("obs_path"),
                 "action": all_actions,
-                "task": self.task if self.task else "crowdsourced_task",
+                "task": self.task_text if self.task_text else "crowdsourced_task",
             }
 
             # Buffer for chronological add_frame
@@ -2828,12 +2813,13 @@ class CrowdInterface():
         
         state_info = {
             "state": frontend_state.copy(),
-            "observations": None,
             "obs_path": obs_path,
             "view_paths": view_paths,
             "actions": [],
             "responses_received": 0,
             "critical": False,
+            "segmentation_ready": True,  # LEGACY: Always ready since segmentation is disabled
+            "segmentation_paths": {},
             "episode_id": episode_id
         }
 
@@ -2871,7 +2857,7 @@ class CrowdInterface():
                 print(f"ℹ️ State {latest_state_id} already marked critical; leaving VLM status unchanged.")
                 return
             info["critical"] = True
-            info["segmentation_ready"] = False
+            info["segmentation_ready"] = True  # LEGACY: Always ready since segmentation is disabled
 
             # --- Prompt-mode gating (manual or VLM) ---
             if self._prompt_mode_requires_gate():
@@ -2879,13 +2865,13 @@ class CrowdInterface():
                 has = self._is_prompt_ready(info)
                 info.setdefault("flex_text_prompt", None)
                 info.setdefault("flex_video_id", None)
-                info["flex_ready"] = bool(has)
+                info["prompt_ready"] = bool(has)
                 # Do NOT auto-queue anything in manual mode
             else:
                 # Simple mode: do not gate on prompts
                 info.setdefault("flex_text_prompt", None)
                 info.setdefault("flex_video_id", None)
-                info["flex_ready"] = True
+                info["prompt_ready"] = True
             print(f"🔴 Marked state {latest_state_id} in episode {latest_episode_id} as critical")
 
             # always queue auto-labeling
@@ -2904,18 +2890,15 @@ class CrowdInterface():
             should_queue_vlm = False
             if self._vlm_enabled and (not self.leader_mode):
                 info_now = self.pending_states_by_episode[latest_episode_id][latest_state_id]
-                if (not info_now.get("flex_ready", False)) and (not info_now.get("vlm_queued", False)):
+                if (not info_now.get("prompt_ready", False)) and (not info_now.get("vlm_queued", False)):
                     should_queue_vlm = True
 
             st_obj = info["state"]
-            # Do not return early - we want to save the critical-state image regardless.
-            segmentation_needed = True
-            if not self._gripper_is_grasped(st_obj):
-                info["segmentation_paths"] = {}
-                info["segmentation_ready"] = True
-                fv = self._extract_grip_force_N(st_obj)
-                print(f"⛔️ Skipping segmentation for state {latest_state_id} (ep {latest_episode_id}) - not grasped (force={fv!r})")
-                segmentation_needed = False
+            # LEGACY: Segmentation is disabled, always mark as ready
+            info["segmentation_paths"] = {}
+            info["segmentation_ready"] = True
+            segmentation_needed = False  # Never enqueue segmentation jobs
+            print(f"⚠️ Segmentation disabled (legacy) for state {latest_state_id} (ep {latest_episode_id})")
 
         # enqueue heavy work after releasing the lock
         if segmentation_needed:
@@ -3006,13 +2989,11 @@ class CrowdInterface():
                 # Add frames in chronological order
                 for sid in sorted(buf.keys()):
                     entry = buf[sid]
-                    if isinstance(entry, dict) and entry.get("_manifest"):
-                        obs = self._load_obs_from_disk(entry.get("obs_path"))
-                        frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                        self.dataset.add_frame(frame)
-                        self._delete_obs_from_disk(entry.get("obs_path"))
-                    else:
-                        self.dataset.add_frame(entry)
+                    # All entries in the buffer are manifest entries - load observations from disk
+                    obs = self._load_obs_from_disk(entry.get("obs_path"))
+                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
+                    self.dataset.add_frame(frame)
+                    self._delete_obs_from_disk(entry.get("obs_path"))
 
                 # Commit this episode
                 self.dataset.save_episode()
@@ -3242,248 +3223,93 @@ class CrowdInterface():
             print(f"🎯 Serving state {latest_state_id} from episode {serving_episode} to session {session_id} ({status})")
             return state
 
-    def record_response(self, response_data: dict, session_id: str = "default") -> bool:
-        """
-        Record a response for a specific state in the episode-based system.
-        Returns True if this completes the required responses for a state.
-        """
-        if self._shutting_down:
-            print("⚠️  Ignoring submission during shutdown")
-            return False
-
-        # --- Stage side-effects to run after we drop the lock ---
-        queue_vlm_payload = None      # tuple: (episode_id, state_id, view_paths)
-        save_on_label_args = None     # tuple: (episode_id, state_id, obs_path)
-        completed = False
+    def record_response(self, response_data: dict):
+        '''
+        Record a response for a specific state. Handles all the side-effects.
+        '''
 
         with self.state_lock:
-            # Get state_id and episode_id from response
-            state_id = response_data.get("state_id")
-            episode_id = response_data.get("episode_id")
-            
-            if state_id is None:
-                print("⚠️  No state_id in response data")
-                return False
-            
-            # Find the state in episode-based storage
-            state_info = None
-            found_episode = episode_id
-            
-            if episode_id is not None and episode_id in self.pending_states_by_episode:
-                state_info = self.pending_states_by_episode[episode_id].get(state_id)
-                found_episode = episode_id
-            
+            state_id = response_data['state_id']
+            episode_id = response_data['episode_id']
+
+            state_info = self.pending_states_by_episode[episode_id][state_id]
+
             if not state_info:
-                print(f"⚠️  State {state_id} not found in pending states")
+                # State already fully labeled
                 return False
+
+            required_responses = self.required_responses_per_critical_state if state_info['critical'] else self.required_responses_per_state
             
-            # --- capture BEFORE incrementing ---
-            was_critical = bool(state_info.get("critical", False))
-            prior_responses = int(state_info.get("responses_received", 0))
-            first_response_to_critical = (was_critical and prior_responses == 0)
-            
-            required_responses = (self.required_responses_per_critical_state 
-                                if state_info['critical'] else self.required_responses_per_state)
-            
-            # Extract joint positions and gripper action from response
-            joint_positions = response_data.get("joint_positions", {})
-            gripper_action = response_data.get("gripper", 0)
+            joint_positions = response_data['joint_positions']
+            gripper_action = response_data['gripper']
 
-            # NEW: fetch originals once (also used for gripper override logic below)
-            original_joints = state_info["state"].get("joint_positions", {})
-            original_gripper = state_info["state"].get("gripper", 0)
-
-            # NEW: If the frontend says the pose sliders were reset to their initial values,
-            # treat this as *no pose movement* regardless of tiny IK/joint discrepancies.
-            pose_reset_to_default = bool(response_data.get("pose_reset_to_default", False))
-
-            # If not explicitly reset, fall back to joint-delta detection
-            if pose_reset_to_default:
-                has_joint_move = False
-            else:
-                MOVE_EPS = 1e-4  # small tolerance to avoid float noise
-                has_joint_move = False
-                for jn in JOINT_NAMES[:-1]:  # exclude the gripper slot
-                    if jn in joint_positions and jn in original_joints:
-                        sub = joint_positions[jn]
-                        sub = sub[0] if isinstance(sub, (list, tuple)) and len(sub) > 0 else sub
-                        orig = original_joints[jn]
-                        orig = orig[0] if isinstance(orig, (list, tuple)) and len(orig) > 0 else orig
-                        if abs(float(sub) - float(orig)) > MOVE_EPS:
-                            has_joint_move = True
-                            break
-
-            effective_gripper = original_gripper if has_joint_move else gripper_action
-            if has_joint_move and gripper_action != effective_gripper:
-                print("✋ Ignoring gripper change in submission with joint movement; keeping original gripper.")
-
-            # Ensure both execution (latest_goal) and recording see the sanitized gripper value
-            response_data["gripper"] = effective_gripper            
-
-            # Set as goal only if this is the exact state last served to THIS session,
-            # and no newer state has been added since serving (no TTL).
-            if state_info["responses_received"] == 0:
-                gate = self._exec_gate_by_session.get(session_id)
-                current_max = self._global_max_existing_state_id()
-                gate_ok = (
-                    gate is not None
-                    and gate.get("state_id") == state_id
-                    and gate.get("episode_id") == found_episode
-                    and current_max == gate.get("served_max_state_id")
-                    and current_max == state_id
-                    and self._active_episode_id == found_episode
-                )
-                if gate_ok:
-                    self.latest_goal = response_data
-                    # consume the gate so it can't be reused
-                    self._exec_gate_by_session.pop(session_id, None)
-                    print(f"🎯 Setting goal for immediate execution - first response to stationary state {state_id} (session={session_id})")
-                else:
-                    print(
-                        "⏭️ Skipping immediate execution; state is stale or gate mismatch "
-                        f"(gate={gate}, current_max={current_max})"
-                    )
-            
-            # Record the response
             state_info["responses_received"] += 1
 
-            # --- Leader Mode: count unique leaders (per-session) and stage VLM enqueue ---
-            if state_info.get("critical", False) and self.leader_mode:
-                # Track unique sessions to avoid a single user satisfying all leaders.
-                leader_sessions = state_info.setdefault("leader_sessions", set())
-                if session_id not in leader_sessions:
-                    leader_sessions.add(session_id)
-                    state_info["leader_submissions"] = int(state_info.get("leader_submissions", 0)) + 1
-                # Stage VLM enqueue when threshold is reached
-                if (self._vlm_enabled
-                    and not state_info.get("flex_ready", False)
-                    and not state_info.get("vlm_queued", False)
-                    and int(state_info.get("leader_submissions", 0)) >= self.n_leaders):
-                    queue_vlm_payload = (
-                        found_episode,
-                        state_id,
-                        dict(state_info.get("view_paths", {})),
-                    )
-
-            # Convert response to tensor format
             goal_positions = []
             for joint_name in JOINT_NAMES:
-                joint_value = joint_positions.get(joint_name, 0.0)
-                if isinstance(joint_value, (list, tuple)) and len(joint_value) > 0:
-                    goal_positions.append(float(joint_value[0]))
-                else:
-                    goal_positions.append(float(joint_value))
-            
-            goal_positions[-1] = 0.044 if effective_gripper > 0 else 0.0
+                joint_value = joint_positions[joint_name]
+                goal_positions.append(float(joint_value[0]))
+
+            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
-            state_info["actions"].append(goal_positions)
+            state_info['actions'].append(goal_positions)
 
-            print(f"🔔 Response recorded for state {state_id} in episode {found_episode} "
-                  f"({state_info['responses_received']}/{required_responses})")
-
-            # NEW: if this was the FIRST response to an IMPORTANT state:
-            #       1) demote earlier critical states with 0 responses
-            #       2) auto-label those demoted states exactly like normal states
-            if first_response_to_critical:
-                demoted_ids = self._demote_earlier_unanswered_criticals_locked(found_episode, state_id)
-                if demoted_ids:
-                    # Auto-label the newly demoted states right now (same rules as _process_auto_labeling)
-                    self._auto_label_states_like_uncritical_locked(found_episode, state_id, demoted_ids)
-
-            # Stage critical maincam save on first label
-            if state_info.get("critical", False) and state_info["responses_received"] == 1:
-                obs_path_first = state_info.get("obs_path")
-                if obs_path_first:
-                    save_on_label_args = (found_episode, state_id, obs_path_first)
-                else:
-                    print(f"⚠️ No obs_path found for critical state {state_id}")
-
-            # --- Progressive autofill for IMPORTANT states ---
-            if state_info.get("critical", False) and self.autofill_critical_states:
-                # Per submission, total filled should advance by `num_autofill_actions`
-                # (1 real submission already counted above, plus (N-1) clones).
-                remaining = max(0, required_responses - state_info["responses_received"])
-                clones_to_add = max(0, min(self.num_autofill_actions - 1, remaining))
+            # Autofill
+            if state_info["critical"] and self.autofill_critical_states:
+                remaining = state_info["responses_received"]
+                clones_to_add = min(self.num_autofill_actions - 1, remaining)
                 for _ in range(clones_to_add):
                     state_info["actions"].append(goal_positions.clone())
-                state_info["responses_received"] += clones_to_add
-                if clones_to_add > 0:
-                    print(f"🤖 Autofill: added {clones_to_add} clone(s) on state {state_id} → "
-                          f"{state_info['responses_received']}/{required_responses}")
-            
-            # Check if state is complete
-            if state_info["responses_received"] >= required_responses:
-                # Complete the state and add to dataset
+                state_info['responses_received'] += clones_to_add
+                
+            # Handle completion
+            if state_info['responses_received'] >= required_responses:
                 all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
+                if state_info['critical'] and state_id == self.next_state_id - 1:
+                    # Choose action to execute (a_execute) at random
+                    
+                    self.latest_goal = random.choice(state_info["actions"][:required_responses])
+
                 if required_responses < self.required_responses_per_critical_state:
-                    # Pad with inf values
+                    # Pad unimportant states's action tensor
                     missing_responses = self.required_responses_per_critical_state - required_responses
                     action_dim = len(JOINT_NAMES)
                     padding_size = missing_responses * action_dim
                     padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                     all_actions = torch.cat([all_actions, padding], dim=0)
 
-                # Manifest entry: keep only obs_path + action (do not materialize observations in RAM)
-                manifest_entry = {
-                    "_manifest": True,
+                # Everything we need to later write states to Lerobot dataset in order
+                completed_state = {
                     "obs_path": state_info.get("obs_path"),
                     "action": all_actions,
-                    "task": self.task if self.task else "crowdsourced_task",
+                    "task": self.task_text # Text label for frame
                 }
-                
-                # Buffer completed state for chronological ordering
-                if found_episode not in self.completed_states_buffer_by_episode:
-                    self.completed_states_buffer_by_episode[found_episode] = {}
-                self.completed_states_buffer_by_episode[found_episode][state_id] = manifest_entry
-                
-                # Move to completed states
-                if found_episode not in self.completed_states_by_episode:
-                    self.completed_states_by_episode[found_episode] = {}
-                
-                # --- carry prompt artifacts into completed metadata (if present now) ---
-                is_imp = bool(state_info.get("critical", False))
-                text_str = (state_info.get("flex_text_prompt") or "").strip()
-                _vid_raw = state_info.get("flex_video_id")
-                try:
-                    vid_val = int(_vid_raw) if _vid_raw is not None else None
-                except Exception:
-                    vid_val = None
 
-                self.completed_states_by_episode[found_episode][state_id] = {
+                # Save to completed states buffer (for forming training set)
+                if episode_id not in self.completed_states_buffer_by_episode:
+                    self.completed_states_buffer_by_episode[episode_id] = {}
+                self.completed_states_buffer_by_episode[episode_id][state_id] = completed_state
+
+                completed_state_monitor = { # Contains legacy components
                     "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
-                    "is_critical": is_imp,
-                    "flex_ready": self._is_prompt_ready(state_info) if self._prompt_mode_requires_gate() else True,
-                    "flex_text_prompt": (text_str if text_str else None),
-                    "flex_video_id": vid_val,
+                    "is_critical": state_info['crtical'],
+                    "prompt_ready": True,
+                    "flex_text_prompt": state_info['flex_text_prompt'] if 'flex_text_prompt' in state_info else None,
+                    "flex_video_id": state_info['flex_video_id'] if 'flex_video_id' in state_info else None,
                 }
+                # Save to completed states (for monitoring)
+                if episode_id not in self.completed_states_by_episode:
+                    self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
+
                 
                 # Remove from pending
-                del self.pending_states_by_episode[found_episode][state_id]
-                
-                # Check if episode is complete
-                if not self.pending_states_by_episode[found_episode]:
-                    self._schedule_episode_finalize_after_grace_locked(found_episode)
-                    print(f"⏳ Episode {found_episode} currently empty; finalize scheduled after "
-                        f"{self.episode_finalize_grace_s:.2f}s grace.")
-                
-                print(f"✅ State {state_id} completed in episode {found_episode}")
-                completed = True
+                del self.pending_states_by_episode[episode_id][state_id]
 
-        # --- After lock: perform staged side-effects safely ---
-        if save_on_label_args is not None:
-            ep, sid, obs_path = save_on_label_args
-            try:
-                self._save_critical_maincam_frame_on_label(ep, sid, obs_path)
-            except Exception as e:
-                print(f"⚠️ Error saving critical cam_main on label (ep={ep}, sid={sid}): {e}")
-
-        if queue_vlm_payload is not None:
-            ep, sid, vpaths = queue_vlm_payload
-            self._enqueue_vlm_job(ep, sid, vpaths)
-
-        return completed
+                # Handle episode completion
+                if not self.pending_states_by_episode[episode_id]:
+                    self._schedule_episode_finalize_after_grace_locked(episode_id)
     
     def get_pending_states_info(self) -> dict:
         """Get episode-based state information for monitoring"""
@@ -4400,7 +4226,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         
         # Record this as a response to the correct state for this session
         # The frontend now includes state_id in the request data
-        crowd_interface.record_response(data, session_id)
+        crowd_interface.record_response(data)
         
         return jsonify({"status": "ok"})
     
@@ -4569,7 +4395,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
                             c_info["flex_text_prompt"] = txt
                             crowd_interface._flex_text_by_episode.setdefault(str(ep), {})[sid] = txt
                         c_info["flex_video_id"] = vid
-                        c_info["flex_ready"] = True
+                        c_info["prompt_ready"] = True
                         updated = True
 
             if not updated:

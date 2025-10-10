@@ -4,8 +4,9 @@ class CrowdInterfaceConfig():
 
     def __init__(self):
 
-        # Naming
+        # Task
         self.task_name = "drawer" # one word
+        self.task_text = "Put the objects on the desk into the middle drawer."
 
         # Number of responses per state settings
         self.required_responses_per_state: int = 1
@@ -18,6 +19,9 @@ class CrowdInterfaceConfig():
         # UI Prompt control settings
         self.use_manual_prompt: bool = False
         self.show_demo_videos: bool = False
+
+        # UI setting
+        self.simulated_frontend: bool = True
 
         # UI usage video demonstration recording settings
         self.record_ui_demo_videos: bool = False
