@@ -495,8 +495,8 @@ class CrowdInterface():
                 print(f"⚠️ Could not prepare VLM logs directory '{self._vlm_logs_dir}': {e}")
                 self.save_vlm_logs = False
 
-        # --- Manual save system: require explicit 'save' before committing an episode ---
-        # Episodes are kept in a pending state until /api/control/save (or 's') is pressed.
+        # --- Episode save behavior: datasets are always auto-saved after finalization ---
+        # Manual save is only used for demo video recording workflow
         self._episodes_pending_save: set[str] = set()
 
     # ---------- Demo video config helpers (tell the frontend where to save) ----------
@@ -831,204 +831,91 @@ class CrowdInterface():
             pass
     
     def _start_auto_label_worker(self):
-        """Start the dedicated auto-labeling worker thread"""
-        if self.auto_label_worker_thread is not None and self.auto_label_worker_thread.is_alive():
-            return
-        
-        self.auto_label_worker_running = True
         self.auto_label_worker_thread = Thread(target=self._auto_label_worker, daemon=True)
         self.auto_label_worker_thread.start()
-        print("🧵 Started dedicated auto-labeling worker thread")
-    
-    def _stop_auto_label_worker(self):
-        """Stop the auto-labeling worker thread (idempotent)"""
-        t = getattr(self, "auto_label_worker_thread", None)
-        if not t:
-            return
-        if not self.auto_label_worker_running and not t.is_alive():
-            return
-        self.auto_label_worker_running = False
-        try:
-            # Non-blocking; OK if sentinel already queued/consumed
-            self.auto_label_queue.put_nowait(None)
-        except queue.Full:
-            pass
-        if t.is_alive():
-            t.join(timeout=2.0)
-        # Clear references and drain queue for a clean future start
-        self.auto_label_worker_thread = None
-        try:
-            with self.auto_label_queue.mutex:
-                self.auto_label_queue.queue.clear()
-        except Exception:
-            pass
-        print("🛑 Stopped auto-labeling worker thread")
-    
+
     def _auto_label_worker(self):
-        """Dedicated worker thread that processes auto-labeling tasks from the queue"""
-        while self.auto_label_worker_running and not self._shutting_down:
-            try:
-                # Wait for a task from the queue (blocking)
-                critical_state_id = self.auto_label_queue.get(timeout=1.0)
-                
-                # None is our stop signal
-                if critical_state_id is None:
-                    break
-                
-                # Process the auto-labeling task
-                self._process_auto_labeling(critical_state_id)
-                
-                # Mark task as done
-                self.auto_label_queue.task_done()
-                
-            except queue.Empty:
-                # Timeout reached, continue the loop
-                continue
-            except Exception as e:
-                print(f"❌ Error in auto-labeling worker: {e}")
-                traceback.print_exc()
+        for critical_state_id in iter(self.auto_label_queue.get, None):
+            self._auto_label(critical_state_id)
     
-    def _process_auto_labeling(self, critical_state_id):
-        """Process auto-labeling for states before the given critical state ID (episode-aware)"""
-        try:
-            if self._shutting_down:
-                return
-            with self.state_lock:
-                # Find which episode the critical state belongs to
-                target_episode_id = None
-                for episode_id, episode_states in self.pending_states_by_episode.items():
-                    if critical_state_id in episode_states:
-                        target_episode_id = episode_id
-                        break
-                
-                if target_episode_id is None:
-                    print(f"⚠️  Important state {critical_state_id} not found in any episode")
-                    return
-                
-                episode_states = self.pending_states_by_episode[target_episode_id]
-                
-                # Find the PREVIOUS critical state to get its action as template
-                template_action = None
-                previous_critical_states = []
-                
-                # Check pending states in this episode
-                for state_id, state_info in episode_states.items():
-                    if (state_id < critical_state_id and 
-                        state_info.get("critical", False) and 
-                        state_info.get("actions")):
-                        previous_critical_states.append((state_id, state_info))
-                
-                # ---- Check completed states in this episode (recover from completed buffer) ----
-                if target_episode_id in self.completed_states_by_episode:
-                    buf = self.completed_states_buffer_by_episode.get(target_episode_id, {})
-                    for sid, cinfo in self.completed_states_by_episode[target_episode_id].items():
-                        if sid < critical_state_id and cinfo.get("is_critical", False):
-                            m = buf.get(sid)
-                            if isinstance(m, dict) and "action" in m:
-                                act = m["action"]  # concatenated 1D tensor: (required_responses_per_critical_state * action_dim,)
-                                action_dim = len(JOINT_NAMES)
-                                first = act[:action_dim]
-                                if not isinstance(first, torch.Tensor):
-                                    first = torch.as_tensor(first, dtype=torch.float32)
-                                # Emulate pending-state structure expected later
-                                previous_critical_states.append((sid, {"actions": [first]}))
-                
-                if previous_critical_states:
-                    # Use the most recent previous critical state's first action as template
-                    latest_critical_state_id = max(previous_critical_states, key=lambda x: x[0])
-                    template_action = latest_critical_state_id[1]["actions"][0]
-                    print(f"🎯 Using template from previous critical state {latest_critical_state_id[0]}")
-                else:
-                    # No previous critical state - convert FIRST state's joint positions to tensor
-                    if not episode_states:
-                        return
-                    
-                    first_state_id = min(episode_states.keys())
-                    first_state = episode_states[first_state_id]
-                    
-                    joint_positions = first_state['state']['joint_positions']
-                    gripper_action = first_state['state'].get('gripper', 0)
-                    
-                    # Convert to tensor format like in record_response
-                    goal_positions = []
-                    for joint_name in JOINT_NAMES:
-                        joint_value = joint_positions.get(joint_name, 0.0)
-                        if isinstance(joint_value, (list, tuple)) and len(joint_value) > 0:
-                            goal_positions.append(float(joint_value[0]))
-                        else:
-                            goal_positions.append(float(joint_value))
-                    
-                    # Handle gripper like in record_response
-                    goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
-                    template_action = torch.tensor(goal_positions, dtype=torch.float32)
-                    print(f"🎯 Using template from first state {first_state_id} joint positions")
-                
-                # Find all uncritical states in this episode that are earlier than the critical state
-                states_to_label = []
-                for state_id, state_info in episode_states.items():
-                    if (state_id < critical_state_id and 
-                        not state_info.get("critical", False) and 
-                        state_info["responses_received"] < self.required_responses_per_state):
-                        states_to_label.append(state_id)
-                
-                print(f"🏷️  Auto-labeling {len(states_to_label)} uncritical states in episode {target_episode_id} before critical state {critical_state_id}")
-                
-                # Label each uncritical state with the template action
-                for state_id in states_to_label:
-                    state_info = episode_states[state_id]
-                    
-                    # Add template actions until we reach required responses
-                    while state_info["responses_received"] < self.required_responses_per_state:
-                        state_info["actions"].append(template_action.clone())
-                        state_info["responses_received"] += 1
-                    
-                    # Complete the state
-                    if state_info["responses_received"] >= self.required_responses_per_state:
-                        # Concatenate all action responses into a 1D tensor
-                        all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
+    def _auto_label(self, critical_state_id):
+        '''
+        Given critical_state_id, auto-labels noncritical states in the same episode before the critical state with:"
+        1. The executed action of the previous important state
+        2. If no previous important state exists, the joint positions of the first state in the episode
+        '''
+        with self.state_lock:
+            episode_id = max(self.pending_states_by_episode.keys())
+
+            episode_states = self.pending_states_by_episode[episode_id]
+
+            template_action = None
+
+            previous_critical_id_in_episode = []
+            for state_id in episode_states.keys():
+                if episode_states[state_id]['critical'] \
+                    and state_id < critical_state_id \
+                    and len(episode_states[state_id]['actions']) > 0:
+                    previous_critical_id_in_episode.append(state_id)
+
+            if previous_critical_id_in_episode: # Previous critical states exist
+                latest_critical_state = episode_states[max(previous_critical_id_in_episode)]
+                template_action = latest_critical_state['actions'][0]
+            else: # This is the first critical state in the episode
+                first_state_id = min(episode_states.keys())
+                first_state = episode_states[first_state_id]
+                joint_positions = first_state['state']['joint_positions']
+                gripper_action = first_state['state']['gripper']
+                goal_positions = []
+                for joint_name in JOINT_NAMES:
+                    joint_value = joint_positions[joint_name]
+                    goal_positions.append(float(joint_value))
+
+                goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+                template_action = torch.tensor(goal_positions, dtype=torch.float32)
+
+            states_to_label = []
+            for state_id, state_info in episode_states.items():
+                if state_id < critical_state_id and not state_info['critical']:
+                    states_to_label.append(state_id)
+
+            for state_id in states_to_label:
+                state_info = episode_states[state_id]
+
+                while state_info["responses_received"] < self.required_responses_per_state:
+                    state_info["actions"].append(template_action.clone())
+                    state_info['responses_received'] += 1
+
+                all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
                         
-                        # Pad with inf values to match critical state shape
-                        missing_responses = self.required_responses_per_critical_state - self.required_responses_per_state
-                        action_dim = len(JOINT_NAMES)
-                        padding_size = missing_responses * action_dim
-                        padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
-                        all_actions = torch.cat([all_actions, padding], dim=0)
-                        
-                        # Buffer a MANIFEST entry (avoid materializing observations into RAM)
-                        completed_state = {
-                            "obs_path": state_info.get("obs_path"),
-                            "action": all_actions,
-                            "task": self.task_text if self.task_text else "crowdsourced_task",
-                        }
-                        
-                        # Buffer completed state for chronological ordering
-                        if self.dataset is not None:
-                            if target_episode_id not in self.completed_states_buffer_by_episode:
-                                self.completed_states_buffer_by_episode[target_episode_id] = {}
-                            self.completed_states_buffer_by_episode[target_episode_id][state_id] = completed_state
-                        
-                        # Move to episode-based completed states
-                        if target_episode_id not in self.completed_states_by_episode:
-                            self.completed_states_by_episode[target_episode_id] = {}
-                        
-                        self.completed_states_by_episode[target_episode_id][state_id] = {
-                            "responses_received": state_info["responses_received"],
-                            "completion_time": time.time()
-                        }
-                        
-                        print(f"🏷️  Auto-labeled and completed state {state_id} in episode {target_episode_id}")
+                # Pad with inf values to match critical state shape
+                missing_responses = self.required_responses_per_critical_state - self.required_responses_per_state
+                action_dim = len(JOINT_NAMES)
+                padding_size = missing_responses * action_dim
+                padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
+                all_actions = torch.cat([all_actions, padding], dim=0)
                 
-                # Remove auto-labeled states from pending (episode-aware)
-                for state_id in states_to_label:
-                    if state_id in episode_states:
-                        del episode_states[state_id]
+                completed_state = {
+                    "obs_path": state_info.get("obs_path"),
+                    "action": all_actions,
+                    "task": self.task_text if self.task_text else "crowdsourced_task",
+                }
                 
-                if states_to_label:
-                    print(f"🗑️  Removed {len(states_to_label)} auto-labeled states from episode {target_episode_id}. Remaining: {len(episode_states)}")
-                    
-        except Exception as e:
-            print(f"❌ Error in _process_auto_labeling: {e}")
-            traceback.print_exc()
+                if episode_id not in self.completed_states_buffer_by_episode:
+                    self.completed_states_buffer_by_episode[episode_id] = {}
+                self.completed_states_buffer_by_episode[episode_id][state_id] = completed_state
+                
+                completed_state_monitor = {
+                    "responses_received": state_info["responses_received"],
+                    "is_critical": state_info['critical'],
+                }
+
+                # Move to episode-based completed states
+                if episode_id not in self.completed_states_by_episode:
+                    self.completed_states_by_episode[episode_id] = {}
+                self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
+
+                del self.pending_states_by_episode[episode_id][state_id]
     
     def _start_segmentation_worker(self):
         """Start the dedicated segmentation worker thread (LEGACY - DISABLED)"""
@@ -2203,11 +2090,13 @@ class CrowdInterface():
             self.episodes_being_completed.add(episode_id)
 
             try:
-                # --- MANUAL SAVE ONLY: defer saving until explicit 's' ---
-                print(f"🎬 Episode {episode_id} completed (after grace). Deferring SAVE until explicit 's'.")
-                # Mark as completed & pending save; leave buffered states and on-disk obs intact
+                # --- AUTO-SAVE MODE: immediately save to dataset after finalization ---
+                print(f"🎬 Episode {episode_id} completed (after grace). Auto-saving to dataset.")
                 self.episodes_completed.add(episode_id)
                 self._episodes_pending_save.add(episode_id)
+                
+                # Save immediately outside the lock
+                episode_to_save = episode_id
 
                 # Clean up episode containers that affect serving
                 if episode_id in self.pending_states_by_episode:
@@ -2230,10 +2119,18 @@ class CrowdInterface():
                         self.current_serving_episode = None
                         print("🏁 All episodes completed, no more episodes to serve")
 
-                # Note: DO NOT purge cache, DO NOT add frames to dataset, DO NOT save.
-                return
             finally:
                 self.episodes_being_completed.discard(episode_id)
+
+        # Auto-save to dataset (done outside the lock)
+        try:
+            saved = self.save_completed_episodes([episode_to_save])
+            if saved:
+                print(f"✅ Auto-saved episode {episode_to_save} to dataset")
+            else:
+                print(f"⚠️ Failed to auto-save episode {episode_to_save}")
+        except Exception as e:
+            print(f"❌ Error auto-saving episode {episode_to_save}: {e}")
 
     
     ### ---Dataset Management---
@@ -2684,7 +2581,7 @@ class CrowdInterface():
 
     def _auto_label_states_like_uncritical_locked(self, episode_id: str, pivot_state_id: int, state_ids: list[int]) -> None:
         """
-        Auto-label the given 'state_ids' as if they were normal, using the SAME rules as _process_auto_labeling:
+        Auto-label the given 'state_ids' as if they were normal, using the SAME rules as _auto_label:
           - template = most-recent earlier IMPORTANT state's first label (pending or completed)
           - fallback = joint positions of the FIRST pending state in the episode
         MUST be called with self.state_lock already held.
@@ -2696,7 +2593,7 @@ class CrowdInterface():
         if not episode_states:
             return
 
-        # --- Build the template action exactly like _process_auto_labeling ---
+        # --- Build the template action exactly like _auto_label ---
         template_action = None
         previous_critical_states = []
 
@@ -2739,7 +2636,7 @@ class CrowdInterface():
             template_action = torch.tensor(goal_positions, dtype=torch.float32)
             print(f"🎯 Auto-label fallback template from first pending state {first_state_id}")
 
-        # --- Label each target state and complete them exactly like _process_auto_labeling ---
+        # --- Label each target state and complete them exactly like _auto_label ---
         action_dim = len(JOINT_NAMES)
         for sid in sorted(state_ids):
             sinfo = episode_states.get(sid)
@@ -3231,12 +3128,13 @@ class CrowdInterface():
         with self.state_lock:
             state_id = response_data['state_id']
             episode_id = response_data['episode_id']
-
-            state_info = self.pending_states_by_episode[episode_id][state_id]
-
-            if not state_info:
+            
+            if episode_id not in self.pending_states_by_episode or \
+            state_id not in self.pending_states_by_episode[episode_id]:
                 # State already fully labeled
-                return False
+                return
+            
+            state_info = self.pending_states_by_episode[episode_id][state_id]
 
             required_responses = self.required_responses_per_critical_state if state_info['critical'] else self.required_responses_per_state
             
@@ -3264,12 +3162,13 @@ class CrowdInterface():
                 
             # Handle completion
             if state_info['responses_received'] >= required_responses:
-                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
-
                 if state_info['critical'] and state_id == self.next_state_id - 1:
                     # Choose action to execute (a_execute) at random
-                    
-                    self.latest_goal = random.choice(state_info["actions"][:required_responses])
+                    a_execute_index = random.randint(0, required_responses - 1)
+                    state_info["actions"][0], state_info["actions"][a_execute_index] = state_info["actions"][a_execute_index], state_info["actions"][0]
+                    self.latest_goal = state_info["actions"][:required_responses][0]
+
+                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
                 if required_responses < self.required_responses_per_critical_state:
                     # Pad unimportant states's action tensor
@@ -4226,19 +4125,36 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     
     @app.route("/api/submit-goal", methods=["POST"])
     def submit_goal():
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
-        
-        data = request.get_json(force=True, silent=True) or {}
-        
-        # Generate or retrieve session ID from request headers or IP
-        session_id = request.headers.get('X-Session-ID', request.remote_addr)
-        
-        # Record this as a response to the correct state for this session
-        # The frontend now includes state_id in the request data
-        crowd_interface.record_response(data)
-        
-        return jsonify({"status": "ok"})
+        try:
+            if crowd_interface._shutting_down:
+                return jsonify({"status": "shutting_down"}), 503
+            
+            # Validate request data
+            data = request.get_json(force=True, silent=True)
+            if data is None:
+                return jsonify({"status": "error", "message": "Invalid JSON data"}), 400
+            
+            # Check for required fields
+            required_fields = ['state_id', 'episode_id', 'joint_positions', 'gripper']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({"status": "error", "message": f"Missing required fields: {missing_fields}"}), 400
+            
+            # Generate or retrieve session ID from request headers or IP
+            session_id = request.headers.get('X-Session-ID', request.remote_addr or 'unknown')
+            
+            # Record this as a response to the correct state for this session
+            # The frontend now includes state_id in the request data
+            crowd_interface.record_response(data)
+            return jsonify({"status": "ok"})
+            
+        except KeyError as e:
+            print(f"❌ KeyError in submit_goal (missing data field): {e}")
+            return jsonify({"status": "error", "message": f"Missing required field: {e}"}), 400
+        except Exception as e:
+            print(f"❌ Error in submit_goal endpoint: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
     
     @app.route("/api/pending-states-info")
     def pending_states_info():
@@ -4560,7 +4476,10 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
     @app.route("/api/control/save", methods=["POST"])
     def save_episodes():
         """
-        Explicitly persist completed episodes (equivalent to pressing 's' in the UI).
+        Manually trigger episode saves (equivalent to pressing 's' in the UI).
+        NOTE: Episodes are automatically saved after finalization, so this is mainly for:
+        - Force-saving episodes that might have failed auto-save
+        - Manual triggering during development/debugging
         Optional body: {"episode_ids": ["<ep1>", "<ep2>", ...]} to save specific ones.
         Without a body, saves *all* episodes that are pending save.
         """

@@ -6,7 +6,7 @@ from monitoring_manager import MonitoringManager
 
 from constants import *
 
-from threading import Thread, Lock
+from threading import Thread, Lock, Timer
 import queue
 import torch
 import time
@@ -23,13 +23,13 @@ class StateManager():
         self.interface_cfg = crowd_interface.cfg
 
         # Width of the dataset
-        self.required_responses_per_state = self.cfg.required_responses_per_state
-        self.required_responses_per_critical_state = self.cfg.required_responses_per_critical_state
+        self.required_responses_per_state = self.interface_cfg.required_responses_per_state
+        self.required_responses_per_critical_state = self.interface_cfg.required_responses_per_critical_state
         
         # Autofill: the act of labeling a state by duplicating its existing labels
-        self.autofill_critical_states = self.cfg.autofill_critical_states
-        if self.cfg.autofill_critical_states:
-            self.num_autofill_actions = self.cfg.num_autofill_actions
+        self.autofill_critical_states = self.interface_cfg.autofill_critical_states
+        if self.interface_cfg.autofill_critical_states:
+            self.num_autofill_actions = self.interface_cfg.num_autofill_actions
 
         # Episode-based state management
         self.pending_states_by_episode: dict[dict] = {}
@@ -131,7 +131,7 @@ class StateManager():
 
             if not state_info:
                 # State already fully labeled
-                return False
+                return
 
             required_responses = self.required_responses_per_critical_state if state_info['critical'] else self.required_responses_per_state
             
@@ -159,12 +159,14 @@ class StateManager():
                 
             # Handle completion
             if state_info['responses_received'] >= required_responses:
-                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
-
                 if state_info['critical'] and state_id == self.next_state_id - 1:
                     # Choose action to execute (a_execute) at random
-                    
-                    self.interface.latest_goal = random.choice(state_info["actions"][:required_responses])
+                    # Shift chose action to the front of the array
+                    a_execute_index = random.randint(0, required_responses)
+                    state_info["actions"][0], state_info["actions"][a_execute_index] = state_info["actions"][a_execute_index], state_info["actions"][0]
+                    self.interface.latest_goal = state_info["actions"][:required_responses][0]
+
+                all_actions = torch.cat(state_info["actions"][:required_responses], dim=0)
 
                 if required_responses < self.required_responses_per_critical_state:
                     # Pad unimportant states's action tensor
@@ -189,7 +191,7 @@ class StateManager():
                 completed_state_monitor = { # Contains legacy components
                     "responses_received": state_info["responses_received"],
                     "completion_time": time.time(),
-                    "is_critical": state_info['crtical'],
+                    "is_critical": state_info['critical'],
                     "prompt_ready": True,
                     "flex_text_prompt": state_info['flex_text_prompt'] if 'flex_text_prompt' in state_info else None,
                     "flex_video_id": state_info['flex_video_id'] if 'flex_video_id' in state_info else None,
@@ -230,9 +232,18 @@ class StateManager():
             self.demote_earlier_unanswered_criticals()
             self.auto_label_previous_states(latest_state_id)
 
-    def _schedule_episode_finalize_after_grace(self, episode_id):
+    def demote_earlier_unanswered_criticals(self):
         pass
-            
+
+    def _schedule_episode_finalize_after_grace(self, episode_id: int):
+        delay = self.episode_finalize_grace_s
+        timer = Timer(delay, self._finalize_episode_if_still_empty, args=(episode_id,))
+    
+    def _cancel_episode_finalize_timer(self, episode_id: int):
+        pass
+
+    def _finalize_episode_if_still_empty(self, episode_id: int):
+        pass
 
     def auto_label_previous_states(self, critical_state_id):
         self.auto_label_queue.put_nowait(critical_state_id)
@@ -255,12 +266,73 @@ class StateManager():
         2. If no previous important state exists, the joint positions of the first state in the episode
         '''
         with self.state_lock:
-            episode_id = self.next_state_id - 1
+            episode_id = max(self.pending_states_by_episode.keys())
 
             episode_states = self.pending_states_by_episode[episode_id]
 
-            for i in range(critical_state_id - 1, -1, -1):
-                if episode_states[i]['critical']:
-                    break
+            template_action = None
 
-            if episode_states[i]['action']
+            previous_critical_id_in_episode = []
+            for state_id in episode_states.keys():
+                if episode_states[state_id]['critical'] and state_id < critical_state_id:
+                    previous_critical_id_in_episode.append(state_id)
+
+            if previous_critical_id_in_episode: # Previous critical states exist
+                latest_critical_state = episode_states[max(previous_critical_id_in_episode)]
+                template_action = latest_critical_state['actions'][0]
+            else: # This is the first critical state in the episode
+                first_state_id = min(episode_states.keys())
+                first_state = episode_states[first_state_id]
+                joint_positions = first_state['state']['joint_positions']
+                gripper_action = first_state['state']['gripper']
+                goal_positions = []
+                for joint_name in JOINT_NAMES:
+                    joint_value = joint_positions[joint_name]
+                    goal_positions.append(float(joint_value))
+
+                goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
+                template_action = torch.tensor(goal_positions, dtype=torch.float32)
+
+            states_to_label = []
+            for state_id, state_info in episode_states.items():
+                if state_id < critical_state_id and not state_info['critical']:
+                    states_to_label.append(state_id)
+
+            for state_id in states_to_label:
+                state_info = episode_states[state_id]
+
+                while state_info["responses_received"] < self.required_responses_per_state:
+                    state_info["actions"].append(template_action.clone())
+                    state_info['responses_received'] += 1
+
+                all_actions = torch.cat(state_info["actions"][:self.required_responses_per_state], dim=0)
+                        
+                # Pad with inf values to match critical state shape
+                missing_responses = self.required_responses_per_critical_state - self.required_responses_per_state
+                action_dim = len(JOINT_NAMES)
+                padding_size = missing_responses * action_dim
+                padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
+                all_actions = torch.cat([all_actions, padding], dim=0)
+                
+                completed_state = {
+                    "obs_path": state_info.get("obs_path"),
+                    "action": all_actions,
+                    "task": self.task_text if self.task_text else "crowdsourced_task",
+                }
+                
+                if episode_id not in self.completed_states_buffer_by_episode:
+                    self.completed_states_buffer_by_episode[episode_id] = {}
+                self.completed_states_buffer_by_episode[episode_id][state_id] = completed_state
+                
+                completed_state_monitor = {
+                    "responses_received": state_info["responses_received"],
+                    "is_critical": state_info['critical'],
+                }
+
+                # Move to episode-based completed states
+                if episode_id not in self.completed_states_by_episode:
+                    self.completed_states_by_episode[episode_id] = {}
+                self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
+
+                del self.pending_states_by_episode[episode_id][state_id]
+            
