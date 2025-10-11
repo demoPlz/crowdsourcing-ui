@@ -13,12 +13,7 @@ import json
 import traceback
 import datasets
 import re
-# --- VLM (Azure OpenAI GPT-5) integration ------------------------------------
 import mimetypes
-
-def _safe_int(v, default):
-    try: return int(v)
-    except Exception: return default
 
 from flask import Flask, jsonify, Response
 from flask_cors import CORS
@@ -28,19 +23,7 @@ from threading import Thread, Lock, Timer
 from math import cos, sin
 import math
 
-# --- URDF FK & SAM2 segmentation ---
-from PIL import Image
-
-try:
-    from urdfpy import URDF
-except Exception:
-    URDF = None
-
-try:
-    from transformers import Sam2Processor, Sam2Model
-except Exception:
-    Sam2Processor = None
-    Sam2Model = None
+from urdfpy import URDF
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
@@ -124,10 +107,7 @@ class CrowdInterface():
                  required_responses_per_critical_state=REQUIRED_RESPONSES_PER_IMPORTANT_STATE,
                  autofill_critical_states: bool = False,
                  num_autofill_actions: int | None = None,
-                 use_vlm_prompt: bool = False,
                  use_manual_prompt: bool = False,
-                 leader_mode: bool = False,
-                 n_leaders: int | None = None,
                  # --- saving critical-state cam_main frames ---
                  save_maincam_sequence: bool = False,
                  prompt_sequence_dir: str | None = None,
@@ -141,30 +121,11 @@ class CrowdInterface():
                  # --- read-only demo video display (independent of recording) ---
                  show_demo_videos: bool = False,
                  show_videos_dir: str | None = None,
-                 # --- NEW ---
-                 save_vlm_logs: bool = False,
-                 vlm_logs_dir: str | None = None):
-
+    ):
+        
         # --- UI prompt mode (simple vs VLM vs MANUAL) ---
-        self.use_vlm_prompt = bool(use_vlm_prompt or int(os.getenv("USE_VLM_PROMPT", "0")))
         self.use_manual_prompt = bool(use_manual_prompt or int(os.getenv("USE_MANUAL_PROMPT", "0")))
-        if self.use_vlm_prompt and self.use_manual_prompt:
-            raise ValueError("use_vlm_prompt and use_manual_prompt are mutually exclusive")
 
-        self._vlm_enabled = False  # becomes True only if VLM is requested AND configured
-
-        # --- Leader Mode controls ---
-        self.leader_mode = bool(leader_mode)
-        try:
-            self.n_leaders = int(n_leaders) if (n_leaders is not None) else 1
-        except Exception:
-            self.n_leaders = 1
-        if self.n_leaders < 1:
-            self.n_leaders = 1
-        # If enabled without VLM or manual prompt, disable with a warning (CLI should prevent this already)
-        if self.leader_mode and not (self.use_vlm_prompt or self.use_manual_prompt):
-            print("⚠️  --leader-mode ignored because neither --use-vlm-prompt nor --use-manual-prompt is enabled.")
-            self.leader_mode = False
         # -------- Observation disk cache (spills heavy per-state obs to disk) --------
         # Set CROWD_OBS_CACHE to override where temporary per-state observations are stored.
         self._obs_cache_root = Path(os.getenv("CROWD_OBS_CACHE", os.path.join(tempfile.gettempdir(), "crowd_obs_cache")))
@@ -201,11 +162,6 @@ class CrowdInterface():
         # Clamp to [1, required_responses_per_critical_state]
         self.num_autofill_actions = max(1, min(self.num_autofill_actions,
                                                self.required_responses_per_critical_state))
-        
-        # Clamp n_leaders to required_responses_per_critical_state
-        if self.n_leaders > self.required_responses_per_critical_state:
-            print(f"⚠️  n_leaders={self.n_leaders} > required_responses_per_critical_state={self.required_responses_per_critical_state}; clamping.")
-            self.n_leaders = self.required_responses_per_critical_state
         
         # Episode-based state management
         self.pending_states_by_episode = {}  # episode_id -> {state_id -> {state: dict, responses_received: int}}
@@ -253,7 +209,7 @@ class CrowdInterface():
         self._gripper_tip_calib = self._load_gripper_tip_calibration()  # {"left":{x,y,z},"right":{x,y,z}}
 
         # Debounced episode finalization
-        self.episode_finalize_grace_s = float(os.getenv("EPISODE_FINALIZE_GRACE_S", "2"))
+        self.episode_finalize_grace_s = 2.0
         self._episode_finalize_timers: dict[str, Timer] = {}
 
 
@@ -299,25 +255,6 @@ class CrowdInterface():
         self._urdf_ee_link_name = os.getenv("EE_LINK_NAME", "ee_gripper_link")
         self._load_urdf_model()
 
-        # --- SAM2 segmentation (views-only) ---
-        self._sam2_model = None
-        self._sam2_processor = None
-        self._sam2_device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._sam2_model_id = os.getenv("SAM2_MODEL_ID", "facebook/sam2.1-hiera-tiny")
-
-        # track masks on disk: episode_id -> { state_id -> {view_name -> mask_path_png} }
-        self._segmentation_paths_by_episode: dict[str, dict[int, dict[str, str]]] = {}
-
-        # segmentation tunables
-        self._seg_dark_patch_radius = int(os.getenv("SEG_DARK_PATCH_RADIUS", "10"))     # px
-        self._seg_dark_mean_thresh = float(os.getenv("SEG_DARK_MEAN_THRESH", "55.0"))  # 0..255
-
-        # --- NEW: "flat gray" guard (RGB in [min,max] and channels nearly equal) ---
-        self._seg_gray_patch_radius = int(os.getenv("SEG_GRAY_PATCH_RADIUS", str(self._seg_dark_patch_radius)))
-        self._seg_gray_min          = float(os.getenv("SEG_GRAY_MIN", "161.0"))
-        self._seg_gray_max          = float(os.getenv("SEG_GRAY_MAX", "200.0"))
-        self._seg_gray_delta        = float(os.getenv("SEG_GRAY_DELTA", "10.0"))
-
         # --- Segmentation gating: only segment when gripper is "grasped" ---
         # Absolute force threshold in Newtons; if not available, we skip segmentation.
         self._grasp_force_thresh_N = float(os.getenv("SEG_GRASP_FORCE_THRESH_N", "50.0"))
@@ -329,32 +266,9 @@ class CrowdInterface():
             "gripper_force",
         )
 
-        # --- Multi-seed SAM2 prompting around gripper center ---
-        self._seg_use_multi_seed   = bool(int(os.getenv("SEG_USE_MULTI_SEED", "0")))
-        self._seg_seed_radius_px   = int(os.getenv("SEG_SEED_RADIUS_PX", "10"))   # base ring spacing, px
-        self._seg_seed_rings       = int(os.getenv("SEG_SEED_RINGS", "1"))        # number of inner positive rings
-        self._seg_seed_per_ring    = int(os.getenv("SEG_SEED_PER_RING", "8"))     # samples per ring
-        self._seg_min_valid_seeds  = int(os.getenv("SEG_MIN_VALID_SEEDS", "0"))   # fallback to center if fewer
-
-        # Optional negatives (one outer ring of 0-label clicks)
-        self._seg_use_neg_ring     = bool(int(os.getenv("SEG_USE_NEG_RING", "0")))
-        self._seg_neg_ring_scale   = float(os.getenv("SEG_NEG_RING_SCALE", "2.5"))  # outer ring radius multiplier vs base
-
-        # Optional post-processing
-        self._seg_mask_close_ksize = int(os.getenv("SEG_MASK_CLOSE_KSIZE", "0"))   # 0 to disable; else odd >=3
-
-        # Multi-seed behavior for occlusion cases
-        self._seg_center_negative  = bool(int(os.getenv("SEG_CENTER_NEGATIVE", "1")))  # center as NEG if dark/gray
-        self._seg_ring_filter_mode = os.getenv("SEG_RING_FILTER_MODE", "loose")        # off | loose | strict
-        self._seg_multimask        = bool(int(os.getenv("SEG_MULTIMASK", "1")))        # try multiple masks
-
-        # Use a larger minimum ring radius so we click outside the gripper
-        self._seg_seed_min_radius_px = int(os.getenv("SEG_SEED_MIN_RADIUS_PX", "12"))  # >= gripper radius in px
-
         # --- NEW: Important-state cam_main image sequence sink ---
         self.save_maincam_sequence = bool(save_maincam_sequence)
         self._prompt_seq_dir = Path(prompt_sequence_dir or "prompts/drawer/snapshots").resolve()
-        self._prompt_seq_lock = Lock()
         self._prompt_seq_index = 1
         # Track which states have been saved to maintain chronological ordering
         self._saved_sequence_states: set[tuple[str, int]] = set()  # (episode_id, state_id)
@@ -391,7 +305,6 @@ class CrowdInterface():
         self._demo_videos_dir = None
         self._video_index_lock = Lock()
         self._video_index = 1   # 1-based, reset on each process start
-        self._video_ext_default = ".webm"
         if self.record_demo_videos:
             if demo_videos_dir:
                 self._demo_videos_dir = Path(demo_videos_dir).resolve()
@@ -440,23 +353,6 @@ class CrowdInterface():
             except Exception as e:
                 print(f"⚠️ Could not prepare show videos directory '{self._show_videos_dir}': {e}")
                 self.show_demo_videos = False
-
-        # --- NEW: VLM logs ---
-        self.save_vlm_logs = bool(save_vlm_logs or int(os.getenv("SAVE_VLM_LOGS", "0")))
-        try:
-            default_logs = (self._repo_root() / "output" / "vlm_logs").resolve()
-        except Exception:
-            default_logs = Path("output/vlm_logs").resolve()
-        self._vlm_logs_dir = Path(vlm_logs_dir).resolve() if vlm_logs_dir else default_logs
-        self._vlm_logs_written: set[tuple[str, int]] = set()
-
-        if self.save_vlm_logs:
-            try:
-                self._vlm_logs_dir.mkdir(parents=True, exist_ok=True)
-                print(f"📝 VLM logs → {self._vlm_logs_dir}")
-            except Exception as e:
-                print(f"⚠️ Could not prepare VLM logs directory '{self._vlm_logs_dir}': {e}")
-                self.save_vlm_logs = False
 
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow
@@ -836,126 +732,9 @@ class CrowdInterface():
         tn = task_name or self._task_name()
         return (self._prompts_root_dir() / tn).resolve()
 
-    def _demo_images_for_task(self, task_name: str | None = None) -> list[str]:
-        """Return numerically sorted image file paths from prompts/demo/{task-name}/snapshots."""
-        tn = task_name or self._task_name()
-        demo_dir = (self._prompts_root_dir() / tn / "snapshots").resolve()
-        exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        
-        # Collect image files and sort them numerically by extracting numeric part
-        image_files = []
-        for p in demo_dir.iterdir():
-            if p.suffix.lower() in exts and p.is_file():
-                image_files.append(p)
-        
-        # Sort numerically by extracting the numeric part from filename
-        def numeric_sort_key(path):
-            # Extract numeric part from filename (e.g., "000001" from "000001.jpg")
-            stem = path.stem
-            # Find all digits in the filename
-            import re
-            numbers = re.findall(r'\d+', stem)
-            if numbers:
-                return int(numbers[0])  # Use first numeric sequence
-            return float('inf')  # Put non-numeric files at the end
-        
-        sorted_files = sorted(image_files, key=numeric_sort_key)
-        return [str(p) for p in sorted_files]
-
     def _load_text(self, path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
-
-    def _count_sequence_descriptions(self, sequence_text: str) -> int:
-        """
-        Count the number of numbered descriptions in a sequence_description text.
-        Expected format: "1. description", "2. description", etc.
-        """
-        count = 0
-        lines = sequence_text.strip().split('\n')
-        for line in lines:
-            line = line.strip()
-            # Look for lines that start with a number followed by a period
-            if re.match(r'^\d+\.', line):
-                count += 1
-        return count
-
-    def _substitute_placeholders(self, template: str, task_name: str | None = None) -> str:
-        """
-        Replace every {x} in 'template' with contents of prompts/{task-name}/x.txt.
-        Runs up to 3 passes to allow simple nested references.
-        Special handling for {sequence_description} to add copying instructions.
-        """
-        tn = task_name or self._task_name()
-        tdir = self._task_dir(tn)
-
-        pat = re.compile(r"\{([A-Za-z0-9_\-]+)\}")
-        out = template
-        for _ in range(3):
-            changed = False
-            def repl(m):
-                placeholder = m.group(1)
-                fname = placeholder + ".txt"
-                fpath = tdir / fname
-                content = fpath.read_text(encoding="utf-8").strip()
-                
-                # Special handling for sequence_description to add copying instructions
-                if placeholder == "sequence_description":
-                    example_count = self._count_sequence_descriptions(content)
-                    if example_count > 0:
-                        copying_instruction = f"\nFor the first {example_count} frame pairs, DO NOT generate new descriptions. Instead, you MUST copy exactly these descriptions word-for-word from the examples above. Only after you have copied all {example_count} examples should you generate new descriptions for any remaining frames.\n\nExamples to copy:\n\n{content}"
-                        return copying_instruction
-                
-                return content
-            new_out = pat.sub(repl, out)
-            if new_out != out:
-                changed = True
-                out = new_out
-            if not changed:
-                break
-        return out
-
-    def _substitute_dynamic_placeholders(self, template: str, episode_id: str, state_id: int) -> str:
-        """
-        Replace dynamic placeholders like [gripper_description] with context-specific text
-        based on the current state information.
-        """
-        if not template or "[gripper_description]" not in template:
-            return template
-        
-        # Get the state info to determine gripper status
-        with self.state_lock:
-            ep_states = self.pending_states_by_episode.get(episode_id, {})
-            state_info = ep_states.get(state_id)
-            if state_info is None:
-                # Try completed states as fallback
-                ep_completed = self.completed_states_buffer_by_episode.get(episode_id, {})
-                state_info = ep_completed.get(state_id)
-        
-        if state_info is None:
-            # No state info available, use default text
-            gripper_desc = "The gripper status cannot be determined in this state."
-        else:
-            # Extract the state data
-            state_data = state_info.get("state", {})
-            
-            # Check if gripper is grasped using existing method
-            if self._gripper_is_grasped(state_data):
-                gripper_desc = "The gripper has grasped onto the object in this state."
-            else:
-                gripper_desc = "The gripper is not grasped onto anything in this state."
-        
-        # Replace the placeholder
-        result = template.replace("[gripper_description]", gripper_desc)
-        return result
-
-    def _load_prompt_with_subst(self, fname: str) -> str:
-        """
-        Load prompts/{fname} and apply {x} substitution using prompts/{task-name}/x.txt.
-        """
-        p = (self._prompts_root_dir() / fname).resolve()
-        raw = self._load_text(p)
-        return self._substitute_placeholders(raw, self._task_name())
-
+    
     # --- NEW: helpers for critical-state image sequence ---
     def _compute_next_prompt_seq_index(self) -> int:
         """
@@ -2120,9 +1899,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
 
         # NEW: Always tell the frontend what to do with demo videos
         payload["demo_video"] = crowd_interface.get_demo_video_config()
-        
-        # NEW: Add leader mode information for frontend delay logic
-        payload["leader_mode"] = crowd_interface.leader_mode
 
         response = jsonify(payload)
         # Prevent caching
