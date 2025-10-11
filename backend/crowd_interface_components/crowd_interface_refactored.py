@@ -1,5 +1,5 @@
 from constants import *
-from crowd_interface_config import CrowdInterfaceConfig
+from backend.crowd_interface_config import CrowdInterfaceConfig
 
 from state_manager import StateManager
 from camera_manager import CameraManager

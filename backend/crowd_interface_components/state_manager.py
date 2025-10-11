@@ -1,5 +1,5 @@
 from crowd_interface import CrowdInterface
-from crowd_interface_config import CrowdInterfaceConfig
+from backend.crowd_interface_config import CrowdInterfaceConfig
 from camera_manager import CameraManager
 from database import Database
 from monitoring_manager import MonitoringManager

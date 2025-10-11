@@ -1,5 +1,4 @@
 import logging
-import argparse
 import sys
 import time
 from dataclasses import asdict
@@ -12,12 +11,8 @@ from werkzeug.serving import make_server
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.policies.factory import make_policy
 from lerobot.common.robot_devices.control_configs import (
-    CalibrateControlConfig,
     ControlPipelineConfig,
     RecordControlConfig,
-    RemoteRobotConfig,
-    ReplayControlConfig,
-    TeleoperateControlConfig,
 )
 from lerobot.common.robot_devices.control_utils import (
     init_keyboard_listener,
@@ -25,19 +20,17 @@ from lerobot.common.robot_devices.control_utils import (
     reset_environment_crowd,
     sanity_check_dataset_name,
     sanity_check_dataset_robot_compatibility,
-    stop_recording,
-    warmup_record_crowd,
 )
 from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_config
-from lerobot.common.robot_devices.utils import busy_wait, safe_disconnect
+from lerobot.common.robot_devices.utils import safe_disconnect
 from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
 
 from crowd_interface import *
+from crowd_interface_config import CrowdInterfaceConfig
 from flask_app import create_flask_app
 import cv2  # for closing display windows
 from pathlib import Path
-import os
 
 def _stop_display_only(listener, display_cameras: bool):
     """
@@ -51,127 +44,8 @@ def _stop_display_only(listener, display_cameras: bool):
     except Exception:
         pass
 
-def _pop_crowd_cli_overrides(argv=None):
-    """
-    Extract our two lightweight CLI flags and remove them from sys.argv
-    so LeRobot's config parser never sees unknown args.
-    """
-    ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--required-responses-per-critical-state", type=int, dest="crowd_rrpis")
-    ap.add_argument("--autofill-critical-states", action="store_true", dest="crowd_autofill")
-    ap.add_argument(
-        "--num-autofill-actions",
-        type=int,
-        dest="crowd_num_autofill_actions",
-        help="For IMPORTANT states, per unique submission fill this many actions in total "
-             "(1 actual + N-1 clones). Default = required-responses-per-critical-state."
-    )
-
-    # === NEW: prompt mode flags (mutually exclusive) ===
-    prompt_group = ap.add_mutually_exclusive_group()
-    prompt_group.add_argument(
-        "--use-vlm-prompt",
-        action="store_true",
-        dest="crowd_use_vlm_prompt",
-        help="Use VLM-generated prompts: only serve IMPORTANT states once vlm_text and vlm_video_id exist "
-             "(requires Azure OpenAI). Default if neither flag is provided is the simple task prompt."
-    )
-    prompt_group.add_argument(
-        "--use-manual-prompt",
-        action="store_true",
-        dest="crowd_use_manual_prompt",
-        help="Manual mode: do NOT query the VLM. Only serve IMPORTANT states after the frontend (monitor) "
-             "manually sets vlm_text and vlm_video_id. Mutually exclusive with --use-vlm-prompt."
-    )
-
-    # --- NEW: save cam_main frames for critical states as an ordered image sequence ---
-    ap.add_argument(
-        "--save-critical-maincam-sequence",
-        action="store_true",
-        dest="crowd_save_seq",
-        help="If set, save observation.images.cam_main at each IMPORTANT state to a directory as 000001.jpg, 000002.jpg, ...",
-    )
-    ap.add_argument(
-        "--sequence-dir",
-        type=str,
-        dest="crowd_seq_dir",
-        help="Directory to save IMPORTANT-state cam_main frames (default: 'prompts/demo/{--task-name}/snapshots').",
-    )
-    ap.add_argument(
-        "--sequence-clear",
-        action="store_true",
-        dest="crowd_seq_clear",
-        help="If set, clear the sequence directory at startup before saving new frames.",
-    )
-    # --- NEW: one-word task name -> derive sequence dir at <repo>/prompts/demo/{task_name} ---
-    ap.add_argument(
-        "--task-name",
-        type=str,
-        dest="crowd_task_name",
-        help="One-word task name used for prompt placeholder substitution and, if --sequence-dir is not provided, "
-             "to derive the sequence dir as '<repo>/prompts/demo/{task_name}/snapshots' "
-             "(ignored if --sequence-dir is provided).",
-    )
-    # --- NEW: Leader Mode (delay VLM until N unique submissions) ---
-    ap.add_argument(
-        "--leader-mode",
-        action="store_true",
-        dest="crowd_leader_mode",
-        help="Delay VLM prompt until N unique submissions for an IMPORTANT state. Requires --use-vlm-prompt."
-    )
-    ap.add_argument(
-        "--n-leaders",
-        type=int,
-        dest="crowd_n_leaders",
-        help="Number of unique submissions before first VLM query for an IMPORTANT state (default: 1). "
-             "Must be <= --required-responses-per-critical-state."
-    )
-    # --- NEW: enable demo video recording in the frontend and save uploads on the backend ---
-    ap.add_argument(
-        "--record-demo-videos",
-        action="store_true",
-        dest="crowd_record_videos",
-        help="If set, enable frontend demo video recording; saved under prompts/demos/{task-name}/videos.",
-    )
-    ap.add_argument(
-        "--demo-videos-dir",
-        type=str,
-        dest="crowd_videos_dir",
-        help="Override directory where demo videos are saved (default: 'prompts/demos/{task-name}/videos').",
-    )
-    ap.add_argument(
-        "--auto-clear-demo",
-        action="store_true",
-        dest="crowd_auto_clear_demo",
-        help="If set, automatically clear demo videos and snapshots directories at startup.",
-    )
-    ap.add_argument(
-        "--show-demo-videos",
-        action="store_true",
-        dest="crowd_show_videos",
-        help="Enable read-only example video display (no recording). Videos are read from prompts/{task-name}/videos by default."
-    )
-    ap.add_argument(
-        "--show-videos-dir",
-        type=str,
-        dest="crowd_show_videos_dir",
-        help="Override directory to read example videos from (default: prompts/{task-name}/videos)."
-    )
-    # --- NEW: save VLM conversations (context + history + current) ---
-    ap.add_argument(
-        "--save-vlm-logs",
-        action="store_true",
-        dest="crowd_save_vlm_logs",
-        help="If set, save the full three-part VLM conversation per critical state to output/vlm_logs.",
-    )
-
-    args, remaining = ap.parse_known_args(argv if argv is not None else sys.argv[1:])
-    # Strip our flags before LeRobot parses CLI
-    sys.argv = [sys.argv[0]] + remaining
-    return args
-
-# Parse once at import time so @parser.wrap can run normally later
-_CROWD_OVERRIDES = _pop_crowd_cli_overrides()
+# Parse crowd interface config once at import time so @parser.wrap can run normally later
+_CROWD_CONFIG = CrowdInterfaceConfig.from_cli_args()
 
 @safe_disconnect
 def record(
@@ -268,8 +142,8 @@ def record(
             events["rerecord_episode"] = False
             events["exit_early"] = False
             dataset.clear_episode_buffer()
-            # Clear the crowd interface episode data
-            crowd_interface.clear_episode_data(recorded_episodes)
+            # TODO: Implement clear_episode_data in CrowdInterface if needed
+            # crowd_interface.clear_episode_data(recorded_episodes)
             continue
 
         dataset.save_episode()
@@ -305,114 +179,13 @@ def control_robot(cfg: ControlPipelineConfig):
     # Disable Flask request logging to reduce terminal noise
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
-    # Wire our optional CLI overrides into the crowd interface
-    ci_kwargs = {}
-    if getattr(_CROWD_OVERRIDES, "crowd_rrpis", None) is not None:
-        ci_kwargs["required_responses_per_critical_state"] = _CROWD_OVERRIDES.crowd_rrpis
-    if getattr(_CROWD_OVERRIDES, "crowd_autofill", False):
-        ci_kwargs["autofill_critical_states"] = True
-    if getattr(_CROWD_OVERRIDES, "crowd_num_autofill_actions", None) is not None:
-        ci_kwargs["num_autofill_actions"] = _CROWD_OVERRIDES.crowd_num_autofill_actions
+    # Log the prompt mode being used
+    prompt_mode = "manual" if _CROWD_CONFIG.use_manual_prompt else "simple"
+    logging.info(f"[Crowd] Prompt mode selected: {prompt_mode}")
+    logging.info(f"[Crowd] Task name: {_CROWD_CONFIG.task_name}")
 
-    # Prompt mode selection (manual vs VLM vs simple)
-    use_vlm    = bool(getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False))
-    use_manual = bool(getattr(_CROWD_OVERRIDES, "crowd_use_manual_prompt", False))
-    if use_vlm and use_manual:
-        # Redundant with argparse's mutual exclusion, but explicit here too.
-        raise SystemExit("--use-manual-prompt and --use-vlm-prompt are mutually exclusive")
-
-    if use_vlm:
-        ci_kwargs["use_vlm_prompt"] = True  # existing wiring
-
-    if use_manual:
-        ci_kwargs['use_manual_prompt'] = True
-
-    selected_mode = "manual" if use_manual else ("vlm" if use_vlm else "simple")
-    logging.info(f"[Crowd] Prompt mode selected: {selected_mode}")
-
-    # --- NEW: Leader Mode wiring and early validation ---
-    if getattr(_CROWD_OVERRIDES, "crowd_leader_mode", False):
-        # Enforce: only valid when either --use-vlm-prompt or --use-manual-prompt is on
-        use_vlm_prompt = getattr(_CROWD_OVERRIDES, "crowd_use_vlm_prompt", False)
-        use_manual_prompt = getattr(_CROWD_OVERRIDES, "crowd_use_manual_prompt", False)
-        if not (use_vlm_prompt or use_manual_prompt):
-            raise SystemExit("--leader-mode requires either --use-vlm-prompt or --use-manual-prompt")
-
-        n_leaders_cli = getattr(_CROWD_OVERRIDES, "crowd_n_leaders", None)
-        rrpis_cli = getattr(_CROWD_OVERRIDES, "crowd_rrpis", None)
-        # If both provided, enforce the constraint up-front
-        if n_leaders_cli is not None and rrpis_cli is not None and n_leaders_cli > rrpis_cli:
-            raise SystemExit(
-                f"--n-leaders ({n_leaders_cli}) must be <= --required-responses-per-critical-state ({rrpis_cli})"
-            )
-
-        ci_kwargs["leader_mode"] = True
-        if n_leaders_cli is not None:
-            ci_kwargs["n_leaders"] = n_leaders_cli
-
-    # (rest of ci_kwargs wiring keeps its order; no behavior change)
-
-    # NEW: image sequence saving controls
-    if getattr(_CROWD_OVERRIDES, "crowd_save_seq", False):
-        ci_kwargs["save_maincam_sequence"] = True
-    # Always capture raw CLI task_name (if any) for prompt placeholders
-    task_name = getattr(_CROWD_OVERRIDES, "crowd_task_name", None)
-    safe = None
-    if task_name:
-        safe = "".join(c for c in task_name if (c.isalnum() or c in ("_", "-"))).strip()
-        if safe:
-            ci_kwargs["prompt_task_name"] = safe  # <-- used only for prompt substitution / demo assets
-
-    # Sequence directory resolution
-    if getattr(_CROWD_OVERRIDES, "crowd_seq_dir", None) is not None:
-        ci_kwargs["prompt_sequence_dir"] = _CROWD_OVERRIDES.crowd_seq_dir
-    else:
-        # Derive prompts/{task_name}/snapshots if provided and no explicit --sequence-dir was given
-        if safe:
-            repo_root = Path(__file__).resolve().parent / ".."
-            seq_dir = (repo_root / "prompts" / safe / "snapshots").resolve()
-            ci_kwargs["prompt_sequence_dir"] = str(seq_dir)
-            try:
-                logging.info(f"Using derived prompt sequence dir from --task-name='{safe}': {seq_dir}")
-            except Exception:
-                pass
-    if getattr(_CROWD_OVERRIDES, "crowd_seq_clear", False):
-        ci_kwargs["prompt_sequence_clear"] = True
-
-    # --- NEW: auto-clear control for both demo videos and snapshots ---
-    auto_clear = getattr(_CROWD_OVERRIDES, "crowd_auto_clear_demo", False)
-    if auto_clear:
-        ci_kwargs["prompt_sequence_clear"] = True
-        ci_kwargs["demo_videos_clear"] = True
-
-    # --- NEW: demo video recording controls ---
-    if getattr(_CROWD_OVERRIDES, "crowd_record_videos", False):
-        ci_kwargs["record_demo_videos"] = True
-        # If a custom dir isn't provided, CrowdInterface will derive prompts/{task}/videos
-        if getattr(_CROWD_OVERRIDES, "crowd_videos_dir", None) is not None:
-            ci_kwargs["demo_videos_dir"] = _CROWD_OVERRIDES.crowd_videos_dir
-        else:
-            # Derive default if we have a sanitized task name
-            if safe:
-                repo_root = Path(__file__).resolve().parent / ".."
-                default_vdir = (repo_root / "prompts" / safe / "videos").resolve()
-                ci_kwargs["demo_videos_dir"] = str(default_vdir)
-
-    # --- NEW: read-only demo video display controls ---
-    if getattr(_CROWD_OVERRIDES, "crowd_show_videos", False):
-        ci_kwargs["show_demo_videos"] = True
-        if getattr(_CROWD_OVERRIDES, "crowd_show_videos_dir", None) is not None:
-            ci_kwargs["show_videos_dir"] = _CROWD_OVERRIDES.crowd_show_videos_dir
-        else:
-            if safe:
-                repo_root = Path(__file__).resolve().parent / ".."
-                default_show_dir = (repo_root / "prompts" / safe / "videos").resolve()
-                ci_kwargs["show_videos_dir"] = str(default_show_dir)
-
-    if getattr(_CROWD_OVERRIDES, "crowd_save_vlm_logs", False):
-        ci_kwargs["save_vlm_logs"] = True
-
-    crowd_interface = CrowdInterface(**ci_kwargs)
+    # Use the crowd interface config to create CrowdInterface
+    crowd_interface = CrowdInterface(**_CROWD_CONFIG.to_crowd_interface_kwargs())
     crowd_interface.init_cameras()
 
     app = create_flask_app(crowd_interface)
