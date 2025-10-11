@@ -77,13 +77,6 @@ class StateManager():
         '''
         joint_positions_float = {k: float(v) for k, v in joint_positions.items()}
 
-        frontend_state = {
-            "joint_positions": joint_positions_float,
-            "gripper": gripper_motion,
-            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'], # legacy
-            "left_carriage_external_force": left_carriage_external_force
-        }
-
         state_id = self.next_state_id
         self.next_state_id += 1
 
@@ -102,13 +95,36 @@ class StateManager():
         self.camera_manager.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
         
         state_info = {
-            "state": frontend_state.copy(),
+            # Identity
+            "state_id": state_id,
+            "episode_id": episode_id,
+
+            # Robot state
+            "joint_positions": joint_positions_float,
+            "gripper": gripper_motion,
+            "controls": ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'], # legacy, will remove
+            "left_carriage_external_force": left_carriage_external_force,
+
+            # Observations
             "obs_path": obs_path,
+
+            # Views
             "view_paths": view_paths,
+
+            # Labels
             "actions": [],
             "responses_received": 0,
+
+            # Critical state fields
             "critical": False,
-            "episode_id": episode_id
+            "prompt_ready": False,
+            "text_prompt": None, # replaces flex_text_prompt
+            "video_prompt": None, # replaces flex_video_id
+
+            # Task
+            "task": self.task_text
+
+            # No other fields; segmentation, and all others, no longer supported\
         }
 
         with self.state_lock:
@@ -148,7 +164,7 @@ class StateManager():
             goal_positions = []
             for joint_name in JOINT_NAMES:
                 joint_value = joint_positions[joint_name]
-                goal_positions.append(float(joint_value))
+                goal_positions.append(float(joint_value[0]))
 
             goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
             goal_positions = torch.tensor(goal_positions, dtype=torch.float32)
@@ -181,32 +197,18 @@ class StateManager():
                     padding = torch.full((padding_size,), float('nan'), dtype=torch.float32)
                     all_actions = torch.cat([all_actions, padding], dim=0)
 
-                # Everything we need to later write states to Lerobot dataset in order
-                completed_state = {
-                    "obs_path": state_info.get("obs_path"),
-                    "action": all_actions,
-                    "task": self.interface_cfg.task_text # Text label for frame
-                }
+                state_info['action_to_save'] = all_actions
 
                 # Save to completed states buffer (for forming training set)
                 if episode_id not in self.completed_states_buffer_by_episode:
                     self.completed_states_buffer_by_episode[episode_id] = {}
-                self.completed_states_buffer_by_episode[episode_id][state_id] = completed_state
+                self.completed_states_buffer_by_episode[episode_id][state_id] = state_info
 
-                completed_state_monitor = { # Contains legacy components
-                    "responses_received": state_info["responses_received"],
-                    "completion_time": time.time(),
-                    "is_critical": state_info['critical'],
-                    "prompt_ready": True,
-                    "flex_text_prompt": state_info['flex_text_prompt'] if 'flex_text_prompt' in state_info else None,
-                    "flex_video_id": state_info['flex_video_id'] if 'flex_video_id' in state_info else None,
-                }
                 # Save to completed states (for monitoring)
                 if episode_id not in self.completed_states_by_episode:
                     self.completed_states_by_episode[episode_id] = {}
-                self.completed_states_by_episode[episode_id][state_id] = completed_state_monitor
+                self.completed_states_by_episode[episode_id][state_id] = state_info
 
-                
                 # Remove from pending
                 del self.pending_states_by_episode[episode_id][state_id]
 
@@ -214,7 +216,6 @@ class StateManager():
                 if not self.pending_states_by_episode[episode_id]:
                     self._schedule_episode_finalize_after_grace(episode_id)
                 
-            
 
     def set_last_state_to_critical(self):
         with self.state_lock:
@@ -276,13 +277,46 @@ class StateManager():
             self.dataset_manager.save_episode(buffer)
 
             del self.completed_states_buffer_by_episode[episode_id]
-            
 
-    def auto_label_previous_states(self, critical_state_id):
-        self.auto_label_queue.put_nowait(critical_state_id)
+    def get_latest_state(self) -> dict:
+        """
+        Get a pending state from current serving episode
+        We only implement crowd mode, meaning that we serve the last state
+        of the last episode always.
+        """
+
+        with self.state_lock:
+            episode_id = self.current_serving_episode
+            state_id = self.next_state_id - 1
+
+            if episode_id not in self.pending_states_by_episode \
+            or state_id not in self.pending_states_by_episode[episode_id]:
+                # No pending states left
+                return {
+                    "status": "no_pending_states",
+                    "blocked_critical_states": False
+                }
+            
+            state_info = self.pending_states_by_episode[episode_id][state_id]
+
+            if state_info['critical'] and not state_info['prompt_ready']:
+                # There are pending states but no ready states
+
+                return {
+                    "status": "no_ready_states",
+                    "blocked_critical_states": True,
+                }
+            
+            # Return the latest state for labeling
+            return state_info.copy()
+            
+            
     """
     Auto-labeling thread
     """
+    def auto_label_previous_states(self, critical_state_id):
+        self.auto_label_queue.put_nowait(critical_state_id)
+
     def _start_auto_label_worker(self):
         self.auto_label_worker_thread = Thread(target=self._auto_label_worker, daemon=True)
         self.auto_label_worker_thread.start()

@@ -3478,14 +3478,14 @@ loader.load(
     }
 
     // Only show the button if there's a flex-processed video ID for this state
-    const hasFlexVideo = !!(state?.flex_video_id);
+    const hasFlexVideo = !!(state?.video_prompt);
     const rawExampleUrl = hasFlexVideo ? getExampleVideoUrlFromState(state) : null;
     const exampleUrl = hasFlexVideo ? resolveExampleVideoUrl(rawExampleUrl) : null;
 
     // Debug logging for video ID
-    if (state?.flex_video_id) {
-      console.log(`🎬 Example video ID: ${state.flex_video_id}`, {
-        flex_video_id: state.flex_video_id,
+    if (state?.video_prompt) {
+      console.log(`🎬 Example video ID: ${state.video_prompt}`, {
+        video_prompt: state.video_prompt,
         video_id: state.video_id, // alias
         rawUrl: rawExampleUrl,
         resolvedUrl: exampleUrl,
@@ -3530,12 +3530,12 @@ loader.load(
 
       // Do not auto-open the dock; let the user click the toggle
       exampleVideo.addEventListener('error', () => {
-        console.error(`❌ Example video failed to load (ID: ${state?.flex_video_id}):`, exampleVideo?.error, exampleUrl);
+        console.error(`❌ Example video failed to load (ID: ${state?.video_prompt}):`, exampleVideo?.error, exampleUrl);
       });
 
       exampleVideo.addEventListener('loadedmetadata', () => {
         // noop; keep dock hidden until user clicks
-        console.log(`✅ Example video loaded successfully (ID: ${state?.flex_video_id}):`, {
+        console.log(`✅ Example video loaded successfully (ID: ${state?.video_prompt}):`, {
           duration: exampleVideo.duration,
           videoWidth: exampleVideo.videoWidth,
           videoHeight: exampleVideo.videoHeight,
@@ -3551,7 +3551,7 @@ loader.load(
       // No flex video for this state ⇒ do NOT render any example UI at all.
       console.log(`🚫 No example video available for this state:`, {
         state_id: state.state_id,
-        flex_video_id: state?.flex_video_id,
+        video_prompt: state?.video_prompt,
         hasFlexVideo: hasFlexVideo,
         rawExampleUrl: rawExampleUrl
       });

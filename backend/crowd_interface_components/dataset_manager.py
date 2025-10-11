@@ -85,7 +85,7 @@ class DatasetManager():
         for state_id in sorted(buffer.keys()):
             state = buffer[state_id]
             obs = self.database._load_obs_from_disk(state['obs_path'])
-            frame = {**obs, "action": state["action"], "task": state["task"]}
+            frame = {**obs, "action": state["action_to_save"], "task": state["task"]}
             self.dataset.add_frame(frame)
             self.database._delete_obs_from_disk(state.get("obs_path"))
 

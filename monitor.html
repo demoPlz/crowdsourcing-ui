@@ -956,7 +956,7 @@
                 if (episodeData.states) {
                     for (const [sidStr, info] of Object.entries(episodeData.states)) {
                         const sid = parseInt(sidStr, 10);
-                        const isCritical = !!(info.is_critical || false);
+                        const isCritical = !!(info.critical || false);
                         const hasFlexBoth = Boolean(info.has_flex_text) && Boolean(info.has_flex_video);
                         updateEpisodeChart(episodeId, sid, info.responses_received || 0, isCritical, false, (isCritical ? hasFlexBoth : true));
                     }
@@ -996,9 +996,9 @@
                 if (data.status === 'success') {
                     if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
                     currentStateId.textContent = data.state_id || '--';
-                    if (data.is_critical !== undefined) {
-                        stateType.textContent = data.is_critical ? '🔴 Critical' : '🔵 Regular';
-                        const required = data.is_critical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
+                    if (data.critical !== undefined) {
+                        stateType.textContent = data.critical ? '🔴 Critical' : '🔵 Regular';
+                        const required = data.critical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
                         const received = data.responses_received || 0;
                         stateResponses.textContent = `${received}/${required}`;
                     } else {
@@ -1122,8 +1122,8 @@
                     modalMaincam.src = details.maincam_data_url;
                 }
 
-                const currentText = details.flex_text_prompt || '';
-                const currentVid  = (typeof details.flex_video_id === 'number') ? details.flex_video_id : null;
+                const currentText = details.text_prompt || '';
+                const currentVid  = (typeof details.video_prompt === 'number') ? details.video_prompt : null;
 
                 // Show "NOT SET" if both text and video ID are not ready
                 const isFlexReady = currentText.trim() && (currentVid !== null);
@@ -1201,16 +1201,16 @@
                     if (!Number.isFinite(num)) { showToast('Video ID must be a number.'); return; }
                     vid = num;
                 }
-                payload.flex_text_prompt = txt;
-                payload.flex_video_id = vid;             // may be null
+                payload.text_prompt = txt;
+                payload.video_prompt = vid;             // may be null
                 payload.manual_override = true;          // NEW: tells backend to lock this state
                 payload.source = 'manual';               // optional: for auditing
             } else {
                 const txt = modalContext.selectedText;
                 const vid = modalContext.selectedVideoId;
                 if (!txt) { showToast('Pick a description first.'); return; }
-                payload.flex_text_prompt = txt;
-                payload.flex_video_id = vid;
+                payload.text_prompt = txt;
+                payload.video_prompt = vid;
                 payload.manual_override = false;
                 payload.source = 'bank';
             }
@@ -1310,8 +1310,8 @@
         async function checkStateLabelStatus(episodeId, stateId, square, isVisited) {
             try {
                 const details = await fetchStateDetails(episodeId, stateId);
-                const hasText = details.flex_text_prompt && details.flex_text_prompt.trim();
-                const hasVideoId = details.flex_video_id !== null && details.flex_video_id !== undefined;
+                const hasText = details.text_prompt && details.text_prompt.trim();
+                const hasVideoId = details.video_prompt !== null && details.video_prompt !== undefined;
                 const isLabeled = hasText && hasVideoId;
                 
                 // Add unlabeled styling if not labeled (regardless of visited status)
