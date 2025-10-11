@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import cv2
-import shutil
 import tempfile
 import numpy as np
 import time
@@ -602,15 +601,6 @@ class CrowdInterface():
             os.remove(path)
         except Exception:
             pass
-
-    def _purge_episode_cache(self, episode_id: str):
-        """Remove the entire temp cache folder for an episode."""
-        try:
-            d = self._episode_cache_dir(episode_id)
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
-        except Exception:
-            pass
     
     def _start_auto_label_worker(self):
         self.auto_label_worker_thread = Thread(target=self._auto_label_worker, daemon=True)
@@ -695,16 +685,6 @@ class CrowdInterface():
                 self.completed_states_by_episode[episode_id][state_id] = state_info
 
                 del self.pending_states_by_episode[episode_id][state_id]
-    
-    # ---------- Encoding helpers ----------
-    def _file_to_data_url(self, path: str, mime: str) -> str:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        return f"data:{mime};base64,{b64}"
-
-    def _image_file_to_data_url(self, path: str) -> str:
-        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-        return self._file_to_data_url(path, mime)
 
     # ---------- Episode → video ----------
     def _load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
@@ -817,11 +797,6 @@ class CrowdInterface():
         self._episode_finalize_timers[episode_id] = timer
         timer.start()
 
-    def _cancel_episode_finalize_timer(self, episode_id: int):
-        t = self._episode_finalize_timers.pop(episode_id, None)
-        if t:
-            t.cancel()
-
     def _finalize_episode_if_still_empty(self, episode_id: int):
         """
         Timer callback
@@ -880,13 +855,6 @@ class CrowdInterface():
 
         # For UI fallback and dataset writes, always use cfg.single_task
         self.task_text = getattr(cfg, "single_task", None)
-
-        # NEW: run the one-time context query (if enabled/configured)
-        try:
-            if self._vlm_enabled and self.use_vlm_prompt:
-                self._run_vlm_context_once()
-        except Exception as e:
-            print(f"⚠️ Context VLM call failed: {e}")
         
         # Update dataset action shape to accommodate crowd responses
         self._update_dataset_action_shape()
@@ -1093,19 +1061,6 @@ class CrowdInterface():
         self._obs_img_thread = Thread(target=self._obs_stream_worker, daemon=True)
         self._obs_img_thread.start()
 
-    def _stop_obs_stream_worker(self):
-        if not self._obs_img_running:
-            return
-        self._obs_img_running = False
-        try:
-            self._obs_img_queue.put_nowait(None)
-        except Exception:
-            pass
-        t = self._obs_img_thread
-        if t and t.is_alive():
-            t.join(timeout=1.5)
-        self._obs_img_thread = None
-
     def _to_uint8_rgb(self, arr) -> np.ndarray | None:
         if arr is None:
             return None
@@ -1162,31 +1117,6 @@ class CrowdInterface():
         except queue.Full:
             # Drop frame to avoid backpressure on add_state
             pass
-    
-    def _global_max_existing_state_id(self) -> int | None:
-        """
-        Return the newest state_id that EXISTS anywhere in memory:
-        - pending states,
-        - completed states (metadata),
-        - completed states buffered for chronological add (manifest).
-        """
-        max_id = None
-        # Pending
-        for ep_states in self.pending_states_by_episode.values():
-            if ep_states:
-                k = max(ep_states.keys())
-                max_id = k if max_id is None or k > max_id else max_id
-        # Completed metadata
-        for ep_done in self.completed_states_by_episode.values():
-            if ep_done:
-                k = max(ep_done.keys())
-                max_id = k if max_id is None or k > max_id else max_id
-        # Completed buffer (manifest entries awaiting add/save)
-        for ep_buf in self.completed_states_buffer_by_episode.values():
-            if ep_buf:
-                k = max(ep_buf.keys())
-                max_id = k if max_id is None or k > max_id else max_id
-        return max_id
     
     def demote_earlier_unanswered_criticals(self, current_state_id, episode_id):
         '''
@@ -1735,30 +1665,6 @@ class CrowdInterface():
                 raise IOError(f"failed to write {path}: {e}")
         return str(path)
 
-    def _extract_grip_force_N(self, frontend_state: dict) -> float | None:
-        """Return grip force in Newtons if available and numeric; otherwise None."""
-        if not isinstance(frontend_state, dict):
-            return None
-        for k in self._grip_force_keys:
-            v = frontend_state.get(k, None)
-            if v is None:
-                continue
-            try:
-                fv = float(v)
-                if math.isfinite(fv):
-                    return fv
-            except Exception:
-                continue
-        return None
-
-    def _gripper_is_grasped(self, frontend_state: dict) -> bool:
-        """
-        Define 'grasped' as force < -threshold (negative force indicates compression/grasping). 
-        If force is missing/invalid, treat as NOT grasped.
-        """
-        f = self._extract_grip_force_N(frontend_state)
-        return (f is not None) and (f < -self._grasp_force_thresh_N)
-
     # =================== URDF FK & SAM2 helpers ===================
 
     def _load_urdf_model(self):
@@ -1811,45 +1717,6 @@ class CrowdInterface():
             f"  package '{self._urdf_package_name}' → {self._urdf_package_root}\n"
             f"  joints detected: {len(self._urdf_joint_names)}"
         )
-
-
-    def _gripper_center_from_joints(self, joint_positions: dict) -> np.ndarray | None:
-        """
-        Compute ee world position using URDF FK at the time the state was captured.
-        Uses the link name 'ee_gripper_link' by default (same as frontend).
-        World frame is the robot base frame (assumed aligned with Three.js world).
-        """
-        if self._urdf_model is None:
-            return None
-        try:
-            # Build FK config with available joint entries; others default to 0
-            cfg = {}
-            for name, v in (joint_positions or {}).items():
-                # incoming values might be scalars or [scalar]
-                if isinstance(v, (list, tuple)) and len(v) > 0:
-                    vv = float(v[0])
-                else:
-                    vv = float(v)
-                if name in self._urdf_joint_names:
-                    cfg[name] = vv
-
-            fk_all = self._urdf_model.link_fk(cfg=cfg)  # dict: Link -> 4x4
-            target_link = None
-            for L in self._urdf_model.links:
-                if L.name == self._urdf_ee_link_name:
-                    target_link = L
-                    break
-            if target_link is None:
-                print(f"⚠️  URDF link '{self._urdf_ee_link_name}' not found")
-                return None
-            T = fk_all.get(target_link)
-            if T is None:
-                return None
-            pos = np.asarray(T, dtype=np.float64)[:3, 3]
-            return pos
-        except Exception as e:
-            print(f"⚠️  FK error: {e}")
-            return None
 
     def is_recording(self):
         """Check if there are any pending states across all episodes or episodes being completed"""
@@ -2128,13 +1995,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             print(f"❌ /api/update-flex-selection error: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
-
-    @app.route("/api/update-vlm-selection", methods=["POST"])  # legacy alias
-    def api_state_vlm_selection():
-        # Delegate to the new handler (accepts both field name variants)
-        return api_update_flex_selection()
-    
-    # --- END PATCH ---------------------------------------------------------------
     
     @app.route("/api/monitor/latest-state", methods=["GET"])
     def monitor_latest_state():
@@ -2361,61 +2221,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": f"unexpected error: {e}"}), 500
-    
-    @app.route("/api/upload-demo-video", methods=["POST"])
-    def upload_demo_video():
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
-        
-        if not crowd_interface.record_demo_videos:
-            return jsonify({"error": "Demo video recording is not enabled"}), 400
-        
-        try:
-            if 'video' not in request.files:
-                return jsonify({"error": "No video file provided"}), 400
-
-            file = request.files['video']
-            if file.filename == '':
-                return jsonify({"error": "No file selected"}), 400
-
-            # Enforce WebM uploads (VP9-only system)
-            if getattr(file, "mimetype", None) and "webm" not in file.mimetype.lower():
-                return jsonify({"error": "Only WebM/VP9 uploads are accepted"}), 400
-
-            metadata = {}
-            if 'metadata' in request.form:
-                try:
-                    metadata = json.loads(request.form['metadata'])
-                except:
-                    pass
-
-            # Always write sequential *.webm
-            ext = ".webm"
-            filename, index = crowd_interface._next_video_filename(ext)
-            file_path = crowd_interface._demo_videos_dir / filename
-            file.save(str(file_path))
-
-            if metadata:
-                metadata_path = (crowd_interface._demo_videos_dir / f"{index}.json")
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump(metadata, f, indent=2)
-
-            public_url = crowd_interface._maybe_upload_to_blob(str(file_path))
-
-            return jsonify({
-                "status": "success",
-                "filename": filename,
-                "path": str(file_path),
-                "save_dir_rel": crowd_interface._rel_path_from_repo(file_path.parent),
-                "public_url": public_url,
-                "config": crowd_interface.get_demo_video_config(),
-                "index": index
-            })
-            
-        except Exception as e:
-            print(f"❌ Error uploading demo video: {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
     
     @app.route("/api/demo-videos/<filename>")
     def serve_demo_video(filename):
