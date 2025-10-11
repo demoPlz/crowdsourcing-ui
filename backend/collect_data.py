@@ -34,6 +34,7 @@ from lerobot.common.utils.utils import has_method, init_logging, log_say
 from lerobot.configs import parser
 
 from crowd_interface import *
+from flask_app import create_flask_app
 import cv2  # for closing display windows
 from pathlib import Path
 import os
