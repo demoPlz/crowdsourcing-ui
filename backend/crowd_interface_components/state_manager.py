@@ -3,6 +3,7 @@ from crowd_interface_config import CrowdInterfaceConfig
 from camera_manager import CameraManager
 from database import Database
 from monitoring_manager import MonitoringManager
+from dataset_manager import DatasetManager
 
 from constants import *
 
@@ -17,7 +18,7 @@ class StateManager():
                  crowd_interface: CrowdInterface,
                  camera_manager: CameraManager,
                  database: Database,
-                 monitoring_manager: MonitoringManager):
+                 dataset_manager: DatasetManager):
         
         # Save overall cfg
         self.interface_cfg = crowd_interface.cfg
@@ -51,12 +52,15 @@ class StateManager():
         self.auto_label_worker_thread = None
         self.auto_label_worker_running = False
 
+        # Handling saving episode data to Lerobot dataset after completion
+        self._episode_finalize_timers: dict[int, Timer] = {}
+
 
         self._start_auto_label_worker()
 
         self.crowd_interface = crowd_interface
         self.camera_manager = camera_manager
-        self.monitoring_manager = monitoring_manager
+        self.dataset_manager = dataset_manager
         self.database = database
     
     """
@@ -94,8 +98,8 @@ class StateManager():
         del obs_dict_deep_copy
 
         # Push obs to monitoring frontend
-        self.monitoring_manager.push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
-        self.monitoring_manager.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
+        self.camera_manager.push_obs_view("obs_main",  obs_dict.get("observation.images.cam_main"))
+        self.camera_manager.push_obs_view("obs_wrist", obs_dict.get("observation.images.cam_wrist"))
         
         state_info = {
             "state": frontend_state.copy(),
@@ -127,11 +131,12 @@ class StateManager():
             state_id = response_data['state_id']
             episode_id = response_data['episode_id']
 
-            state_info = self.pending_states_by_episode[episode_id][state_id]
-
-            if not state_info:
+            if episode_id not in self.pending_states_by_episode or \
+            state_id not in self.pending_states_by_episode[episode_id]:
                 # State already fully labeled
                 return
+
+            state_info = self.pending_states_by_episode[episode_id][state_id]
 
             required_responses = self.required_responses_per_critical_state if state_info['critical'] else self.required_responses_per_state
             
@@ -162,7 +167,7 @@ class StateManager():
                 if state_info['critical'] and state_id == self.next_state_id - 1:
                     # Choose action to execute (a_execute) at random
                     # Shift chose action to the front of the array
-                    a_execute_index = random.randint(0, required_responses)
+                    a_execute_index = random.randint(0, required_responses - 1)
                     state_info["actions"][0], state_info["actions"][a_execute_index] = state_info["actions"][a_execute_index], state_info["actions"][0]
                     self.interface.latest_goal = state_info["actions"][:required_responses][0]
 
@@ -238,16 +243,36 @@ class StateManager():
     def _schedule_episode_finalize_after_grace(self, episode_id: int):
         delay = self.episode_finalize_grace_s
         timer = Timer(delay, self._finalize_episode_if_still_empty, args=(episode_id,))
+        timer.daemon = True
+        self._episode_finalize_timers[episode_id] = timer
+        timer.start()
     
     def _cancel_episode_finalize_timer(self, episode_id: int):
-        pass
+        t = self._episode_finalize_timers.pop(episode_id, None)
+        if t:
+            t.cancel()
 
     def _finalize_episode_if_still_empty(self, episode_id: int):
-        pass
+        """
+        Timer callback
+        """
+        with self.state_lock:
+            self._episode_finalize_timers.pop(episode_id, None)
+
+            if self.pending_states_by_episode.get(episode_id):
+                # New states has become pending in the episode
+                return
+            
+            self.episodes_completed.add(episode_id) # for monitoring
+
+            buffer = self.completed_states_buffer_by_episode[episode_id]
+            self.dataset_manager.save_episode(buffer)
+
+            del self.completed_states_buffer_by_episode[episode_id]
+            
 
     def auto_label_previous_states(self, critical_state_id):
         self.auto_label_queue.put_nowait(critical_state_id)
-
     """
     Auto-labeling thread
     """
@@ -274,7 +299,9 @@ class StateManager():
 
             previous_critical_id_in_episode = []
             for state_id in episode_states.keys():
-                if episode_states[state_id]['critical'] and state_id < critical_state_id:
+                if episode_states[state_id]['critical'] \
+                    and state_id < critical_state_id \
+                    and len(episode_states[state_id]['actions']) > 0:
                     previous_critical_id_in_episode.append(state_id)
 
             if previous_critical_id_in_episode: # Previous critical states exist

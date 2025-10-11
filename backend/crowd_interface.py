@@ -234,9 +234,6 @@ class CrowdInterface():
         # Background capture state
         self._cap_threads: dict[str, Thread] = {}
         self._cap_running: bool = False
-        self._latest_raw: dict[str, np.ndarray] = {}
-        self._latest_ts: dict[str, float] = {}
-        self._latest_proc: dict[str, np.ndarray] = {}
         self._latest_jpeg: dict[str, str] = {}
         # JPEG quality for base64 encoding (override with env JPEG_QUALITY)
         self._jpeg_quality = int(os.getenv("JPEG_QUALITY", "80"))
@@ -265,37 +262,6 @@ class CrowdInterface():
         self._shutting_down = False
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
-
-        # segmentation worker (LEGACY - DISABLED but kept for compatibility)
-        self._seg_queue = queue.Queue()
-        self._seg_worker_thread = None
-        self._seg_worker_running = False
-        self._start_segmentation_worker()
-
-        # --- VLM worker wiring / Manual mode routing ---
-        self._vlm_queue = queue.Queue(maxsize=_safe_int(os.getenv("VLM_QUEUE_SIZE", "8"), 8))
-        self._vlm_worker_running = False
-        self._vlm_worker_thread = None
-        self._aoai_client = None
-        self._aoai_deployment = None
-        self._vlm_jobs_inflight: set[tuple[str, int]] = set()
-
-        if self.use_vlm_prompt:
-            # Try to verify creds early; if unavailable, fall back to simple prompts.
-            if self._ensure_azure_openai_client() is not None:
-                self._vlm_enabled = True
-                self._start_vlm_worker()
-                print("🤖 VLM prompt mode enabled")
-            else:
-                self._vlm_enabled = False
-                print("⚠️ VLM prompts requested but Azure OpenAI is not configured; falling back to simple task prompts.")
-        elif self.use_manual_prompt:
-            print("📝 Manual prompt mode enabled (frontend will set flex_text_prompt + flex_video_id; no VLM queries).")
-        else:
-            print("🧪 Simple prompt mode (no VLM/manual gating).")
-
-        self._vlm_context_done = False
-        self._vlm_context_text = None
 
         self._exec_gate_by_session: dict[str, dict] = {}
 
@@ -674,59 +640,6 @@ class CrowdInterface():
             cfg["save_dir_rel"] = self._rel_path_from_repo(self._demo_videos_dir)
         return cfg
 
-    def begin_shutdown(self):
-        """Fence off new work immediately; endpoints will early-return."""
-        self._shutting_down = True
-        try:
-            self._stop_obs_stream_worker()
-        except Exception:
-            pass
-        try:
-            self._stop_segmentation_worker()
-        except Exception:
-            pass
-        try:
-            self._stop_vlm_worker()
-        except Exception:
-            pass
-        # Flush any remaining buffered states before shutdown
-        self._flush_remaining_buffered_states()
-
-        # Cancel any outstanding deferred finalizations
-        with self.state_lock:
-            for ep, t in list(self._episode_finalize_timers.items()):
-                try: t.cancel()
-                except Exception: pass
-            self._episode_finalize_timers.clear()
-    
-    def _flush_remaining_buffered_states(self):
-        """Flush any states remaining in the buffer, useful during shutdown"""
-        if not self.dataset:
-            return
-            
-        for episode_id, buffered_states in self.completed_states_buffer_by_episode.items():
-            if buffered_states:
-                print(f"🚿 Flushing {len(buffered_states)} remaining buffered states for episode {episode_id}")
-                # Sort states by state_id to ensure chronological order
-                for sid in sorted(buffered_states.keys()):
-                    entry = buffered_states[sid]
-                    # All entries in the buffer are manifest entries - load observations from disk
-                    obs = self._load_obs_from_disk(entry.get("obs_path"))
-                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                    self.dataset.add_frame(frame)
-                    self._delete_obs_from_disk(entry.get("obs_path"))
-                # Save the episode
-                self.dataset.save_episode()
-                # Purge any leftover cache files for this episode
-                try:
-                    self._purge_episode_cache(episode_id)
-                except Exception:
-                    pass
-        
-        # Clear the buffer
-        self.completed_states_buffer_by_episode.clear()
-        print("🧹 All buffered states flushed during shutdown")
-
     def set_active_episode(self, episode_id):
         """Mark which episode the outer robot loop is currently in (or None)."""
         with self.state_lock:
@@ -917,188 +830,6 @@ class CrowdInterface():
 
                 del self.pending_states_by_episode[episode_id][state_id]
     
-    def _start_segmentation_worker(self):
-        """Start the dedicated segmentation worker thread (LEGACY - DISABLED)"""
-        if self._seg_worker_thread is not None and self._seg_worker_thread.is_alive():
-            return
-        self._seg_worker_running = True
-        self._seg_worker_thread = Thread(target=self._segmentation_worker, daemon=True)
-        self._seg_worker_thread.start()
-        print("🧵 Started segmentation worker (legacy/disabled mode)")
-
-    def _stop_segmentation_worker(self):
-        """Stop the segmentation worker thread (idempotent)"""
-        t = getattr(self, "_seg_worker_thread", None)
-        if not t:
-            return
-        self._seg_worker_running = False
-        try: 
-            self._seg_queue.put_nowait(None)
-        except queue.Full: 
-            pass
-        if t.is_alive():
-            t.join(timeout=2.0)
-        self._seg_worker_thread = None
-        try:
-            with self._seg_queue.mutex:
-                self._seg_queue.queue.clear()
-        except Exception:
-            pass
-        print("🛑 Stopped segmentation worker")
-
-    def _enqueue_segmentation_job(self, episode_id, state_id, view_paths, joints):
-        """Enqueue a segmentation job for background processing (LEGACY - DISABLED)"""
-        # LEGACY: Segmentation is disabled - do nothing but log
-        print(f"⚠️ Segmentation disabled (legacy) - skipping ep={episode_id} sid={state_id}")
-        return
-
-    def _segmentation_worker(self):
-        """Dedicated worker thread that processes segmentation tasks from the queue (LEGACY - DISABLED)"""
-        print("⚠️ Segmentation worker started but disabled (legacy mode)")
-        while self._seg_worker_running and not self._shutting_down:
-            try:
-                item = self._seg_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if item is None:
-                break
-            episode_id_local, state_id_local, view_paths_local, joints_local = item
-            
-            # LEGACY: Skip actual segmentation work
-            print(f"⚠️ Segmentation disabled (legacy) - ignoring job for state {state_id_local}")
-            
-            # Still mark as ready to prevent blocking
-            with self.state_lock:
-                ep_states = self.pending_states_by_episode.get(episode_id_local, {})
-                info = ep_states.get(state_id_local)
-                if info is not None:
-                    info["segmentation_paths"] = {}  # Empty paths
-                    info["segmentation_ready"] = True
-                    print(f"✅ segmentation marked ready (disabled) for state {state_id_local} in episode {episode_id_local}")
-            try:
-                self._seg_queue.task_done()
-            except Exception:
-                pass
-    
-    # ---------- VLM worker plumbing ----------
-    def _start_vlm_worker(self):
-        if self._vlm_worker_thread is not None and self._vlm_worker_thread.is_alive():
-            return
-        self._vlm_worker_running = True
-        self._vlm_worker_thread = Thread(target=self._vlm_worker, daemon=True, name="vlm-worker")
-        self._vlm_worker_thread.start()
-        print("🧵 Started VLM worker")
-
-    def _stop_vlm_worker(self):
-        t = getattr(self, "_vlm_worker_thread", None)
-        if not t:
-            return
-        self._vlm_worker_running = False
-        try: self._vlm_queue.put_nowait(None)
-        except Exception: pass
-        if t.is_alive():
-            t.join(timeout=2.0)
-        self._vlm_worker_thread = None
-        try:
-            with self._vlm_queue.mutex:
-                self._vlm_queue.queue.clear()
-        except Exception:
-            pass
-        print("🛑 Stopped VLM worker")
-
-    def _enqueue_vlm_job(self, episode_id: str, state_id: int, view_paths: dict[str, str]):
-        """Queue a VLM job for (episode, critical_state) with dedupe and readiness checks."""
-        # Double-check under lock: skip if ready or already queued/in-flight
-        with self.state_lock:
-            ep_states = self.pending_states_by_episode.get(episode_id, {})
-            info = ep_states.get(state_id)
-            if info is None:
-                return False
-            if info.get("prompt_ready", False):
-                info["vlm_queued"] = False
-                return False
-            key = (episode_id, state_id)
-            if info.get("vlm_queued", False) or key in self._vlm_jobs_inflight:
-                return False
-            info["vlm_queued"] = True
-            self._vlm_jobs_inflight.add(key)
-            payload = (episode_id, state_id, dict(view_paths or {}))
-        try:
-            self._vlm_queue.put_nowait(payload)
-            print(f"🗂️ Queued VLM job ep={episode_id} sid={state_id}")
-            return True
-        except queue.Full:
-            print(f"⚠️ VLM queue full; skipping ep={episode_id} sid={state_id}")
-            # Undo 'queued' flag/in-flight if we couldn't enqueue
-            with self.state_lock:
-                self._vlm_jobs_inflight.discard((episode_id, state_id))
-                ep_states = self.pending_states_by_episode.get(episode_id, {})
-                if state_id in ep_states:
-                    ep_states[state_id]["vlm_queued"] = False
-            return False
-
-    # ---------- Azure OpenAI client ----------
-    def _ensure_azure_openai_client(self):
-        """Lazy-init Azure OpenAI client from env; returns None if not configured."""
-        if self._aoai_client is not None:
-            return self._aoai_client
-        try:
-            from openai import AzureOpenAI
-        except Exception:
-            print("⚠️ AzureOpenAI SDK not installed. Run: pip install openai")
-            return None
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")  # your Azure *deployment name* for GPT-5
-        if not endpoint or not api_key or not deployment:
-            print("⚠️ Missing Azure OpenAI env (AZURE_OPENAI_ENDPOINT/API_KEY/DEPLOYMENT). VLM disabled.")
-            return None
-        self._aoai_client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version=api_version)
-        self._aoai_deployment = deployment
-        return self._aoai_client
-
-    # ---------- Blob upload (optional) ----------
-    def _maybe_upload_to_blob(self, local_path: str) -> str | None:
-        """
-        If Azure Blob creds are set and azure-storage-blob is installed,
-        upload and return a public (or SAS) URL. Otherwise return None.
-        """
-        try:
-            from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
-        except Exception:
-            return None
-        conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-        container = os.getenv("AZURE_STORAGE_CONTAINER")
-        if not conn or not container:
-            return None
-        try:
-            bsvc = BlobServiceClient.from_connection_string(conn)
-            cclient = bsvc.get_container_client(container)
-            try: cclient.create_container()
-            except Exception: pass
-            name = f"episodes/{int(time.time())}_{os.path.basename(local_path)}"
-            with open(local_path, "rb") as f:
-                cclient.upload_blob(name, f, overwrite=True, content_type=mimetypes.guess_type(local_path)[0] or "application/octet-stream")
-            # Try SAS link (read-only, short expiry)
-            try:
-                from datetime import datetime, timedelta
-                sas = generate_blob_sas(
-                    account_name=bsvc.account_name,
-                    container_name=container,
-                    blob_name=name,
-                    account_key=bsvc.credential.account_key,  # works for connection-string auth
-                    permission=BlobSasPermissions(read=True),
-                    expiry=datetime.utcnow() + timedelta(hours=12),
-                )
-                return f"https://{bsvc.account_name}.blob.core.windows.net/{container}/{name}?{sas}"
-            except Exception:
-                # Fallback to anonymous (requires container public access configured)
-                return f"https://{bsvc.account_name}.blob.core.windows.net/{container}/{name}"
-        except Exception as e:
-            print(f"⚠️ Blob upload failed: {e}")
-            return None
-
     # ---------- Encoding helpers ----------
     def _file_to_data_url(self, path: str, mime: str) -> str:
         with open(path, "rb") as f:
@@ -1255,244 +986,6 @@ class CrowdInterface():
         raw = self._load_text(p)
         return self._substitute_placeholders(raw, self._task_name())
 
-    def _get_vlm_context_cache_path(self, task_name: str) -> Path:
-        """Get the cache file path for VLM context for a specific task."""
-        cache_dir = Path(os.getenv("VLM_CACHE_DIR", str(self._prompts_root_dir() / "context_cache")))
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / f"{task_name}_context.txt"
-
-    def _load_cached_vlm_context(self, task_name: str) -> str | None:
-        """Load cached VLM context for a task if it exists."""
-        cache_path = self._get_vlm_context_cache_path(task_name)
-        if cache_path.exists():
-            try:
-                return cache_path.read_text(encoding="utf-8").strip()
-            except Exception:
-                return None
-        return None
-
-    def _save_vlm_context_to_cache(self, task_name: str, context_text: str):
-        """Save VLM context to cache for a task."""
-        cache_path = self._get_vlm_context_cache_path(task_name)
-        try:
-            cache_path.write_text(context_text, encoding="utf-8")
-        except Exception:
-            pass
-
-    def _write_vlm_context_to_task_dir(self, task_name: str, context_text: str):
-        """Write VLM context to prompts/{task-name}/context.txt for placeholder substitution."""
-        task_dir = self._task_dir(task_name)
-        if task_dir and context_text:
-            try:
-                context_file = task_dir / "context.txt"
-                context_file.write_text(context_text, encoding="utf-8")
-            except Exception:
-                pass
-
-    def _run_vlm_context_once(self):
-        """
-        One-time context VLM call that processes images in overlapping pairs:
-          - First checks cache for existing context for this task
-          - If cached and no force flag, uses cached context
-          - Otherwise processes images in overlapping pairs (1,2 → 2,3 → 3,4, etc.)
-          - Each pair adds one description to build the description bank incrementally
-          - Caches only the final complete description bank
-        """
-        if getattr(self, "_vlm_context_done", False):
-            return
-        if not (self.use_vlm_prompt and self._vlm_enabled):
-            return
-
-        task_name = self._task_name()
-        if not task_name:
-            self._vlm_context_done = True
-            return
-
-        # Check if we should force regeneration
-        force_regenerate = bool(int(os.getenv("VLM_FORCE_REGENERATE_CONTEXT", "0")))
-        
-        # Try to load from cache first
-        if not force_regenerate:
-            cached_context = self._load_cached_vlm_context(task_name)
-            if cached_context:
-                print(f"🔄 Using cached VLM context for task: {task_name}")
-                self._vlm_context_text = cached_context
-                # Also write to task directory for placeholder substitution
-                self._write_vlm_context_to_task_dir(task_name, cached_context)
-                self._vlm_context_done = True
-                return
-
-        client = self._ensure_azure_openai_client()
-        if client is None:
-            return
-
-        imgs = self._demo_images_for_task(task_name)
-        if not imgs:
-            self._vlm_context_done = True
-            return
-        
-        print(f"🤖 Generating new VLM context for task: {task_name} ({len(imgs)} images, processing in overlapping pairs)")
-        
-        # Process images in overlapping pairs: (1,2), (2,3), (3,4), ..., (n-1,n), (n)
-        all_descriptions = []
-        conversation_history = []  # Only text, no images for efficiency
-        
-        for i in range(len(imgs)):
-            pair_num = i + 1
-            is_first_query = (i == 0)
-            
-            # Determine which images to include in this query
-            if i == 0:
-                # First pair: images 1,2
-                current_imgs = imgs[0:2] if len(imgs) > 1 else imgs[0:1]
-            elif i == len(imgs) - 1:
-                # Last image (if odd number of images): just the last image
-                current_imgs = imgs[i:i+1]
-            else:
-                # Overlapping pairs: (i, i+1)
-                current_imgs = imgs[i:i+2]
-            
-            # Choose prompt based on whether this is the first query or continuation
-            if is_first_query:
-                # First query: use context.txt
-                prompt = self._load_prompt_with_subst("context.txt")
-            else:
-                # Continuation queries: use context_continued.txt
-                prompt = self._load_prompt_with_subst("context_continued.txt")
-            
-            # Build content for this query
-            content = [{"type": "input_text", "text": prompt}] + [
-                {"type": "input_image", "image_url": self._image_file_to_data_url(p)} for p in current_imgs
-            ]
-            
-            # Build conversation: 
-            # - First query: just the current query with images
-            # - Subsequent queries: full conversation history (text only) + current query with images
-            if is_first_query:
-                current_conversation = [{"role": "user", "content": content}]
-            else:
-                # Include full conversation history + current query
-                current_conversation = conversation_history.copy()
-                current_conversation.append({"role": "user", "content": content})
-            
-            try:
-                # Call GPT-5 API
-                resp = client.responses.create(model=self._aoai_deployment, input=current_conversation)
-                out_text = getattr(resp, "output_text", "").strip()
-                
-                if out_text:
-                    if is_first_query:
-                        # First query: extract the first description
-                        new_description = self._extract_single_description(out_text, 1)
-                        if new_description:
-                            all_descriptions.append(new_description)
-                            print(f"Query 1:")
-                            for desc in all_descriptions:
-                                print(f"{desc}")
-                        else:
-                            print(f"⚠️ Could not extract description from first response:")
-                            print(f"   Full response: {out_text}")
-                            # Fallback: use the whole response as the description
-                            fallback_desc = f"1. {out_text}"
-                            all_descriptions.append(fallback_desc)
-                            print(f"Query 1:")
-                            for desc in all_descriptions:
-                                print(f"{desc}")
-                    else:
-                        # Continuation query: extract the complete updated description bank
-                        # Parse the full response to get all descriptions (may include revisions)
-                        updated_descriptions = self._extract_description_bank(out_text)
-                        if updated_descriptions:
-                            all_descriptions = updated_descriptions
-                            print(f"Query {pair_num}:")
-                            for desc in all_descriptions:
-                                print(f"{desc}")
-                        else:
-                            print(f"⚠️ Could not parse description bank from response:")
-                            print(f"   Full response: {out_text}")
-                            # Fallback: add as next sequential description
-                            fallback_desc = f"{len(all_descriptions) + 1}. {out_text}"
-                            all_descriptions.append(fallback_desc)
-                            print(f"Query {pair_num}:")
-                            for desc in all_descriptions:
-                                print(f"{desc}")
-                
-                # Update conversation history (text only, no images to save tokens)
-                conversation_history.append({"role": "user", "content": prompt})
-                conversation_history.append({"role": "assistant", "content": out_text})
-                
-            except Exception as e:
-                print(f"❌ Error in VLM query {pair_num}: {e}")
-                # Continue with next pair
-                continue
-        
-        # Final description bank is just all descriptions joined
-        final_description_bank = "\n\n".join(all_descriptions) if all_descriptions else ""
-        
-        # Cache only the final complete description bank
-        if final_description_bank.strip():
-            self._save_vlm_context_to_cache(task_name, final_description_bank.strip())
-            # Also write to task directory for placeholder substitution  
-            self._write_vlm_context_to_task_dir(task_name, final_description_bank.strip())
-            print(f"💾 Cached final description bank with {len(all_descriptions)} descriptions")
-
-        self._vlm_context_text = final_description_bank.strip() if final_description_bank else ""
-        self._vlm_context_done = True
-
-    def _extract_single_description(self, response_text: str, expected_number: int) -> str | None:
-        """
-        Extract a single numbered description from the VLM response.
-        Expected format: "X. [state description], thus: [action description]"
-        """
-        if not response_text:
-            return None
-        
-        lines = response_text.strip().split('\n')
-        for line in lines:
-            line = line.strip()
-            # Look for numbered descriptions (e.g., "1. ", "2. ", etc.)
-            if line and (line.startswith(f"{expected_number}. ") or 
-                        any(line.startswith(f"{i}. ") for i in range(1, expected_number + 5))):
-                return line
-        
-        # Fallback: if we can't find a numbered description, return the first non-empty line
-        for line in lines:
-            line = line.strip()
-            if line:
-                # Add numbering if missing
-                if not any(line.startswith(f"{i}. ") for i in range(1, 100)):
-                    return f"{expected_number}. {line}"
-                return line
-        
-        return None
-
-    def _extract_description_bank(self, response_text: str) -> list[str] | None:
-        """
-        Extract a complete description bank from the VLM response.
-        Expected format: multiple numbered descriptions, one per line.
-        Returns list of descriptions in order, or None if parsing fails.
-        """
-        if not response_text:
-            return None
-        
-        descriptions = []
-        lines = response_text.strip().split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # Look for numbered descriptions (e.g., "1. ", "2. ", etc.)
-            # Match any number followed by period and space
-            import re
-            match = re.match(r'^(\d+)\.\s+(.+)', line)
-            if match:
-                descriptions.append(line)
-        
-        # Return descriptions if we found any, otherwise None
-        return descriptions if descriptions else None
-
     # --- NEW: helpers for critical-state image sequence ---
     def _compute_next_prompt_seq_index(self) -> int:
         """
@@ -1508,629 +1001,95 @@ class CrowdInterface():
                 nums.append(int(m.group(1)))
         return (max(nums) + 1) if nums else 1
 
-    def _save_critical_maincam_frame_on_label(self, episode_id: str, state_id: int, obs_path: str | None):
-        """
-        Save critical main camera frame when a response is received, but only if:
-        1. This state has received at least one label
-        2. No later critical state has already been saved (maintain chronological order)
-        """
-        if not self.save_maincam_sequence:
-            return
-        
-        with self._prompt_seq_lock:
-            # Check if this state was already saved
-            if (episode_id, state_id) in self._saved_sequence_states:
-                return
-            
-            # Check chronological ordering: don't save if a later state was already saved
-            if self._max_saved_state_id is not None and state_id < self._max_saved_state_id:
-                print(f"⏭️ Skipping cam_main save for state {state_id} - later state {self._max_saved_state_id} already saved")
-                return
-            
-            # Save the frame
-            try:
-                obs = self._load_obs_from_disk(obs_path)
-                img = self._load_main_cam_from_obs(obs)
-                if img is None:
-                    print(f"⚠️ No cam_main image for IMPORTANT state {state_id} (ep {episode_id})")
-                    return
-                
-                # Use current index and increment
-                idx = self._prompt_seq_index
-                self._prompt_seq_index += 1
-                
-                fname = f"{idx:06d}.jpg"
-                out_path = self._prompt_seq_dir / fname
-                
-                # Write JPEG with current quality setting
-                bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                ok = cv2.imwrite(str(out_path), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(self._jpeg_quality)])
-                
-                if ok:
-                    # Track that this state has been saved
-                    self._saved_sequence_states.add((episode_id, state_id))
-                    self._max_saved_state_id = max(self._max_saved_state_id or 0, state_id)
-                    print(f"🖼️  Saved IMPORTANT cam_main (on label) → {out_path}")
-                else:
-                    print(f"⚠️ Failed to write {out_path}")
-                    
-            except Exception as e:
-                print(f"⚠️ Error saving IMPORTANT cam_main frame on label: {e}")
-
-    def _gather_critical_maincam_sequence(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
-        """
-        Return (image_data_urls, state_ids) for IMPORTANT states in this episode
-        with state_id <= up_to_state_id, in ascending order of state_id.
-        Each image is a data URL (data:image/jpeg;base64,...) produced from
-        observation.images.cam_main (or the fallbacks handled by _load_main_cam_from_obs).
-        
-        If save_maincam_sequence is enabled, read from the saved sequence directory.
-        Otherwise, read from the observation disk cache.
-        """
-        
-        # If we have a saved sequence directory, prefer reading from there
-        if self.save_maincam_sequence and self._prompt_seq_dir.exists():
-            return self._gather_from_sequence_directory(up_to_state_id)
-        
-        # Fallback: collect from observation disk cache
-        return self._gather_from_obs_cache(episode_id, up_to_state_id)
-    
-    def _gather_from_sequence_directory(self, up_to_state_id: int) -> tuple[list[str], list[int]]:
-        """Read critical main camera frames from the saved sequence directory."""
-        seq_urls: list[str] = []
-        seq_ids: list[int] = []
-        
-        try:
-            # Get all JPEG files in the sequence directory
-            jpg_files = sorted(self._prompt_seq_dir.glob("*.jpg"))
-            
-            for jpg_file in jpg_files:
-                try:
-                    # Extract sequence index from filename (000001.jpg -> 1)
-                    seq_idx = int(jpg_file.stem)
-                    
-                    # For now, use the sequence index as state_id
-                    # In a more complete implementation, you might want to maintain
-                    # a mapping from sequence index to actual state_id
-                    if seq_idx <= up_to_state_id:
-                        # Read and encode the image
-                        img_bgr = cv2.imread(str(jpg_file))
-                        if img_bgr is not None:
-                            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                            data_url = self._encode_jpeg_base64(img_rgb)
-                            seq_urls.append(data_url)
-                            seq_ids.append(seq_idx)
-                        
-                except (ValueError, cv2.error):
-                    # Skip files that don't follow the expected naming pattern
-                    continue
-                    
-        except Exception as e:
-            print(f"⚠️ Error reading from sequence directory {self._prompt_seq_dir}: {e}")
-            
-        return seq_urls, seq_ids
-    
-    def _gather_from_obs_cache(self, episode_id: str, up_to_state_id: int) -> tuple[list[str], list[int]]:
-        """Read critical main camera frames from the observation disk cache."""
-        # Collect (sid -> obs_path) for critical states from both pending and completed buffers
-        paths_by_sid: dict[int, str] = {}
-
-        with self.state_lock:
-            # Completed states metadata tells us which were critical; the obs paths live in the buffer
-            completed_meta = self.completed_states_by_episode.get(episode_id, {})
-            completed_buf  = self.completed_states_buffer_by_episode.get(episode_id, {})
-
-            for sid, meta in completed_meta.items():
-                if sid <= up_to_state_id and meta.get("is_critical", False):
-                    man = completed_buf.get(sid)
-                    if isinstance(man, dict) and man.get("obs_path"):
-                        paths_by_sid[sid] = man["obs_path"]
-
-            # Pending states: read directly
-            pending = self.pending_states_by_episode.get(episode_id, {})
-            for sid, info in pending.items():
-                if sid <= up_to_state_id and info.get("critical", False):
-                    p = info.get("obs_path")
-                    if p:
-                        paths_by_sid[sid] = p
-
-        if not paths_by_sid:
-            return [], []
-
-        # Load frames in chronological order
-        seq_urls: list[str] = []
-        seq_ids:  list[int] = []
-        for sid in sorted(paths_by_sid.keys()):
-            obs = self._load_obs_from_disk(paths_by_sid[sid])
-            img = self._load_main_cam_from_obs(obs)
-            if img is None:
-                continue
-            # Encode to data URL (JPEG, quality = self._jpeg_quality)
-            seq_urls.append(self._encode_jpeg_base64(img))
-            seq_ids.append(sid)
-
-        return seq_urls, seq_ids
-
-    # ---------- VLM prompt helpers ----------
-    def _get_episode_history_prompt(self) -> str:
-        """History prompt (applies {x} → prompts/{task-name}/x.txt)."""
-        return self._load_prompt_with_subst("history.txt")
-
-    def _get_current_state_prompt(self, episode_id: str = None, state_id: int = None) -> str:
-        """Current-state prompt (applies {x} → prompts/{task-name}/x.txt and dynamic placeholders)."""
-        base_prompt = self._load_prompt_with_subst("current.txt")
-        
-        # Apply dynamic placeholders if we have episode and state info
-        if episode_id is not None and state_id is not None:
-            base_prompt = self._substitute_dynamic_placeholders(base_prompt, episode_id, state_id)
-            
-        return base_prompt
-
-    def _clean_vlm_response_format(self, text: str) -> str:
-        """
-        Clean VLM response format by:
-        1. Removing surrounding quotes
-        2. Capitalizing first letter
-        3. Removing trailing comma and number (e.g., ", 26")
-        4. Ensuring text ends with a period
-        """
-        if not text:
-            return text, None
-        
-        # Start with stripped text
-        original = text.strip()
-        
-        # Extract video ID from trailing comma and number pattern (e.g., ", 26")
-        video_id = None
-        video_match = re.search(r',\s*(\d+)\s*$', original)
-        if video_match:
-            video_id = int(video_match.group(1))
-        
-        # Remove trailing comma and number pattern
-        cleaned = re.sub(r',\s*\d+\s*$', '', original).strip()
-        
-        # Remove surrounding quotes (handle both single and double quotes)
-        # Keep removing quotes until no more are found at the edges
-        while cleaned and len(cleaned) >= 2:
-            if (cleaned.startswith('"') and cleaned.endswith('"')) or \
-               (cleaned.startswith("'") and cleaned.endswith("'")):
-                cleaned = cleaned[1:-1].strip()
-            else:
-                break
-        
-        # Capitalize first letter if text exists
-        if cleaned:
-            cleaned = cleaned[0].upper() + cleaned[1:] if len(cleaned) > 1 else cleaned.upper()
-        
-        # Ensure text ends with a period if it doesn't already end with punctuation
-        if cleaned and not cleaned.endswith(('.', '!', '?', ':')):
-            cleaned += '.'
-        
-        return cleaned, video_id
-
     # --- PATCH: VLM modal helpers -----------------------------------------------
 
-    def _parse_description_bank_entries(self, text: str) -> list[dict]:
+    def _parse_description_bank_entries(self, file_path: str) -> list[dict]:
         """
-        Parse a numbered description bank.
-        Each block looks like:
-          "1. <context sentences...> thus: <VLM action sentence>"
-        We return: [{"id": int, "text": "<after 'thus:' cleaned>", "full": "<full block>"}]
+        Read description bank from file. Each line is a text prompt.
+        Line number corresponds to video number.
+        Returns: [{"id": int, "text": "<line content>", "full": "<line content>"}]
         """
-        if not text:
-            return []
         entries = []
-        # Split into numbered blocks (greedy until next number or end)
-        blocks = list(re.finditer(r'^\s*(\d+)\.\s*([\s\S]*?)(?=^\s*\d+\.\s*|$)', text, flags=re.M))
-        for m in blocks:
-            vid = int(m.group(1))
-            body = (m.group(2) or "").strip()
-            # Prefer the tail after "thus:" (case-insensitive)
-            tail = re.search(r'thus:\s*([\s\S]*)$', body, flags=re.I)
-            vlm_raw = (tail.group(1).strip() if tail and tail.group(1) else body)
-            cleaned, _ = self._clean_vlm_response_format(vlm_raw)
-            entries.append({"id": vid, "text": cleaned, "full": f"{vid}. {body}"})
-        entries.sort(key=lambda x: x["id"])
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line_content = line.strip()
+                    if line_content:  # Skip empty lines
+                        entries.append({
+                            "id": line_num,
+                            "text": line_content,
+                            "full": line_content
+                        })
+        except FileNotFoundError:
+            print(f"Description bank file not found: {file_path}")
+        except Exception as e:
+            print(f"Error reading description bank file {file_path}: {e}")
+        
         return entries
 
     def get_description_bank(self) -> dict:
         """
         Return both the raw description-bank text and its parsed entries.
-        Prefers in-memory context if present, otherwise falls back to cached context for the current task.
+        Reads from prompts/{task-name}/descriptions.txt where each line is a text prompt.
+        Line number corresponds to video number.
         """
-        # in-memory context (if VLM context step was run this process)
-        raw = getattr(self, "_vlm_context_text", None)
-        if not raw:
-            # fall back to cached file (if available)
-            task = self._task_name() or ""
-            raw = self._load_cached_vlm_context(task) or ""
+        task_name = self._task_name() or ""
+        if not task_name:
+            print("Warning: No task name set, cannot load description bank")
+            return {"raw_text": "", "entries": []}
+        
+        # Construct file path: prompts/{task-name}/descriptions.txt
+        file_path = self._task_dir(task_name) / "descriptions.txt"
+        
+        # Read raw text for compatibility
+        raw_text = ""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+        except FileNotFoundError:
+            print(f"Description bank file not found: {file_path}")
+        except Exception as e:
+            print(f"Error reading description bank file {file_path}: {e}")
+        
         return {
-            "raw_text": raw,
-            "entries": self._parse_description_bank_entries(raw)
+            "raw_text": raw_text,
+            "entries": self._parse_description_bank_entries(str(file_path))
         }
     # --- END PATCH ---------------------------------------------------------------
-
-    def _write_vlm_log(self,
-                       episode_id: str,
-                       state_id: int,
-                       episode_history_text: str,
-                       history_seq_ids: list[int],
-                       current_state_text: str,
-                       view_paths: dict[str, str],
-                       hist_text: str,
-                       hist_raw: str | None,
-                       curr_text: str,
-                       curr_raw: str | None,
-                       video_id: int | None):
-        """
-        Persist a compact JSON of the full 3-part conversation for one critical state.
-        Images are NOT embedded; we store references (seq ids and view_paths).
-        """
-        if not self.save_vlm_logs:
-            return
-        try:
-            import json, time, os
-            ts = time.time()
-            fname = f"ep{episode_id}_sid{state_id}_{int(ts)}.json"
-            fpath = self._vlm_logs_dir / fname
-
-            # Make view paths relative to repo (if possible)
-            rel_views = {}
-            for k, p in (view_paths or {}).items():
-                rel_views[k] = self._rel_path_from_repo(p) or p
-
-            log = {
-                "meta": {
-                    "episode_id": str(episode_id),
-                    "state_id": int(state_id),
-                    "timestamp": ts,
-                    "task": self.task_text,
-                    "prompt_task_name": self._task_name() or None,
-                    "model": self._aoai_deployment,
-                },
-                "context": {
-                    # We log the exact context text injected (may be empty string).
-                    "assistant_text": getattr(self, "_vlm_context_text", None)
-                },
-                "history": {
-                    "user_text": episode_history_text,
-                    "image_source": "sequence_dir" if self.save_maincam_sequence else "obs_cache",
-                    "image_seq_ids": list(history_seq_ids or []),
-                    "image_count": int(len(history_seq_ids or [])),
-                    "assistant_text": hist_text,
-                    "raw_response": hist_raw,
-                },
-                "current": {
-                    "user_text": current_state_text,
-                    "views_used": rel_views,
-                    "assistant_text": curr_text,
-                    "video_id": video_id,
-                    "raw_response": curr_raw,
-                }
-            }
-
-            with open(fpath, "w", encoding="utf-8") as f:
-                json.dump(log, f, ensure_ascii=False, indent=2)
-            print(f"📝 Saved VLM log → {fpath}")
-        except Exception as e:
-            print(f"⚠️ Failed to save VLM log for ep={episode_id} sid={state_id}: {e}")
-
-    # ---------- VLM worker core ----------
-    def _vlm_worker(self):
-        """
-        For each queued (episode_id, state_id, view_paths):
-          1) Gather chronological sequence of critical-state cam_main frames up to current state
-          2) Prepare four views from that state
-          3) Call Azure OpenAI Responses API (two user messages)
-          4) Save raw response JSON in the episode cache
-        """
-        while self._vlm_worker_running and not self._shutting_down:
-            try:
-                item = self._vlm_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if item is None:
-                break
-            episode_id, state_id, view_paths = item
-            try:
-                # Belt-and-suspenders short-circuit before any heavy work.
-                with self.state_lock:
-                    ep_states = self.pending_states_by_episode.get(episode_id, {})
-                    info = ep_states.get(state_id)
-                    if info is None or info.get("prompt_ready", False):
-                        # State gone or already ready: clean up and skip.
-                        self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        if info is not None:
-                            info["vlm_queued"] = False
-                        print(f"↩️ VLM skip ep={episode_id} sid={state_id} (missing or already ready)")
-                        continue
-                # 1) Gather critical-state keyframes (cam_main) for this episode up to current critical state
-                seq_urls, seq_ids = self._gather_critical_maincam_sequence(episode_id, state_id)
-                if not seq_urls:
-                    print(f"⛔ VLM: no critical-state cam_main sequence; skipping ep={episode_id} sid={state_id}")
-                    continue
-                print(f"🖼️ VLM: using {len(seq_urls)} critical-state cam_main frames (sids={seq_ids})")
-
-                # 2) Collect four views (front/left/right/perspective in this order)
-                ordered = ["front", "left", "right", "perspective"]
-                img_urls = []
-                for name in ordered:
-                    p = view_paths.get(name)
-                    if p and os.path.exists(p):
-                        img_urls.append(self._image_file_to_data_url(p))
-                if not img_urls:
-                    print("⚠️ VLM: no per-state view images found; proceeding with maincam sequence only")
-
-                # Build content blocks
-                episode_history_text = self._get_episode_history_prompt()
-                current_state_text = self._get_current_state_prompt(episode_id, state_id)
-
-                # 4) Call Azure OpenAI (Responses API)
-                client = self._ensure_azure_openai_client()
-                if client is None:
-                    print("⚠️ Azure OpenAI client not configured; skipping VLM call.")
-                    continue
-
-                print(f"\n🤖 Calling Azure OpenAI ({self._aoai_deployment}) for ep={episode_id} sid={state_id} ...")
-
-                # ---------- inside _vlm_worker, replace the single-call block with this ----------
-
-                # Build two prompts with substitution
-                episode_history_text = self._get_episode_history_prompt()
-                current_state_text   = self._get_current_state_prompt(episode_id, state_id)
-
-                # Build conversation history starting with context (if available)
-                conversation_messages = []
-                
-                # Add the one-time context as the first part of the conversation
-                if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
-                    conversation_messages.append({
-                        "role": "assistant", 
-                        "content": self._vlm_context_text
-                    })
-
-                # (1) HISTORY CALL: maincam sequence (continuing the conversation)
-                history_messages = conversation_messages + [{
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": episode_history_text}] +
-                               [{"type": "input_image", "image_url": u} for u in seq_urls]
-                }]
-                hist_text, hist_raw = None, None
-                try:
-                    resp_h = client.responses.create(model=self._aoai_deployment, input=history_messages)
-                    hist_text = getattr(resp_h, "output_text", None)
-                    try:
-                        hist_raw = resp_h.model_dump_json(indent=2)
-                    except Exception:
-                        hist_raw = str(resp_h)
-                except Exception as e:
-                    # text-only fallback - also include context in conversation
-                    fallback_messages = []
-                    if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
-                        fallback_messages.append({"role": "assistant", "content": self._vlm_context_text})
-                    fallback_messages.append({"role": "user", "content": episode_history_text})
-                    
-                    resp_h = client.chat.completions.create(
-                        model=self._aoai_deployment,
-                        messages=fallback_messages,
-                        temperature=0.0
-                    )
-                    hist_text = (resp_h.choices[0].message.content
-                                 if getattr(resp_h, "choices", None) else None)
-                    hist_raw = str(resp_h)
-
-                # (2) CURRENT CALL: per-state multi-view (continuing the conversation with history response)
-                # Build conversation: context + history query + history response + current query
-                current_conversation = conversation_messages.copy()
-                
-                # Add the history query and response to continue the conversation
-                current_conversation.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": episode_history_text}] +
-                               [{"type": "input_image", "image_url": u} for u in seq_urls]
-                })
-                if hist_text:
-                    current_conversation.append({
-                        "role": "assistant",
-                        "content": hist_text
-                    })
-                
-                # Add the current state query
-                current_conversation.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": current_state_text}] +
-                               [{"type": "input_image", "image_url": u} for u in img_urls]
-                })
-                
-                current_messages = current_conversation
-                curr_text, curr_raw = None, None
-                try:
-                    resp_c = client.responses.create(model=self._aoai_deployment, input=current_messages)
-                    curr_text = getattr(resp_c, "output_text", None)
-                    try:
-                        curr_raw = resp_c.model_dump_json(indent=2)
-                    except Exception:
-                        curr_raw = str(resp_c)
-                except Exception as e:
-                    # text-only fallback - include full conversation context
-                    fallback_current_messages = []
-                    if hasattr(self, '_vlm_context_text') and self._vlm_context_text:
-                        fallback_current_messages.append({"role": "assistant", "content": self._vlm_context_text})
-                    fallback_current_messages.append({"role": "user", "content": episode_history_text})
-                    if hist_text:
-                        fallback_current_messages.append({"role": "assistant", "content": hist_text})
-                    fallback_current_messages.append({"role": "user", "content": current_state_text})
-                    
-                    resp_c = client.chat.completions.create(
-                        model=self._aoai_deployment,
-                        messages=fallback_current_messages,
-                        temperature=0.0
-                    )
-                    curr_text = (resp_c.choices[0].message.content
-                                 if getattr(resp_c, "choices", None) else None)
-                    curr_raw = str(resp_c)
-
-                # Combine for UI/storage; mark ready
-                combined_text = "\n\n---\n".join(
-                    [t.strip() for t in [(hist_text or ""), (curr_text or "")] if t and t.strip()]
-                )
-
-                # For frontend: only use current state response with cleaned format
-                frontend_text, video_id = self._clean_vlm_response_format((curr_text or "").strip())
-
-                # --- NEW: persist the full 3-part conversation (context + history + current) ---
-                if self.save_vlm_logs and hist_text and curr_text:
-                    try:
-                        # We already have `episode_history_text`, `current_state_text`,
-                        # `seq_ids` for history and `view_paths` for the current state.
-                        self._write_vlm_log(
-                            episode_id=episode_id,
-                            state_id=state_id,
-                            episode_history_text=episode_history_text,
-                            history_seq_ids=seq_ids,
-                            current_state_text=current_state_text,
-                            view_paths=view_paths,
-                            hist_text=hist_text,
-                            hist_raw=hist_raw,
-                            curr_text=curr_text,
-                            curr_raw=curr_raw,
-                            video_id=video_id,
-                        )
-                    except Exception as _e:
-                        print(f"⚠️ VLM logging failed ep={episode_id} sid={state_id}: {_e}")
-
-                # Attach to pending state and mark ready (frontend gets only current response)
-                with self.state_lock:
-                    ep_states = self.pending_states_by_episode.get(episode_id)
-                    if ep_states and state_id in ep_states:
-                        info = ep_states[state_id]
-                        # only set if not already present
-                        self._set_prompt_ready(info, episode_id, state_id,
-                                               frontend_text if (frontend_text or "").strip() else None,
-                                               video_id)
-                        info["vlm_queued"] = False
-                        self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        print(f"🧠 Prompt attached to state {state_id} (ep {episode_id})" +
-                              (f" with video {video_id}" if video_id else ""))
-                    else:
-                        # state may have completed/been removed → backfill metadata
-                        comp_ep = self.completed_states_by_episode.get(episode_id)
-                        if comp_ep is not None and state_id in comp_ep:
-                            comp_meta = comp_ep[state_id]
-                            if (frontend_text or "").strip():
-                                comp_meta["flex_text_prompt"] = frontend_text
-                            comp_meta["flex_video_id"] = video_id
-                            comp_meta["prompt_ready"] = True
-                        self._vlm_jobs_inflight.discard((episode_id, state_id))
-                        print(f"ℹ️ Prompt finished after state {state_id} left pending set (ep {episode_id}); backfilled metadata.")
-
-            except Exception as e:
-                print(f"❌ VLM worker error: {e}")
-                traceback.print_exc()
-            finally:
-                try: self._vlm_queue.task_done()
-                except Exception: pass
 
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
         self.events = events
 
-    def _schedule_episode_finalize_after_grace_locked(self, episode_id: str):
-        """
-        Schedule a deferred finalize for an empty episode.
-        Assumes self.state_lock is already held.
-        """
-        if self._shutting_down:
-            return
-        # Cancel any existing timer first
-        t = self._episode_finalize_timers.get(episode_id)
-        if t:
-            try: 
-                t.cancel()
-            except Exception:
-                pass
-
+    def _schedule_episode_finalize_after_grace(self, episode_id: int):
         delay = self.episode_finalize_grace_s
         timer = Timer(delay, self._finalize_episode_if_still_empty, args=(episode_id,))
         timer.daemon = True
         self._episode_finalize_timers[episode_id] = timer
         timer.start()
-        print(f"⏳ Scheduled deferred finalize for episode {episode_id} in {delay:.2f}s")
 
-    def _cancel_episode_finalize_timer_locked(self, episode_id: str):
-        """
-        Cancel a pending finalize timer for an episode.
-        Assumes self.state_lock is already held.
-        """
+    def _cancel_episode_finalize_timer(self, episode_id: int):
         t = self._episode_finalize_timers.pop(episode_id, None)
         if t:
-            try:
-                t.cancel()
-                print(f"↩️  Canceled deferred finalize for episode {episode_id}")
-            except Exception:
-                pass
+            t.cancel()
 
-    def _finalize_episode_if_still_empty(self, episode_id: str):
+    def _finalize_episode_if_still_empty(self, episode_id: int):
         """
-        Timer callback: finalize the episode iff it remained empty through the grace period.
-        If manual_save_only is enabled, DO NOT persist yet; mark it "pending save" and advance.
+        Timer callback
         """
-        if self._shutting_down:
-            return
-
         with self.state_lock:
-            # Clear this timer slot
             self._episode_finalize_timers.pop(episode_id, None)
 
-            # Abort if the episode is no longer empty
             if self.pending_states_by_episode.get(episode_id):
-                print(f"🛑 Finalize aborted for episode {episode_id} - new states arrived.")
+                # New states has become pending in the episode
                 return
+            
+            self.episodes_completed.add(episode_id) # for monitoring
 
-            self.episodes_being_completed.add(episode_id)
+            buffer = self.completed_states_buffer_by_episode[episode_id]
+            self.save_completed_episode(buffer)
 
-            try:
-                # --- AUTO-SAVE MODE: immediately save to dataset after finalization ---
-                print(f"🎬 Episode {episode_id} completed (after grace). Auto-saving to dataset.")
-                self.episodes_completed.add(episode_id)
-                self._episodes_pending_save.add(episode_id)
-                
-                # Save immediately outside the lock
-                episode_to_save = episode_id
-
-                # Clean up episode containers that affect serving
-                if episode_id in self.pending_states_by_episode:
-                    del self.pending_states_by_episode[episode_id]
-                if episode_id in self.served_states_by_episode:
-                    del self.served_states_by_episode[episode_id]
-
-                # Advance serving pointer
-                if self.current_serving_episode == episode_id:
-                    available_episodes = [
-                        ep_id for ep_id in self.pending_states_by_episode.keys()
-                        if ep_id not in self.episodes_completed
-                        and self.pending_states_by_episode[ep_id]
-                        and ep_id is not None
-                    ]
-                    if available_episodes:
-                        self.current_serving_episode = min(available_episodes)
-                        print(f"🎬 Now serving next episode {self.current_serving_episode}")
-                    else:
-                        self.current_serving_episode = None
-                        print("🏁 All episodes completed, no more episodes to serve")
-
-            finally:
-                self.episodes_being_completed.discard(episode_id)
-
-        # Auto-save to dataset (done outside the lock)
-        try:
-            saved = self.save_completed_episodes([episode_to_save])
-            if saved:
-                print(f"✅ Auto-saved episode {episode_to_save} to dataset")
-            else:
-                print(f"⚠️ Failed to auto-save episode {episode_to_save}")
-        except Exception as e:
-            print(f"❌ Error auto-saving episode {episode_to_save}: {e}")
+            del self.completed_states_buffer_by_episode[episode_id]
 
     
     ### ---Dataset Management---
@@ -2241,64 +1200,10 @@ class CrowdInterface():
         # Start background capture workers after all cameras are opened
         if self.cams and not self._cap_running:
             self._start_camera_workers()
-
-
-    def cleanup_cameras(self):
-        """Close all cameras and stop workers (idempotent)"""
-        # Stop auto-labeling worker (safe if already stopped)
-        try:
-            self._stop_auto_label_worker()
-        except Exception:
-            pass
-        
-        try:
-            self._stop_obs_stream_worker()
-        except Exception:
-            pass
-
-        # Stop background capture workers
-        if getattr(self, "_cap_running", False):
-            self._cap_running = False
-            for t in list(self._cap_threads.values()):
-                try:
-                    for _ in range(10):  # up to ~2s total
-                        t.join(timeout=0.2)
-                        if not t.is_alive():
-                            break
-                except Exception:
-                    pass
-            self._cap_threads.clear()
-
-        # Clear latest buffers
-        self._latest_raw.clear()
-        self._latest_ts.clear()
-        self._latest_proc.clear()
-        self._latest_jpeg.clear()
-
-        # Release cameras
-        for cap in list(getattr(self, "cams", {}).values()):
-            try:
-                cap.release()
-            except Exception:
-                pass
-        self.cams = {}
-
-
-    def _grab_frame_raw(self, cap) -> np.ndarray | None:
-        """
-        Retrieve a raw BGR frame at native resolution with no resize,
-        color conversion, or undistortion. Used for high-rate capture.
-        """
-        ok, frame = cap.retrieve()
-        if not ok or frame is None:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                return None
-        return frame
     
     def _capture_worker(self, name: str, cap: cv2.VideoCapture):
         """
-        Background loop: keep the latest raw BGR frame in self._latest_raw[name].
+        Background loop: capture frames and encode them as JPEG base64 for web streaming.
         """
         # Small sleep to avoid a tight spin when frames aren't available
         backoff = 0.002
@@ -2310,10 +1215,6 @@ class CrowdInterface():
             else:
                 ok, frame = cap.read()
             if ok and frame is not None:
-                # Keep raw for debug/inspection (BGR, native size)
-                self._latest_raw[name] = frame
-                ts = time.time()
-                self._latest_ts[name] = ts
                 # ---- Process in worker: resize → BGR2RGB → undistort (if maps) ----
                 if frame.shape[1] != 640 or frame.shape[0] != 480:
                     frame_resized = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
@@ -2324,8 +1225,6 @@ class CrowdInterface():
                 if maps is not None:
                     m1, m2 = maps
                     rgb = cv2.remap(rgb, m1, m2, interpolation=cv2.INTER_LINEAR)
-                # Atomic pointer swap to latest processed frame (RGB, 640x480)
-                self._latest_proc[name] = rgb
                 # Pre-encode JPEG base64 (string) for zero-cost serving
                 self._latest_jpeg[name] = self._encode_jpeg_base64(rgb)
             else:
@@ -2512,17 +1411,6 @@ class CrowdInterface():
             # Drop frame to avoid backpressure on add_state
             pass
     
-    def _global_max_pending_state_id(self) -> int | None:
-        """Return newest state_id across all episodes (pending only); None if none."""
-        max_id = None
-        for ep_states in self.pending_states_by_episode.values():
-            if not ep_states:
-                continue
-            k = max(ep_states.keys())
-            if max_id is None or k > max_id:
-                max_id = k
-        return max_id
-    
     def _global_max_existing_state_id(self) -> int | None:
         """
         Return the newest state_id that EXISTS anywhere in memory:
@@ -2578,99 +1466,6 @@ class CrowdInterface():
             demoted.sort()
             print(f"⬇️  Demoted earlier critical states with 0 responses → normal in episode {episode_id}: {demoted}")
         return demoted
-
-    def _auto_label_states_like_uncritical_locked(self, episode_id: str, pivot_state_id: int, state_ids: list[int]) -> None:
-        """
-        Auto-label the given 'state_ids' as if they were normal, using the SAME rules as _auto_label:
-          - template = most-recent earlier IMPORTANT state's first label (pending or completed)
-          - fallback = joint positions of the FIRST pending state in the episode
-        MUST be called with self.state_lock already held.
-        """
-        if not state_ids:
-            return
-
-        episode_states = self.pending_states_by_episode.get(episode_id, {})
-        if not episode_states:
-            return
-
-        # --- Build the template action exactly like _auto_label ---
-        template_action = None
-        previous_critical_states = []
-
-        # 1) From PENDING: earlier critical states that already have actions
-        for sid, sinfo in episode_states.items():
-            if sid < pivot_state_id and sinfo.get("critical", False) and sinfo.get("actions"):
-                previous_critical_states.append((sid, sinfo))
-
-        # 2) From COMPLETED buffer: earlier critical states (recover first action)
-        if episode_id in self.completed_states_by_episode:
-            buf = self.completed_states_buffer_by_episode.get(episode_id, {})
-            for sid, cinfo in self.completed_states_by_episode[episode_id].items():
-                if sid < pivot_state_id and cinfo.get("is_critical", False):
-                    man = buf.get(sid)
-                    if isinstance(man, dict) and "action" in man:
-                        act = man["action"]  # 1D tensor: (required_responses_per_critical_state * action_dim,)
-                        action_dim = len(JOINT_NAMES)
-                        first = act[:action_dim]
-                        if not isinstance(first, torch.Tensor):
-                            first = torch.as_tensor(first, dtype=torch.float32)
-                        previous_critical_states.append((sid, {"actions": [first]}))
-
-        if previous_critical_states:
-            latest_sid, latest_info = max(previous_critical_states, key=lambda x: x[0])
-            template_action = latest_info["actions"][0]
-            print(f"🎯 Auto-label template from previous critical state {latest_sid}")
-        else:
-            # Fallback: joint positions of the FIRST pending state in the episode
-            first_state_id = min(episode_states.keys())
-            first_state = episode_states[first_state_id]["state"]
-            joint_positions = first_state['joint_positions']
-            gripper_action = first_state.get('gripper', 0)
-
-            goal_positions = []
-            for joint_name in JOINT_NAMES:
-                v = joint_positions.get(joint_name, 0.0)
-                v = float(v[0]) if isinstance(v, (list, tuple)) and len(v) > 0 else float(v)
-                goal_positions.append(v)
-            goal_positions[-1] = 0.044 if gripper_action > 0 else 0.0
-            template_action = torch.tensor(goal_positions, dtype=torch.float32)
-            print(f"🎯 Auto-label fallback template from first pending state {first_state_id}")
-
-        # --- Label each target state and complete them exactly like _auto_label ---
-        action_dim = len(JOINT_NAMES)
-        for sid in sorted(state_ids):
-            sinfo = episode_states.get(sid)
-            if not sinfo:
-                continue  # state might have disappeared (rare)
-
-            # Fill up to required responses for a NORMAL state
-            while sinfo["responses_received"] < self.required_responses_per_state:
-                sinfo["actions"].append(template_action.clone())
-                sinfo["responses_received"] += 1
-
-            # Concatenate + pad (pad to critical-shape with NaNs so tensors are uniform)
-            all_actions = torch.cat(sinfo["actions"][:self.required_responses_per_state], dim=0)
-            missing = self.required_responses_per_critical_state - self.required_responses_per_state
-            if missing > 0:
-                padding = torch.full((missing * action_dim,), float('nan'), dtype=torch.float32)
-                all_actions = torch.cat([all_actions, padding], dim=0)
-
-            completed_state = {
-                "obs_path": sinfo.get("obs_path"),
-                "action": all_actions,
-                "task": self.task_text if self.task_text else "crowdsourced_task",
-            }
-
-            # Buffer for chronological add_frame
-            self.completed_states_buffer_by_episode.setdefault(episode_id, {})[sid] = completed_state
-            self.completed_states_by_episode.setdefault(episode_id, {})[sid] = {
-                "responses_received": sinfo["responses_received"],
-                "completion_time": time.time(),
-                "is_critical": False  # now normal
-            }
-            # Remove from pending
-            del episode_states[sid]
-            print(f"🏷️  Auto-labeled (demoted) state {sid} in episode {episode_id}")
 
     # --- State Management ---
     def add_state(self,
@@ -2806,127 +1601,8 @@ class CrowdInterface():
             if not ok:
                 print(f"⚠️ Could not enqueue VLM job ep={episode_id_local} sid={state_id_local} (will remain pending until re-marked)")
 
-    def clear_episode_data(self, episode_id: str):
-        """Clear all episode-related data for a specific episode (used when rerecording)"""
-        with self.state_lock:
-
-            self._cancel_episode_finalize_timer_locked(episode_id)
-            
-            # Clear pending states
-            if episode_id in self.pending_states_by_episode:
-                del self.pending_states_by_episode[episode_id]
-                print(f"🧹 Cleared pending states for episode {episode_id}")
-            
-            # Clear completed states
-            if episode_id in self.completed_states_by_episode:
-                del self.completed_states_by_episode[episode_id]
-                print(f"🧹 Cleared completed states for episode {episode_id}")
-            
-            # Clear completed states buffer
-            if episode_id in self.completed_states_buffer_by_episode:
-                del self.completed_states_buffer_by_episode[episode_id]
-                print(f"🧹 Cleared completed states buffer for episode {episode_id}")
-            
-            # Clear served states
-            if episode_id in self.served_states_by_episode:
-                del self.served_states_by_episode[episode_id]
-                print(f"🧹 Cleared served states for episode {episode_id}")
-            
-            # Remove from completed and being completed sets
-            self.episodes_completed.discard(episode_id)
-            self.episodes_being_completed.discard(episode_id)
-            
-            # Clear the episode cache directory
-            self._purge_episode_cache(episode_id)
-            
-        # Clear sequence tracking for this episode (outside the state_lock)
-        with self._prompt_seq_lock:
-            # Remove all saved states for this episode
-            to_remove = {(ep, sid) for (ep, sid) in self._saved_sequence_states if ep == episode_id}
-            self._saved_sequence_states -= to_remove
-            
-            # Recalculate max saved state ID
-            if to_remove and self._saved_sequence_states:
-                self._max_saved_state_id = max(sid for (ep, sid) in self._saved_sequence_states)
-            elif not self._saved_sequence_states:
-                self._max_saved_state_id = None
-            
-            if to_remove:
-                print(f"🧹 Cleared {len(to_remove)} sequence tracking entries for episode {episode_id}")
-
-    # --- NEW: explicit commit of completed episodes ---
-    def save_completed_episodes(self, episode_ids: list[str] | None = None) -> list[str]:
-        """
-        Persist (commit) one or more *already completed* episodes to the dataset.
-        - Adds buffered frames in chronological order
-        - Calls dataset.save_episode() once per episode
-        - Purges episode cache and memory bookkeeping
-        Returns a list of episode_ids that were saved.
-        """
-        saved: list[str] = []
-        if self.dataset is None:
-            print("⚠️ save_completed_episodes: dataset is not initialized")
-            return saved
-
-        with self.state_lock:
-            # Compute which episodes we can save
-            if episode_ids is None:
-                to_save = sorted(list(self._episodes_pending_save))
-            else:
-                to_save = [ep for ep in episode_ids if ep in self._episodes_pending_save]
-
-            for ep in to_save:
-                # Only save episodes that have no pending states
-                if self.pending_states_by_episode.get(ep):
-                    print(f"⏭️ Episode {ep} still has pending states; skipping save.")
-                    continue
-
-                buf = self.completed_states_buffer_by_episode.get(ep, {})
-                print(f"💾 Saving episode {ep}: {len(buf)} buffered states")
-                # Add frames in chronological order
-                for sid in sorted(buf.keys()):
-                    entry = buf[sid]
-                    # All entries in the buffer are manifest entries - load observations from disk
-                    obs = self._load_obs_from_disk(entry.get("obs_path"))
-                    frame = {**obs, "action": entry["action"], "task": entry["task"]}
-                    self.dataset.add_frame(frame)
-                    self._delete_obs_from_disk(entry.get("obs_path"))
-
-                # Commit this episode
-                self.dataset.save_episode()
-                print(f"✅ Episode {ep} saved to dataset")
-
-                # Clean up memory/cache
-                self._episodes_pending_save.discard(ep)
-                if ep in self.completed_states_buffer_by_episode:
-                    del self.completed_states_buffer_by_episode[ep]
-                # Keep completed_states_by_episode for counts if you want, or clear to free RAM
-                if ep in self.completed_states_by_episode:
-                    del self.completed_states_by_episode[ep]
-                try:
-                    self._purge_episode_cache(ep)
-                except Exception:
-                    pass
-
-                saved.append(ep)
-
-        return saved
-
     def auto_label_previous_states(self, critical_state_id):
-        """
-        Queue an auto-labeling task for uncritical pending states that are 
-        earlier than the given critical state ID.
-        """
-        try:
-            if self._shutting_down:
-                return
-            # Add the task to the queue (non-blocking)
-            self.auto_label_queue.put_nowait(critical_state_id)
-            print(f"📝 Queued auto-labeling task for states before {critical_state_id}")
-        except queue.Full:
-            print(f"⚠️  Auto-labeling queue is full, skipping task for state {critical_state_id}")
-        except Exception as e:
-            print(f"❌ Error queuing auto-labeling task: {e}")
+        self.auto_label_queue.put_nowait(critical_state_id)
     
     def get_latest_state(self, session_id: str = "default") -> dict:
         """
@@ -3207,7 +1883,7 @@ class CrowdInterface():
 
                 # Handle episode completion
                 if not self.pending_states_by_episode[episode_id]:
-                    self._schedule_episode_finalize_after_grace_locked(episode_id)
+                    self._schedule_episode_finalize_after_grace(episode_id)
     
     def get_pending_states_info(self) -> dict:
         """Get episode-based state information for monitoring"""
@@ -3654,396 +2330,6 @@ class CrowdInterface():
             print(f"⚠️  FK error: {e}")
             return None
 
-    def _ensure_sam2(self):
-        if self._sam2_model is not None and self._sam2_processor is not None:
-            return
-        if Sam2Model is None or Sam2Processor is None:
-            raise RuntimeError("transformers Sam2Model/Sam2Processor not installed.")
-        print(f"🧠 Loading SAM2 '{self._sam2_model_id}' on {self._sam2_device} ...")
-        try:
-            self._sam2_model = Sam2Model.from_pretrained(self._sam2_model_id).to(self._sam2_device)
-        except Exception as e:
-            # Fallback to a commonly-available ID
-            fallback_id = "facebook/sam2-hiera-tiny"
-            if self._sam2_model_id != fallback_id:
-                print(f"⚠️  Failed to load {self._sam2_model_id}: {e}. Falling back to '{fallback_id}'.")
-                self._sam2_model = Sam2Model.from_pretrained(fallback_id).to(self._sam2_device)
-            else:
-                raise
-        self._sam2_model.eval()
-        self._sam2_processor = Sam2Processor.from_pretrained(self._sam2_model_id)
-        print("✅ SAM2 ready.")
-
-    @staticmethod
-    def _load_rgb_image_from_file(path: str) -> np.ndarray | None:
-        if not path or not os.path.exists(path):
-            return None
-        bgr = cv2.imread(path, cv2.IMREAD_COLOR)
-        if bgr is None:
-            return None
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-    def _episode_seg_dir(self, episode_id: str) -> Path:
-        d = self._episode_cache_dir(episode_id) / "segments"
-        try: d.mkdir(parents=True, exist_ok=True)
-        except Exception: pass
-        return d
-
-    def _save_mask_png(self, episode_id: str, state_id: int, view_name: str,
-                       mask_bool: np.ndarray, img_rgb: np.ndarray) -> str:
-        """
-        Save a PNG whose RGB are the source view *under the mask*, and whose
-        alpha is the mask (opaque where mask==True, transparent elsewhere).
-
-        This overlays perfectly on the background view and can be translated as 1 unit.
-        """
-        # Ensure we have matching sizes
-        ih, iw = img_rgb.shape[:2]
-        mh, mw = mask_bool.shape[:2]
-        if (mh, mw) != (ih, iw):
-            # Safety: resize mask to image size with nearest-neighbor (no blur)
-            mask_bool = cv2.resize(mask_bool.astype(np.uint8), (iw, ih),
-                                   interpolation=cv2.INTER_NEAREST) > 0
-
-        # Compose BGRA where alpha = 255 inside mask
-        m = mask_bool.astype(np.uint8)
-        bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)  # cv2 expects BGR/BGRA
-
-        out = np.zeros((ih, iw, 4), dtype=np.uint8)
-        out[..., 0] = bgr[..., 0] * m  # B
-        out[..., 1] = bgr[..., 1] * m  # G
-        out[..., 2] = bgr[..., 2] * m  # R
-        out[..., 3] = m * 255          # A
-
-        out_path = self._episode_seg_dir(episode_id) / f"{state_id}_{view_name}.png"
-        cv2.imwrite(str(out_path), out)
-        return str(out_path)
-
-    @staticmethod
-    def _patch_dark_mean(img_rgb: np.ndarray, u: int, v: int, r: int) -> float:
-        H, W, _ = img_rgb.shape
-        x0 = max(0, u - r); x1 = min(W, u + r + 1)
-        y0 = max(0, v - r); y1 = min(H, v + r + 1)
-        if x1 <= x0 or y1 <= y0:
-            return 0.0
-        gray = cv2.cvtColor(img_rgb[y0:y1, x0:x1], cv2.COLOR_RGB2GRAY)
-        return float(gray.mean())
-
-    @staticmethod
-    def _patch_rgb_mean(img_rgb: np.ndarray, u: int, v: int, r: int) -> tuple[float, float, float]:
-        """
-        Mean R,G,B over a (2r+1)x(2r+1) patch centered at (u,v).
-        Returns (R,G,B) in 0..255 (float32).
-        """
-        H, W, _ = img_rgb.shape
-        x0 = max(0, u - r); x1 = min(W, u + r + 1)
-        y0 = max(0, v - r); y1 = min(H, v + r + 1)
-        if x1 <= x0 or y1 <= y0:
-            return (0.0, 0.0, 0.0)
-        patch = img_rgb[y0:y1, x0:x1]  # RGB
-        mean_rgb = patch.reshape(-1, 3).mean(axis=0).astype(np.float32)
-        return float(mean_rgb[0]), float(mean_rgb[1]), float(mean_rgb[2])
-
-    def _is_flat_gray_seed(self, mean_rgb: tuple[float, float, float]) -> bool:
-        """
-        True if each channel is within [gray_min, gray_max] and
-        max(R,G,B)-min(R,G,B) <= gray_delta (≈achromatic/neutral gray).
-        """
-        if self._seg_gray_delta <= 0 or self._seg_gray_min >= self._seg_gray_max:
-            return False
-        r, g, b = mean_rgb
-        if not (self._seg_gray_min <= r <= self._seg_gray_max): return False
-        if not (self._seg_gray_min <= g <= self._seg_gray_max): return False
-        if not (self._seg_gray_min <= b <= self._seg_gray_max): return False
-        return (max(r, g, b) - min(r, g, b)) <= self._seg_gray_delta
-
-    def _project_world_to_pixel(self, view_name: str, Pw: np.ndarray) -> tuple[int, int] | None:
-        """
-        Project world point Pw (x,y,z in meters) into pixel (u,v) for 'view_name'
-        using current T_three (camera pose) and Knew (intrinsics).
-        """
-        pose_key = f"{view_name}_pose"
-        M = self._camera_poses.get(pose_key)
-        model = self._camera_models.get(view_name)
-        if M is None or model is None or "Knew" not in model:
-            return None
-
-        M = np.asarray(M, dtype=np.float64)  # 4x4 (Three.js world matrix)
-        R_three = M[:3, :3]
-        t_world = M[:3, 3]
-
-        # world → three-camera coords (camera looks along -Z)
-        Xc_three = R_three.T @ (np.asarray(Pw).reshape(3,) - t_world)
-
-        # three-camera → OpenCV camera (+Z forward)
-        Rflip = np.diag([1.0, -1.0, -1.0])
-        Xc_cv = Rflip @ Xc_three
-        Z = Xc_cv[2]
-        if Z <= 0:
-            return None
-
-        K = np.asarray(model["Knew"], dtype=np.float64)
-        u = int(round(K[0, 0] * (Xc_cv[0] / Z) + K[0, 2]))
-        v = int(round(K[1, 1] * (Xc_cv[1] / Z) + K[1, 2]))
-        return (u, v)
-
-    def _sam2_segment_point(self, img_rgb: np.ndarray, u: int, v: int, multimask_output: bool = False) -> np.ndarray | None:
-        self._ensure_sam2()
-        try:
-            inputs = self._sam2_processor(
-                images=Image.fromarray(img_rgb),
-                input_points=[[[[float(u), float(v)]]]],
-                input_labels=[[[1]]],
-                return_tensors="pt"
-            ).to(self._sam2_device)
-
-            with torch.no_grad():
-                outputs = self._sam2_model(**inputs, multimask_output=multimask_output)
-
-            masks = self._sam2_processor.post_process_masks(
-                outputs.pred_masks.detach().cpu(),
-                inputs["original_sizes"]
-            )[0]  # usually (N, H, W) but some builds emit (N,1,H,W)
-
-            if masks is None or masks.shape[0] == 0:
-                return None
-
-            m = masks[0].detach().cpu().numpy()  # first proposal
-            m = np.squeeze(m)                    # drop any singleton dims
-            # Final safety: if still >2D, take the last 2 dims as (H,W)
-            if m.ndim > 2:
-                m = m.reshape(m.shape[-2], m.shape[-1])
-            if m.ndim != 2:
-                raise ValueError(f"SAM2 mask has unexpected shape {m.shape}")
-
-            return (m >= 0.5)
-        except Exception as e:
-            print(f"❌ SAM2 inference failed: {e}")
-            return None
-
-    def _generate_ring_points(self, u: int, v: int, W: int, H: int,
-                              base_radius_px: int, rings: int, per_ring: int) -> list[tuple[int,int]]:
-        """Return [(u,v)] (center) plus concentric rings of integer pixel points within image bounds."""
-        pts = [(u, v)]
-        for k in range(1, rings + 1):
-            r = k * base_radius_px
-            for j in range(per_ring):
-                theta = 2.0 * math.pi * (j / per_ring)
-                uu = int(round(u + r * math.cos(theta)))
-                vv = int(round(v + r * math.sin(theta)))
-                if 0 <= uu < W and 0 <= vv < H:
-                    pts.append((uu, vv))
-        return pts
-
-    def _filter_seed_points(self, img_rgb: np.ndarray,
-                            pts: list[tuple[int,int]],
-                            mode: str = "strict") -> list[tuple[int,int]]:
-        """
-        mode = 'off'   : keep all in-bounds points
-        mode = 'loose' : only reject *very* dark seeds; ignore flat-gray
-        mode = 'strict': current behavior (dark + flat-gray guards)
-        """
-        if mode not in ("off", "loose", "strict"):
-            mode = "strict"
-        out = []
-        for uu, vv in pts:
-            if mode == "off":
-                out.append((uu, vv))
-                continue
-            mean_dark = self._patch_dark_mean(img_rgb, uu, vv, self._seg_dark_patch_radius)
-            if mode == "loose":
-                if mean_dark < 0.5 * self._seg_dark_mean_thresh:  # only reject *very* dark
-                    continue
-                out.append((uu, vv))
-                continue
-            # strict
-            if mean_dark < self._seg_dark_mean_thresh:
-                continue
-            mean_rgb = self._patch_rgb_mean(img_rgb, uu, vv, self._seg_gray_patch_radius)
-            if self._is_flat_gray_seed(mean_rgb):
-                continue
-            out.append((uu, vv))
-        return out
-
-    def _sam2_segment_points(self, img_rgb: np.ndarray,
-                             pos_points: list[tuple[int,int]],
-                             neg_points: list[tuple[int,int]] | None = None,
-                             multimask_output: bool = True) -> np.ndarray | None:
-        """
-        One SAM2 forward with multi-point prompts.
-        pos_points -> label 1, neg_points -> label 0.
-        Returns a binary mask (H,W) or None.
-        """
-        self._ensure_sam2()
-        neg_points = neg_points or []
-        if not pos_points and not neg_points:
-            print("⛔ SAM2: no prompt points (need ≥1 positive or negative) → skipping")
-            return None
-        try:
-            all_pts = pos_points + neg_points
-            labels  = [1] * len(pos_points) + [0] * len(neg_points)
-            inputs = self._sam2_processor(
-                images=Image.fromarray(img_rgb),
-                input_points=[[[[float(u), float(v)] for (u, v) in all_pts]]],
-                input_labels=[[[int(l) for l in labels]]],
-                return_tensors="pt"
-            ).to(self._sam2_device)
-
-            with torch.no_grad():
-                outputs = self._sam2_model(**inputs, multimask_output=multimask_output)
-
-            masks = self._sam2_processor.post_process_masks(
-                outputs.pred_masks.detach().cpu(),
-                inputs["original_sizes"]
-            )[0]
-
-            if masks is None:
-                return None
-
-            # Collect candidate masks (1..N)
-            cand = []
-            if masks.ndim == 2:
-                cand = [masks]
-            elif masks.ndim == 3:
-                n = masks.shape[0]
-                for i in range(n):
-                    cand.append(masks[i])
-            else:
-                raise ValueError(f"SAM2 masks unexpected shape {masks.shape}")
-
-            # Score: positives inside minus 2x negatives inside
-            best_mask = None
-            best_score = -1e18
-            for m in cand:
-                mb = (np.squeeze(m) >= 0.5)
-                score = 0
-                for (u, v) in pos_points:
-                    if 0 <= v < mb.shape[0] and 0 <= u < mb.shape[1] and mb[v, u]:
-                        score += 1
-                for (u, v) in neg_points:
-                    if 0 <= v < mb.shape[0] and 0 <= u < mb.shape[1] and mb[v, u]:
-                        score -= 2
-                if score > best_score:
-                    best_score = score
-                    best_mask = mb
-
-            # Optional morphological closing
-            k = int(self._seg_mask_close_ksize)
-            if best_mask is not None and k >= 3:
-                if k % 2 == 0: k += 1
-                kernel = np.ones((k, k), np.uint8)
-                best_mask = cv2.morphologyEx(best_mask.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel) > 0
-
-            return best_mask
-
-        except Exception as e:
-            print(f"❌ SAM2 multi-point inference failed: {e}")
-            return None
-        
-    def _segment_views_for_state(self, episode_id: str, state_id: int, view_paths: dict[str, str], joint_positions: dict) -> dict[str, str]:
-        """
-        Compute gripper center (URDF FK) → project to each calibrated view → run SAM2 if not dark.
-        Returns {view_name: mask_png_path}
-        """
-        out_paths: dict[str, str] = {}
-        # find state & its per-view files
-        if not view_paths:
-            print(f"⚠️ segmentation: no view_paths for state {state_id}")
-            return out_paths
-
-        # 1) FK → world gripper center
-        Pw = self._gripper_center_from_joints(joint_positions or {})
-        if Pw is None:
-            print(f"⚠️ segmentation: FK failed (no URDF or bad joints) for state {state_id}")
-            return out_paths
-
-        # 2) Iterate VIEWS only (skip obs_*); require current calibration
-        for view_name, img_path in view_paths.items():
-            if view_name not in self._camera_models:  # skip obs_main/obs_wrist, etc.
-                continue
-
-            img = self._load_rgb_image_from_file(img_path)
-            if img is None:
-                continue
-            H, W, _ = img.shape
-
-            uv = self._project_world_to_pixel(view_name, Pw)
-            if uv is None:
-                print(f"⚠️ projection failed for view '{view_name}' (state {state_id})")
-                continue
-            u, v = uv
-            if not (0 <= u < W and 0 <= v < H):
-                print(f"⚠️ seed ({u},{v}) outside image for '{view_name}'")
-                continue
-
-            # 3) multi-seed around projected center (u,v)
-            if self._seg_use_multi_seed:
-                # Decide center role
-                center_is_dark = (self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius) < self._seg_dark_mean_thresh)
-                center_is_gray = self._is_flat_gray_seed(self._patch_rgb_mean(img, u, v, self._seg_gray_patch_radius))
-                use_center_as_neg = self._seg_center_negative and (center_is_dark or center_is_gray)
-
-                # Build positive ring points outside the gripper
-                base_r = max(self._seg_seed_radius_px, self._seg_seed_min_radius_px)
-                ring_pts = self._generate_ring_points(
-                    u, v, W, H,
-                    base_radius_px=base_r,
-                    rings=max(1, self._seg_seed_rings),
-                    per_ring=max(6, self._seg_seed_per_ring)
-                )
-
-                # Loosen filtering on ring points so object pixels survive
-                pos_pts = self._filter_seed_points(img, ring_pts, mode=self._seg_ring_filter_mode)
-
-                # Ensure at least one positive; escalate radius if necessary
-                tries = 0
-                while len(pos_pts) < max(1, self._seg_min_valid_seeds) and tries < 2:
-                    base_r = int(round(base_r * 1.6))
-                    ring_pts = self._generate_ring_points(u, v, W, H, base_r, rings=1, per_ring=max(8, self._seg_seed_per_ring))
-                    pos_pts = self._filter_seed_points(img, ring_pts, mode=self._seg_ring_filter_mode)
-                    tries += 1
-
-                # Fallback: if still empty, accept ring points unfiltered
-                if len(pos_pts) == 0:
-                    pos_pts = ring_pts[:]  # in-bounds by construction
-
-                # Negatives: center (to reject the black gripper) plus optional outer ring
-                neg_pts = []
-                if use_center_as_neg:
-                    neg_pts.append((u, v))
-                if self._seg_use_neg_ring:
-                    outer_r = int(round(base_r * self._seg_neg_ring_scale))
-                    neg_ring = self._generate_ring_points(u, v, W, H, base_radius_px=outer_r, rings=1,
-                                                          per_ring=max(8, self._seg_seed_per_ring))
-                    neg_pts.extend(neg_ring)
-
-                # 4) SAM2 with multi-point prompt; let it return the best candidate
-                mask = self._sam2_segment_points(img, pos_pts, neg_pts, multimask_output=self._seg_multimask)
-
-                # Debugging (optional)
-                if mask is None:
-                    print(f"⛔ multi-seed produced no mask: pos={len(pos_pts)} neg={len(neg_pts)} (center_neg={use_center_as_neg})")
-
-            else:
-                # Legacy single-seed path (unchanged)
-                mean_val = self._patch_dark_mean(img, u, v, self._seg_dark_patch_radius)
-                if mean_val < self._seg_dark_mean_thresh:
-                    print(f"⛔ view '{view_name}': dark patch at seed (mean={mean_val:.1f}) → skip")
-                    continue
-                mask = self._sam2_segment_point(img, u, v, multimask_output=False)
-            if mask is None:
-                print(f"❌ SAM2 mask None for '{view_name}'")
-                continue
-
-            # 5) save cut-out (RGB under mask + alpha), not a black silhouette
-            out_path = self._save_mask_png(episode_id, state_id, view_name, mask, img)
-            out_paths[view_name] = out_path
-            print(f"🎯 Segmented '{view_name}' → {out_path}")
-
-        return out_paths
-
-    # ============================================================
-
     def is_recording(self):
         """Check if there are any pending states across all episodes or episodes being completed"""
         with self.state_lock:
@@ -4473,33 +2759,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
     
-    @app.route("/api/control/save", methods=["POST"])
-    def save_episodes():
-        """
-        Manually trigger episode saves (equivalent to pressing 's' in the UI).
-        NOTE: Episodes are automatically saved after finalization, so this is mainly for:
-        - Force-saving episodes that might have failed auto-save
-        - Manual triggering during development/debugging
-        Optional body: {"episode_ids": ["<ep1>", "<ep2>", ...]} to save specific ones.
-        Without a body, saves *all* episodes that are pending save.
-        """
-        try:
-            if crowd_interface._shutting_down:
-                return jsonify({"status": "shutting_down"}), 503
-
-            data = request.get_json(force=True, silent=True) or {}
-            episode_ids = data.get("episode_ids")
-            if episode_ids is not None and not isinstance(episode_ids, list):
-                return jsonify({"status": "error", "message": "episode_ids must be a list"}), 400
-
-            saved = crowd_interface.save_completed_episodes(episode_ids)
-            if not saved:
-                return jsonify({"status": "noop", "message": "nothing to save", "saved_episodes": []}), 200
-            return jsonify({"status": "success", "saved_episodes": saved})
-        except Exception as e:
-            print(f"❌ Error saving episodes: {e}")
-            return jsonify({"status": "error", "message": str(e)}), 500
-    
     @app.route("/api/save-calibration", methods=["POST"])
     def save_calibration():
         """
@@ -4576,80 +2835,6 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             pass
 
         return jsonify({"status": "ok", "path": str(out_path)})
-    
-    @app.route("/api/task-already-completed", methods=["POST"])
-    def task_already_completed():
-        """Handle 'Task Already Completed' submissions by recording original state as goal"""
-        if crowd_interface._shutting_down:
-            return jsonify({"status": "shutting_down"}), 503
-        try:
-            # Try to get JSON data with force=True to bypass Content-Type check
-            try:
-                data = request.get_json(force=True) or {}
-            except Exception:
-                # Fallback to manual JSON parsing if that fails
-                try:
-                    data = json.loads(request.get_data(as_text=True)) if request.get_data() else {}
-                except Exception:
-                    data = {}
-            
-            session_id = request.headers.get("X-Session-ID", "default")
-            
-            # Get the state_id and episode_id from request
-            state_id = data.get("state_id")
-            episode_id = data.get("episode_id")
-            if state_id is None:
-                return jsonify({"error": "state_id is required"}), 400
-            
-            # Get the original state to use its joint positions as the goal
-            with crowd_interface.state_lock:
-                # Use episode_id if provided, otherwise fall back to session tracking
-                original_state = None
-                found_episode = None
-                
-                if episode_id and episode_id in crowd_interface.pending_states_by_episode:
-                    if state_id in crowd_interface.pending_states_by_episode[episode_id]:
-                        original_state = crowd_interface.pending_states_by_episode[episode_id][state_id]["state"]
-                        found_episode = episode_id
-                elif not episode_id:
-                    # Use session tracking to find the correct episode
-                    for ep_id, session_states in crowd_interface.served_states_by_episode.items():
-                        if session_id in session_states and session_states[session_id] == state_id:
-                            if ep_id in crowd_interface.pending_states_by_episode and state_id in crowd_interface.pending_states_by_episode[ep_id]:
-                                original_state = crowd_interface.pending_states_by_episode[ep_id][state_id]["state"]
-                                found_episode = ep_id
-                                break
-                
-                if original_state is None:
-                    return jsonify({"error": f"State {state_id} not found or already completed"}), 404
-                
-                original_joints = original_state.get("joint_positions", {}).copy()
-                for joint_name in original_joints.keys():
-                    original_joints[joint_name] = [original_joints[joint_name]]
-                original_gripper = original_state.get("gripper", 0)
-            
-            # Create response data using original joint positions as the goal
-            # This is equivalent to the user clicking "Confirm" without moving any sliders
-            response_data = {
-                "state_id": state_id,
-                "episode_id": found_episode,             # Include the found episode_id
-                "joint_positions": original_joints,  # Use original positions as goal
-                "gripper": original_gripper,          # Use original gripper state as goal
-                "task_already_completed": True        # Flag to indicate this was a "no change needed" submission
-            }
-            
-            # Reuse existing response recording infrastructure
-            completion_status = crowd_interface.record_response(response_data, session_id)
-            
-            if completion_status:
-                return jsonify({"status": "success", "message": "Task already completed response recorded and state completed"})
-            else:
-                return jsonify({"status": "success", "message": "Task already completed response recorded"})
-                
-        except Exception as e:
-            print(f"❌ Error in task-already-completed: {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
         
     @app.route("/api/save-gripper-tips", methods=["POST"])
     def save_gripper_tips():

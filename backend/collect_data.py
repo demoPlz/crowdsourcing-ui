@@ -426,12 +426,6 @@ def control_robot(cfg: ControlPipelineConfig):
 
     record(robot, crowd_interface, cfg.control)
 
-    # After record(...) returns
-    try:
-        crowd_interface.begin_shutdown()
-    except Exception:
-        pass
-
     if robot.is_connected:
         robot.disconnect()
 

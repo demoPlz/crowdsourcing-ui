@@ -8,7 +8,7 @@ import time
 import base64
 from pathlib import Path
 
-from constants import *
+from .constants import *
 
 # RealSense device name patterns to avoid
 _REALSENSE_BLOCKLIST = (

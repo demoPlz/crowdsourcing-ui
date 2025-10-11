@@ -1,0 +1,58 @@
+Position the arm to grip the handle of the middle drawer.
+Grasp the drawer handle.
+Pull the drawer open.
+Release the gripper.
+Return to the home position.
+Move horizontally such that the gripper is in the general area above the blue cube.
+Lower and pitch the gripper till vertical to be ~3cm above the blue cube.
+Rotate the gripper to align with grasp angle.
+Lower the gripper to prepare for grasp.
+Close gripper to grasp.
+Raise the gripper such that the gripper and the the blue cube clear the height of the edge of the drawer.
+Move horizontally such that the gripper is above the opened drawer.
+Open gripper to release object into the drawer.
+Return to the home position.
+Move down the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
+Push the drawer close.
+Move gripper horizontally to the left.
+Return to the home position.
+Lower and pitch the gripper till vertical to be ~3cm above the tennis ball.
+Lower the gripper to prepare for grasping the tennis ball.
+Close the gripper to grasp onto the tennis ball.
+Drag the tennis ball leftward along the desk.
+Open the gripper to let go the tennis ball.
+Raise the gripper vertically to be ~5cm above the tennis ball.
+Move to the home position.
+Lower and pitch the gripper till vertical to be ~3cm above the red cube.
+Rotate the gripper to align with grasp angle.
+Lower the gripper to prepare for grasping the red cube.
+Close the gripper to grasp onto the red cube.
+Drag the red cube leftward along the desk.
+Open the gripper to let go the red cube.
+Raise the gripper vertically to be ~5cm above the red cube.
+Go to the home position.
+Position the arm to grip the handle of the middle drawer.
+Close the gripper to grasp the drawer's handle.
+Move leftward to pull the drawer open.
+Release the gripper to let go of the drawer's handle.
+Return to the home position.
+Move left to be in the general area above the tennis ball.
+Lower and pitch the gripper till vertical to be ~3cm above the tennis ball.
+Lower the gripper to prepare for grasping the tennis ball.
+Close the gripper to grasp the tennis ball.
+Raise the gripper such that the gripper and the the tennis ball clear the height of the edge of the drawer.
+Move right to be above the opened drawer.
+Open gripper to release the tennis ball into the drawer.
+Move left to be in the general area above the red cube.
+Lower and pitch the gripper till vertical to be ~3cm above the red cube.
+Lower the gripper to prepare for grasping the red cube.
+Close the gripper to grasp onto the red cube.
+Raise the gripper such that the gripper and the red cube clear the height of the edge of the drawer.
+Move right to be above the opened drawer.
+Open the gripper to release the red cube into the drawer.
+Move leftward so that the gripper can later travel down without collision and push the drawer close.
+Lower the gripper to be on the same level as the drawer, and tilt to the left, to prepare to push the drawer close.
+Move gripper to the right to push the drawer close.
+Move left horizontally.
+Return to the home position.
+End.
