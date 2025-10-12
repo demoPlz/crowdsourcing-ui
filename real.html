@@ -1335,12 +1335,12 @@
   </div>
 <script type="module">
 
-// === High‑quality recording profile ==========================================
+// === High-quality recording profile ==========================================
 const HQ_REC = {
   // Render more frames so motion & pointer look smooth
   fps: 60,
 
-  // Pixel up‑scale for the compositor (independent from the on‑screen UI size)
+  // Pixel up-scale for the compositor (independent from the on-screen UI size)
   // Final recorded size = layout.W×layout.H, then multiplied by this effective scale.
   baseScale: 2.0,
 
@@ -3388,7 +3388,7 @@ loader.load(
           right: { x: 0.03, y: 0.00, z: 0.00 }
         });
 
-    saveTipCalibToLS(tipCalib); // mirror locally so it's never lost client‑side
+    saveTipCalibToLS(tipCalib); // mirror locally so it's never lost client-side
 
     // Calibratable local offsets (per finger) that the renderer uses
     const fingerTipLocalLeft  = new THREE.Vector3(tipCalib.left.x,  tipCalib.left.y,  tipCalib.left.z);
@@ -4282,7 +4282,7 @@ loader.load(
         if (o.isMesh) o.visible = false;
       });
 
-      // 2) Re‑enable meshes that live under the allowed link groups
+      // 2) Re-enable meshes that live under the allowed link groups
       keep.forEach(name => {
         const link = robot.getObjectByName(name);
         if (!link) {
@@ -4340,7 +4340,7 @@ loader.load(
 
     let cancelAnimationIfRunning = () => {};
 
-    // Reusable temporaries for interpolation (avoid per‑frame allocations)
+    // Reusable temporaries for interpolation (avoid per-frame allocations)
     const _interpPos  = new THREE.Vector3();
     const _interpQuat = new THREE.Quaternion();
 
@@ -4433,7 +4433,7 @@ loader.load(
     // If you see z-fighting flicker, bump it up slightly (e.g., 0.0005).
     const fingerBottomPad = 0.0;
 
-    // Shared yellow material (semi‑transparent)
+    // Shared yellow material (semi-transparent)
     const fingerLineMat = new THREE.MeshBasicMaterial({
       color: 0xffcc00, transparent: true, opacity: 0.95
     });
@@ -5934,7 +5934,7 @@ loader.load(
         // Save references for drag interaction
         sliderCtrls[key]   = controller;
         sliderCenters[key] = center;
-        sliderRanges[key]  = { min, max };  // full centered track (not pre‑clamped to ABS)
+        sliderRanges[key]  = { min, max };  // full centered track (not pre-clamped to ABS)
 
         // Add reset button to each slider
         setTimeout(() => {
@@ -6166,7 +6166,7 @@ window.addEventListener('pagehide', () => {
     <div class="title">Share this tab to start recording</div>
     <div class="hint">
       When your browser prompts, choose <b>This Tab</b>. We'll hide the system cursor and draw a large
-      high‑contrast cursor so interactions are clear on video.
+      high-contrast cursor so interactions are clear on video.
     </div>
   </div>
 </div>
