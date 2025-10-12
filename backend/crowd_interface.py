@@ -673,8 +673,6 @@ class CrowdInterface():
                 nums.append(int(m.group(1)))
         return (max(nums) + 1) if nums else 1
 
-    # --- PATCH: VLM modal helpers -----------------------------------------------
-
     def _parse_description_bank_entries(self, file_path: str) -> list[dict]:
         """
         Read description bank from file. Each line is a text prompt.
@@ -727,7 +725,6 @@ class CrowdInterface():
             "raw_text": raw_text,
             "entries": self._parse_description_bank_entries(str(file_path))
         }
-    # --- END PATCH ---------------------------------------------------------------
 
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""

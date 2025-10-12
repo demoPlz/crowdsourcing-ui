@@ -248,15 +248,6 @@
     display: none !important;
   }
 
-  /* Show numerical values in dev mode */
-  body.dev-mode .controls-container .lil-gui .controller input[type="number"],
-  body.dev-mode .controls-container .lil-gui .controller .display {
-    display: block !important;
-    width: 60px;
-    font-size: 12px;
-    margin-left: 8px;
-  }
-
   /* Gripper button styling */
   .controls-container .gripper-section {
     margin: 0 0 12px 0;
@@ -477,64 +468,6 @@
     box-shadow: 0 0 20px rgba(96,165,250,.35);
   }
   @keyframes spin{ to { transform: rotate(360deg); } }
-  
-  /* Auto-refresh progress bar styles */
-  #refreshProgressBar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 4px;
-    background: rgba(255, 255, 255, 0.2);
-    z-index: 10000;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-  }
-  
-  #refreshProgressBar.visible {
-    opacity: 1;
-  }
-  
-  #refreshProgressBar .progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
-    width: 0%;
-    transition: width 0.1s linear;
-    box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
-  }
-  
-  #refreshCountdown {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: rgba(17, 24, 39, 0.9);
-    color: white;
-    padding: 12px 20px;
-    border-radius: 25px;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans";
-    font-size: 14px;
-    font-weight: 600;
-    z-index: 10001;
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-    opacity: 0;
-    transform: translateY(-10px);
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  
-  #refreshCountdown.visible {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  
-  #refreshCountdown .countdown-icon {
-    display: inline-block;
-    animation: pulse 1s ease-in-out infinite;
-  }
 
   /* Disabled gripper buttons look inert + show not-allowed cursor */
   .controls-container .gripper-buttons button:disabled {
@@ -978,11 +911,10 @@
   #viewport .controls-container,
   #viewport .task-completed-container,
   #statusOverlay .card,
-  #refreshCountdown,
   #viewport .confirm-bar .confirm-button,    /* lower-right Confirm */
   #viewport .reset-bar .reset-button,        /* lower-left Reset */
   .controls-container .gripper-buttons button,
-  .controls-container .confirm-button,       /* (dev-mode confirm) */
+  .controls-container .confirm-button,       /* controls confirm */
   .controls-container .tac-toggle,
   .controls-container .task-completed-button,
   .controls-container .animate-button,
@@ -1035,34 +967,6 @@
   }
 
   /* Segmentation overlay sits over the camera texture and moves with the gripper */
-  .view-container .seg-overlay{
-    position:absolute;
-    left: 0; top: 0;
-    width: 100%; height: 100%;
-    pointer-events: none;
-    user-select: none;
-    mix-blend-mode: normal;     /* ensure normal compositing */
-    will-change: transform;     /* smoother translate() updates */
-    image-rendering: auto;
-    transform-origin: 0 0;      /* predictable transform origin for scaling */
-  }
-
-  /* Layering: camera bg < segmentation < WebGL < HUD */
-  .view-container { position: relative; }
-
-  .view-container .seg-overlay {
-    z-index: 1;            /* below the canvas */
-  }
-
-  .view-container canvas {
-    position: relative;    /* z-index needs positioned element */
-    z-index: 2;            /* above the segmentation */
-  }
-
-  /* Keep HUD above everything */
-  .view-container .grip-hud {
-    z-index: 3 !important; /* bump over the canvas */
-  }
 
   /* === Recording UI (cursor & indicator) ================================== */
   :root { --rec-accent: #ef4444; } /* red-500 */
@@ -1322,17 +1226,6 @@
 </script></head><body>
   <!-- Centering mount for the WebGL canvas; avoids CSS stretching -->
   <div id="viewport"></div>
-  
-  <!-- Auto-refresh progress bar -->
-  <div id="refreshProgressBar">
-    <div class="progress-fill"></div>
-  </div>
-  
-  <!-- Auto-refresh countdown display -->
-  <div id="refreshCountdown">
-    <span class="countdown-icon">🔄</span>
-    <span>Loading next task in <span id="countdownTime">5</span>s</span>
-  </div>
 <script type="module">
 
 // === High-quality recording profile ==========================================
@@ -1407,8 +1300,6 @@ import {
   DOF
 } from 'closed-chain-ik';
 
-import {GUI} from 'three/examples/jsm/libs/lil-gui.module.min.js';
-
 // Simple API Configuration - use appropriate proxy based on environment
 async function getCurrentCloudflaredUrl() {
   try {
@@ -1444,101 +1335,6 @@ async function getCurrentCloudflaredUrl() {
 
 // Initialize API_BASE_URL - will be set dynamically in the loader
 let API_BASE_URL = '/.netlify/functions/api'; // Default to proxy
-
-// Function to check if we're in async collection mode
-async function isAsyncCollectionMode() {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`);
-    if (!response.ok) {
-      console.warn('Could not check async collection mode, defaulting to false');
-      return false;
-    }
-    const data = await response.json();
-    return data.is_async_collection === true;
-  } catch (error) {
-    console.warn('Error checking async collection mode:', error);
-    return false;
-  }
-}
-
-async function isLeaderMode() {
-  try {
-    // Check if leader mode is enabled by looking at the current state
-    const response = await fetch(`${API_BASE_URL}/api/get-state`);
-    if (!response.ok) {
-      console.warn('Could not check leader mode, defaulting to false');
-      return false;
-    }
-    const data = await response.json();
-    return data.leader_mode === true;
-  } catch (error) {
-    console.warn('Error checking leader mode:', error);
-    return false;
-  }
-}
-
-// Auto-refresh with progress bar function
-async function delayedRefresh(delay = 5000) {
-  // Check collection mode and leader mode
-  const isAsync = await isAsyncCollectionMode();
-  const isLeader = await isLeaderMode();
-  
-  // New logic: If NOT async collection mode AND leader mode: delay
-  // If NOT leader mode OR async collection mode: no delay
-  if (!isAsync && isLeader) {
-    // In leader mode and not async - use the delay
-    console.log('🔄 Leader mode (non-async) - using', delay + 'ms delay');
-  } else {
-    // Either async mode OR not leader mode - refresh immediately
-    console.log('🔄 Immediate refresh - async:', isAsync, 'leader:', isLeader);
-    // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
-    // This forces a bypass of all caches
-    window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
-    return;
-  }
-  
-  const progressBar = document.getElementById('refreshProgressBar');
-  const countdown = document.getElementById('refreshCountdown');
-  const countdownTime = document.getElementById('countdownTime');
-  const progressFill = progressBar.querySelector('.progress-fill');
-  
-  // Show progress bar and countdown
-  progressBar.classList.add('visible');
-  countdown.classList.add('visible');
-  
-  let timeLeft = delay / 1000; // Convert to seconds
-  let elapsed = 0;
-  
-  const updateInterval = 100; // Update every 100ms for smooth progress
-  
-  const timer = setInterval(() => {
-    elapsed += updateInterval;
-    timeLeft = Math.max(0, (delay - elapsed) / 1000);
-    
-    // Update progress bar
-    const progress = (elapsed / delay) * 100;
-    progressFill.style.width = `${Math.min(progress, 100)}%`;
-    
-    // Update countdown display
-    countdownTime.textContent = Math.ceil(timeLeft);
-    
-    // Check if time is up
-    if (elapsed >= delay) {
-      clearInterval(timer);
-      
-      // Hide progress elements
-      progressBar.classList.remove('visible');
-      countdown.classList.remove('visible');
-      
-      // Perform the refresh after a brief delay to allow animations
-      setTimeout(() => {
-        // Hard refresh the page to load the next task (equivalent to Ctrl+Shift+R)
-        // This forces a bypass of all caches
-        window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
-      }, 300);
-    }
-  }, updateInterval);
-}
 
 async function getInitialState() {
   try {
@@ -1785,7 +1581,6 @@ const VIEW_SCALE = 0.8;
 // Multi-view system
 const views = new Map(); // viewName -> {camera, renderer, container, name}
 let currentViewName = null;
-let calibrationMode = false; // Calibration mode (UI & per-camera params)
 
 // When true, pose sliders + scene dragging are locked (after gripper changed)
 let slidersLocked = false;
@@ -2148,7 +1943,7 @@ const CanvasRecording = (() => {
       if (c && c.width && c.height){
         ctx.drawImage(c, cell.x, cell.y, cell.w, cell.h);
       }
-      // (If you also want to draw the translucent seg mask, see note below.)
+      // (If you also want to draw the translucent mask, see note below.)
     }
 
     // ▶ NEW: draw HUD overlays (gripper, reset, home) into the compositor
@@ -3095,18 +2890,7 @@ function hideServerNotStarted(){
   statusOverlay.style.display = 'none';
 }
 
-// ================================ devMode ===================================
-const devMode = false;
-// Apply dev-mode class to body if devMode is enabled
-if (devMode) {
-  document.body.classList.add('dev-mode');
-}
-// ================================ devMode ===================================
-
-
-let calibGUI = null;                       // lil-gui instance for calibration
-const calibState = {};                     // name -> {tx,ty,tz,rx,ry,rz,fx,fy,cx,cy}
-const calibDefaults = {};                  // snapshot at calibration start (per camera)
+// ================================ Core Configuration ===================================
 
 /* ---------- load URDF ---------- */
 const loader = new URDFLoader();
@@ -3316,22 +3100,7 @@ loader.load(
       }
     }
 
-    function attachSegOverlay(view, maskDataUrl) {
-      const img = document.createElement('img');
-      img.className = 'seg-overlay';
-      img.src = maskDataUrl;
-      // Stretch to the renderer size (CSS handles scaling)
-      img.style.width = '100%';
-      img.style.height = '100%';
-      img.style.transform = 'translate(0px, 0px)';
-      view.container.appendChild(img);
 
-      // Keep per-view segmentation state
-      view.seg = {
-        el: img
-        // base position is implied (0,0) since mask was extracted on the snapshot itself
-      };
-    }
 
 
     /* --- build IK tree from URDF (limits copied automatically) --- */
@@ -3364,8 +3133,7 @@ loader.load(
       viewTextures[key] = await makeTextureFromDataURL(dataUrl);
     }
 
-    /* ---------- segmentation masks (data URLs) ---------------------- */
-    const segmentsByView = state.segments ?? {};  // { front: "data:image/png;base64,...", ... }
+
 
     const initialJointPositions = state.joint_positions ?? {};
     const activeControls        = state.controls ?? ['x','y','z','roll','pitch','yaw'];
@@ -3707,7 +3475,7 @@ loader.load(
     }
     const forceUI = createForceWidget(controlsContainer);
 
-    if (!devMode && forceUI) forceUI.hide();
+    forceUI.hide();
 
     // 4) Classification + 3D adornment
     function classifyGrip(forceN){
@@ -3747,11 +3515,6 @@ loader.load(
     })();
 
     let gui = null;
-    if (devMode) {
-      gui = new GUI({ container: controlsContainer });
-      gui.domElement.style.position = 'static';
-      gui.domElement.style.width = '100%';
-    }
 
     let guiShield = null;  // invisible overlay to block pointer input on lil-gui
     
@@ -4021,259 +3784,6 @@ loader.load(
     }
 
     /* ---------- calibration helpers (intrinsics & extrinsics) ------- */
-    function poseKeyForName(name) {
-      // camPoses keys look like "front_pose", "left_pose", ...
-      for (const k of Object.keys(camPoses)) if (k.startsWith(name)) return k;
-      return null;
-    }
-
-    function ensureCalibStateFor(name) {
-      if (calibState[name]) return;
-      // Seed from current view's camera transform & model K
-      const view = views.get(name);
-      if (!view) return;
-      
-      const pos = new THREE.Vector3();
-      const quat = new THREE.Quaternion();
-      view.camera.updateMatrixWorld();
-      view.camera.getWorldPosition(pos);
-      view.camera.getWorldQuaternion(quat);
-      const eul = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
-      const model = cameraModels?.[name];
-      const K = model?.Knew;
-      calibState[name] = {
-        tx: pos.x, ty: pos.y, tz: pos.z,
-        rx: eul.x, ry: eul.y, rz: eul.z,
-        fx: K ? K[0][0] : 800,
-        fy: K ? K[1][1] : 800,
-        cx: K ? K[0][2] : (model?.width ?? 640) / 2,
-        cy: K ? K[1][2] : (model?.height ?? 480) / 2,
-        zoom: 1.0,  // multiplicative scale for fx, fy
-      };
-    }
-
-    function destroyCalibGUI() { if (calibGUI) { calibGUI.destroy(); calibGUI = null; } }
-
-    function applyExtrinsicsFromParams(name) {
-      const s = calibState[name]; if (!s) return;
-      const view = views.get(name); if (!view) return;
-      
-      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rx, s.ry, s.rz, 'XYZ'));
-      view.camera.position.set(s.tx, s.ty, s.tz);
-      view.camera.quaternion.copy(q);
-      view.camera.updateMatrixWorld(true);
-      
-      // Update camPoses so switching away/back keeps edited pose
-      const key = poseKeyForName(name);
-      if (key) {
-        const m = new THREE.Matrix4().compose(view.camera.position.clone(), view.camera.quaternion.clone(), new THREE.Vector3(1,1,1));
-        const e = m.elements; // row-major in Three (column-major storage)
-        camPoses[key] = [
-          [e[0], e[4], e[8],  e[12]],
-          [e[1], e[5], e[9],  e[13]],
-          [e[2], e[6], e[10], e[14]],
-          [e[3], e[7], e[11], e[15]],
-        ];
-      }
-    }
-
-    function applyIntrinsicsFromParams(name) {
-      const s = calibState[name]; if (!s) return;
-      const model = cameraModels?.[name]; if (!model) return;
-      const view = views.get(name); if (!view) return;
-      
-      const z = (s.zoom ?? 1.0);
-      const fx_eff = s.fx * z;
-      const fy_eff = s.fy * z;
-      model.Knew = [
-        [fx_eff, 0,     s.cx],
-        [0,      fy_eff, s.cy],
-        [0,    0,    1   ],
-      ];
-      applyProjectionFromK(view);
-    }
-
-    // tiny helper: add a slider **and** a matching "revert" button for it
-    function addParamWithRevert(folder, stateObj, key, range, step, label, onChange, camName){
-      const [min, max] = range;
-      const ctrl = folder.add(stateObj, key, min, max, step).name(label).onChange((value) => {
-        onChange(camName);
-      });
-      
-      const revertObj = {};
-      const revertLabel = `revert ${label}`;
-      revertObj[revertLabel] = () => {
-        // restore from snapshot taken when entering calibration
-        stateObj[key] = calibDefaults[camName][key];
-        ctrl.updateDisplay();
-        onChange(camName);
-      };
-      folder.add(revertObj, revertLabel);
-      return ctrl;
-    }
-
-    function enterCalibration() {
-      if (!currentViewName) { console.warn('Pick a camera view before calibrating.'); return; }
-      calibrationMode = true;
-      destroyCalibGUI();
-      ensureCalibStateFor(currentViewName);
-      const s = calibState[currentViewName];
-      calibDefaults[currentViewName] = { ...s };
-      calibGUI = new GUI();
-      // Position panel top-right with higher z-index and ensure it's interactive
-      calibGUI.domElement.style.position = 'fixed';
-      calibGUI.domElement.style.top = '8px';
-      calibGUI.domElement.style.right = '8px';
-      calibGUI.domElement.style.zIndex = 9999;
-      calibGUI.domElement.style.pointerEvents = 'auto';
-      calibGUI.domElement.style.userSelect = 'none';
-      
-      // Intrinsics controls (no folder)
-      const model = cameraModels[currentViewName];
-      const W = model?.width  ?? 640;
-      const H = model?.height ?? 480;
-      addParamWithRevert(calibGUI, s, 'zoom', [0.1, 5.0], 0.1, 'zoom', applyIntrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'fx', [50, 8000], 1,   'fx', applyIntrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'fy', [50, 8000], 1,   'fy', applyIntrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'cx', [0, W],     0.1, 'cx', applyIntrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'cy', [0, H],     0.1, 'cy', applyIntrinsicsFromParams, currentViewName);
-      
-      // Extrinsics controls (no folder)
-      addParamWithRevert(calibGUI, s, 'tx', [s.tx - 0.25, s.tx + 0.25], 0.0005, 'tx (m)',   applyExtrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'ty', [s.ty - 0.25, s.ty + 0.25], 0.0005, 'ty (m)',   applyExtrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'tz', [s.tz - 0.25, s.tz + 0.25], 0.0005, 'tz (m)',   applyExtrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'rx', [s.rx - 1.0,  s.rx + 1.0 ], 0.0005, 'roll rx',  applyExtrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'ry', [s.ry - 1.0,  s.ry + 1.0 ], 0.0005, 'pitch ry', applyExtrinsicsFromParams, currentViewName);
-      addParamWithRevert(calibGUI, s, 'rz', [s.rz - 1.0,  s.rz + 1.0 ], 0.0005, 'yaw rz',   applyExtrinsicsFromParams, currentViewName);
-      
-      // ---- Save calibration action (writes to backend) ----
-      const actions = {
-        async save_calibration() {
-          try {
-            // build 4x4 from current cam pose (tx,ty,tz + rx,ry,rz)
-            const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rx, s.ry, s.rz, 'XYZ'));
-            const Tm = new THREE.Matrix4().compose(
-              new THREE.Vector3(s.tx, s.ty, s.tz),
-              q,
-              new THREE.Vector3(1,1,1)
-            );
-            // convert to row-major list-of-lists like the rest of the app
-            const e = Tm.elements;
-            const T_three = [
-              [e[0], e[4], e[8],  e[12]],
-              [e[1], e[5], e[9],  e[13]],
-              [e[2], e[6], e[10], e[14]],
-              [e[3], e[7], e[11], e[15]],
-            ];
-            const model = cameraModels[currentViewName];
-            // Use effective fx/fy that include zoom
-            const z = (s.zoom ?? 1.0);
-            const fx_eff = s.fx * z;
-            const fy_eff = s.fy * z;
-            const payload = {
-              camera: currentViewName,
-              intrinsics: {
-                width:  model?.width  ?? 640,
-                height: model?.height ?? 480,
-                Knew: [
-                  [fx_eff, 0,    s.cx],
-                  [0,    fy_eff, s.cy],
-                  [0,    0,    1   ],
-                ],
-                zoom: z
-              },
-              extrinsics: { T_three }
-            };
-            const resp = await apiFetch(`/api/save-calibration`, {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify(payload)
-            });
-            const out = await resp.json();
-            if (!resp.ok) throw new Error(out?.error || 'save failed');
-            console.log('✅ saved calibration:', out);
-            alert(`Saved calibration for '${currentViewName}' to ${out.path}`);
-          } catch (err) {
-            console.error('❌ save calibration failed', err);
-            alert('Save calibration failed. See console for details.');
-          }
-        }
-      };
-      calibGUI.add(actions, 'save_calibration').name('Save calibration');
-
-      /* --------- Gripper tip calibration (dev panel) --------- */
-      // Working copy for sliders
-      const tipDev = JSON.parse(JSON.stringify(tipCalib));
-
-      // When sliders move: commit to live calib, update vectors, persist locally
-      function onTipDevChange(){
-        tipCalib.left.x  = tipDev.left.x;  tipCalib.left.y  = tipDev.left.y;  tipCalib.left.z  = tipDev.left.z;
-        tipCalib.right.x = tipDev.right.x; tipCalib.right.y = tipDev.right.y; tipCalib.right.z = tipDev.right.z;
-        applyTipCalibToVectors();
-        saveTipCalibToLS(tipCalib);
-      }
-
-      const tipFolderDev = calibGUI.addFolder('gripper tips');
-      const rng = [-0.10, 0.10], step = 0.0005; // 0.5 mm step; widen if needed
-
-      tipFolderDev.add(tipDev.left,  'x', rng[0], rng[1], step).name('left x (m)').onChange(onTipDevChange);
-      tipFolderDev.add(tipDev.left,  'y', rng[0], rng[1], step).name('left y (m)').onChange(onTipDevChange);
-      tipFolderDev.add(tipDev.left,  'z', rng[0], rng[1], step).name('left z (m)').onChange(onTipDevChange);
-
-      tipFolderDev.add(tipDev.right, 'x', rng[0], rng[1], step).name('right x (m)').onChange(onTipDevChange);
-      tipFolderDev.add(tipDev.right, 'y', rng[0], rng[1], step).name('right y (m)').onChange(onTipDevChange);
-      tipFolderDev.add(tipDev.right, 'z', rng[0], rng[1], step).name('right z (m)').onChange(onTipDevChange);
-
-      // Save to backend (same pattern as camera)
-      const tipActions = {
-        async save_gripper_tips(){
-          const payload = {
-            gripper_tip_calib: tipCalib,
-            state_id: state.state_id,
-            episode_id: state.episode_id
-          };
-          try {
-            // Prefer a generic calibration endpoint (like cameras)
-            let resp = await apiFetch(`/api/save-calibration`, {
-              method: 'POST',
-              headers: { 'Content-Type':'application/json' },
-              body: JSON.stringify({ type: 'gripper_tips', ...payload })
-            });
-
-            // Fallback: dedicated route if your backend uses one
-            if (!resp.ok) {
-              resp = await apiFetch(`/api/save-gripper-tips`, {
-                method: 'POST',
-                headers: { 'Content-Type':'application/json' },
-                body: JSON.stringify(payload)
-              });
-            }
-
-            const out = await resp.json();
-            if (!resp.ok) throw new Error(out?.error || 'save failed');
-            console.log('✅ saved gripper tip calibration', out);
-            alert(`Saved gripper tip calibration${out.path ? ` to ${out.path}` : ''}.`);
-          } catch (err) {
-            console.error('❌ failed to save gripper tip calibration', err);
-            alert('Saved locally. Server save failed (check console).');
-          }
-        }
-      };
-      tipFolderDev.add(tipActions, 'save_gripper_tips').name('Save gripper tips');
-
-      // Initial apply so the matrices reflect slider defaults
-      applyIntrinsicsFromParams(currentViewName);
-      applyExtrinsicsFromParams(currentViewName);
-
-    }
-
-    function exitCalibration() {
-      destroyCalibGUI();
-      calibrationMode = false;
-    }
-
     function showOnlySpecifiedLinks(robot, keepNames /* array of link names */) {
       const keep = new Set(keepNames);
 
@@ -4344,7 +3854,7 @@ loader.load(
     const _interpPos  = new THREE.Vector3();
     const _interpQuat = new THREE.Quaternion();
 
-    // --- temp for seg overlay math ---
+    // --- temp for animation math ---
     const _segCurrEE = new THREE.Vector3();
 
     // Compute the *target* pose from current user params.
@@ -4691,12 +4201,7 @@ loader.load(
       applyGripVisual(status, lastGripForceN);
 
       if (forceUI) {
-        if (devMode && lastGripForceN != null) {
-          forceUI.show();
-          forceUI.update(lastGripForceN, status);
-        } else {
-          forceUI.hide();
-        }
+        forceUI.hide();
       }
     }
 
@@ -4823,43 +4328,7 @@ loader.load(
       return { mean: (ppmX + ppmY) * 0.5 };
     }
 
-    function updateSegOverlayForView(view){
-      if (!view.seg || !view.seg.el) return;
 
-      // Project the reference (where the mask was captured): the starting EE pose
-      const base = projectWorldToViewPx(view, startPos);
-
-      // Choose what to follow on this frame:
-      // - while animating: the *actual* end-effector (moves every frame)
-      // - otherwise: the marker/goal (keeps the same 1:1 feel you have during drag)
-      let worldToFollow;
-      if (animState.enabled) {
-        eeVis.updateMatrixWorld(true);
-        eeVis.getWorldPosition(_segCurrEE);
-        worldToFollow = _segCurrEE;
-      } else {
-        worldToFollow = marker.position;
-      }
-
-      // Project the current point-to-follow
-      const curr = projectWorldToViewPx(view, worldToFollow);
-      if (!base.visible || !curr.visible) return;
-
-      // 1) translation in pixels
-      const dx = Math.round(curr.x - base.x);
-      const dy = Math.round(curr.y - base.y);
-
-      // 2) scale from relative depth (keeps your existing pixel scaling behavior)
-      const zBase = cameraDepth(view, startPos);
-      const zCurr = cameraDepth(view, worldToFollow);
-      const s = (zBase > 1e-9 && zCurr > 1e-9) ? (zBase / zCurr) : 1;
-
-      // Anchor scale around the original EE pixel so translation remains correct
-      view.seg.el.style.transformOrigin = `${Math.round(base.x)}px ${Math.round(base.y)}px`;
-
-      // Order matters: translate after scale so dx/dy are not scaled
-      view.seg.el.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`;
-    }
 
     function positionGripHUDs(){
       gripHUDs.forEach(({ view, el }) => {
@@ -5186,7 +4655,7 @@ loader.load(
           el.style.cursor = 'not-allowed';
           return;
         }
-        if (dragState.active || calibrationMode) return;
+        if (dragState.active) return;
         const hits = pickAll(evt);
         const wheelHit = hits.find(h => h.object?.userData?.axis);
         const dotHit   = hits.find(h => (h.object === marker) || (h.object?.name === 'marker_pick_proxy'));
@@ -5204,7 +4673,7 @@ loader.load(
 
       // Press: start rotation or translation drag
       el.addEventListener('pointerdown', (evt) => {
-        if (slidersLocked || calibrationMode) return;
+        if (slidersLocked) return;
         // START recording - this drag will alter the pose
         maybeRecord('pose-drag');
         
@@ -5339,19 +4808,10 @@ loader.load(
       // Select the new view
       const view = views.get(viewName);
       if (view) {
-        // Only show visual selection highlighting in devMode
-        if (devMode) {
-          view.container.classList.add('selected');
-        }
         currentViewName = viewName;
         
         // Update gripper arrow visibility based on selected view
         updateGripArrowVisibility();
-        
-        if (calibrationMode) {
-          destroyCalibGUI();
-          enterCalibration();
-        }
       }
     }
 
@@ -5395,12 +4855,6 @@ loader.load(
         createGripHUDForView(view);
         createPoseResetHUDForView(view);
         createHomeHUDForView(view);
-
-        // --- NEW: if a mask exists for this view, mount the overlay ---
-        const segUrl = segmentsByView[viewInfo.name];
-        if (segUrl) {
-          attachSegOverlay(view, segUrl);
-        }
         
         // Set up camera pose and projection
         updateViewCamera(view, viewInfo.pose);
@@ -5416,15 +4870,9 @@ loader.load(
       // Update sizes and select first view
       updateViewSizes();
       if (availableViews.length > 0) {
-        // In devMode, select the first view for visual feedback
-        // In regular mode, just set currentViewName without visual selection
-        if (devMode) {
-          selectView(availableViews[0].name);
-        } else {
-          currentViewName = availableViews[0].name;
-          console.log(`[DEBUG] Initial currentViewName set to: "${currentViewName}"`);
-          updateGripArrowVisibility(); // Update arrow visibility for initial view
-        }
+        currentViewName = availableViews[0].name;
+        console.log(`[DEBUG] Initial currentViewName set to: "${currentViewName}"`);
+        updateGripArrowVisibility(); // Update arrow visibility for initial view
       }
       
       // Initial placement of the example dock (if present) - delay to ensure DOM is ready
@@ -5439,55 +4887,6 @@ loader.load(
     btnBar.style.display = 'flex';
     btnBar.style.gap = '4px';
     document.body.appendChild( btnBar );
-
-    /* add camera selection buttons (only if devMode enabled) */
-    if (devMode) {
-      Object.keys(camPoses).forEach(poseKey=>{
-        const viewName = poseKey.replace('_pose', '');
-        const b       = document.createElement('button');
-        b.textContent = viewName; // "left", "right", …
-        b.onclick     = ()=> selectView(viewName);
-        btnBar.appendChild( b );
-      });
-    }
-
-    /* add calibrate toggle button (only if devMode enabled) */
-    if (devMode) {
-      const calibrateBtn = document.createElement('button');
-      calibrateBtn.textContent = 'calibrate';
-      calibrateBtn.onclick = () => {
-        if (!calibrationMode) {
-          if (!currentViewName) { alert('Pick a camera view first (front/left/right/...).'); return; }
-          enterCalibration();
-          calibrateBtn.textContent = 'exit calibration';
-        } else {
-          exitCalibration();
-          calibrateBtn.textContent = 'calibrate';
-        }
-      };
-      btnBar.appendChild(calibrateBtn);
-    }
-
-    /* add hide/show robot model button (bottom-left corner) (only if devMode enabled) */
-    if (devMode) {
-      toggleRobotBtn = document.createElement('button');
-      toggleRobotBtn.textContent = 'show robot model';
-      toggleRobotBtn.style.position = 'fixed';
-      toggleRobotBtn.style.left     = '8px';
-      toggleRobotBtn.style.bottom   = '8px';
-      toggleRobotBtn.style.zIndex   = 10;
-      document.body.appendChild(toggleRobotBtn);
-
-      toggleRobotBtn.onclick = () => {
-        robotVisible = !robotVisible;
-        robot.visible = robotVisible;
-        toggleRobotBtn.textContent = robotVisible
-          ? 'hide robot model'
-          : 'show robot model';
-      };
-
-      toggleRobotBtn.textContent = 'show robot model';
-    }
 
     let taskCompletedSelected = false;
     let taskCompletedBtn = null;
@@ -5556,7 +4955,8 @@ loader.load(
 
           if (response.ok) {
             console.log('✅ Task already completed response sent');
-            delayedRefresh(6000);
+            // Immediate refresh to load next task
+            window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
           } else {
             const errorData = await response.json().catch(() => ({}));
             console.error('❌ Failed to send task already completed response:', errorData);
@@ -5617,7 +5017,8 @@ loader.load(
 
         if (response.ok) {
           console.log('✅ goal sent (final goal joints)');
-          delayedRefresh(6000);
+          // Immediate refresh to load next task
+          window.location.replace(window.location.href.split('?')[0] + '?_=' + Date.now());
         } else {
           console.error('❌ failed to send goal - server error:', response.status);
         }
@@ -5898,79 +5299,13 @@ loader.load(
     const sliderCenters = {};  // axis -> center value
     const sliderRanges  = {};  // axis -> {min, max}
 
-    if (devMode && gui) {
-      spanDefs.forEach(([key, span])=>{
-        if (!activeControls.includes(key)) return;
-        const center = params[key];                // original pose
-        const min = center - span;
-        const max = center + span;
-        const controller = gui.add(params, key, min, max); // keep track centered visually
-        controller.onChange(() => {
-          cancelAnimationIfRunning('slider change');
-          revealMinimalRobotFromPose();
-          if (slidersLocked) {
-            // Revert the bound value and refresh the UI; do not push to IK
-            params[key] = lastGoodParams[key];
-            controller.updateDisplay();
-            return;
-          }
-          // Invisible barrier: clamp to ABS within the (center±span) track
-          // Also apply a small snap detent to the exact center.
-          const { min: smin, max: smax } = sliderRanges[key];
-          const abs = ABS_LIMITS[key];
-          const spanNow = smax - smin;
-          const detent = 0.02 * spanNow;
-          if (Math.abs(params[key] - sliderCenters[key]) <= detent) {
-            params[key] = sliderCenters[key];
-          } else {
-            params[key] = clampToSlider(key, params[key]); // (track ∩ ABS)
-          }
-          updateGoal();
-          updateGripHUDInteractivity();
-          updateTaskCompletedAvailability();
-          updateSliderDecor(key);
-        });
-
-        // Save references for drag interaction
-        sliderCtrls[key]   = controller;
-        sliderCenters[key] = center;
-        sliderRanges[key]  = { min, max };  // full centered track (not pre-clamped to ABS)
-
-        // Add reset button to each slider
-        setTimeout(() => {
-          const controllerEl = controller.domElement;
-          if (controllerEl) {
-            const resetBtn = document.createElement('button');
-            resetBtn.textContent = '⟲';
-            resetBtn.className = 'reset-btn';
-            resetBtn.title = `Reset ${key} to default`;
-            resetBtn.onclick = (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              // Reset EXACTLY to the original center, even if out-of-bounds.
-              // Slider track stays clamped; first user interaction will snap back into the valid range.
-              params[key] = sliderCenters[key];
-              controller.updateDisplay();
-              updateGoal();
-              updateGripHUDInteractivity();
-              updateTaskCompletedAvailability();
-              updateSliderDecor(key);
-            };
-            controllerEl.appendChild(resetBtn);
-          }
-          // Initial decoration
-          updateSliderDecor(key);
-        }, 0);
-      });
-    }
-
     setSlidersLocked(false);
     // Ensure marker/goal reflect params (and any implicit clamping from controller init)
     updateGoal();
     updateGripHUDInteractivity();
 
     // Add gripper buttons after sliders
-    if (gripperButtonsContainer && devMode) {
+    if (gripperButtonsContainer) {
       controlsContainer.appendChild(gripperButtonsContainer);
       updateGripperButtonStates(); // Set initial button states
     }
@@ -6140,10 +5475,7 @@ loader.load(
 
       // ----- render all views -----
       views.forEach(view => {
-        // 1) Move the segmentation with the gripper (unchanged)
-        updateSegOverlayForView(view);
-
-        // 2) Render this view
+        // Render this view
         scene.background = null; // canvas stays transparent; camera is the CSS bg
         view.renderer.render(scene, view.camera);
       });
