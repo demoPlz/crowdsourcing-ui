@@ -3085,11 +3085,8 @@ loader.load(
     robot.visible = true;     // keep robot always visible
     let toggleRobotBtn = null;
 
-    // --- Visibility policy: show minimal meshes only after *pose* changes ---
-    let userHasAdjustedPose = false; // set to true on first translation/rotation change
-
-    // Initialize robot with the same state as when dragged
-    revealMinimalRobotFromPose();
+    // --- Visibility policy: use the dragging pattern all the time ---
+    let userHasAdjustedPose = true; // always use the dragging appearance pattern
 
     function revealMinimalRobotFromPose() {
       // Idempotent - call when the user actually adjusts the pose (drag/slider)
@@ -3121,6 +3118,9 @@ loader.load(
         hideRobotCompletely();
       }
     }
+
+    // Initialize robot with the dragging appearance pattern
+    revealMinimalRobotFromPose();
 
 
 
