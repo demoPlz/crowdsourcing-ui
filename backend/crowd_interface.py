@@ -189,6 +189,14 @@ class CrowdInterface():
         self.auto_label_worker_thread = None
         self.auto_label_worker_running = False
 
+        # Sim capture queue and worker thread
+        self.sim_capture_queue = queue.Queue()
+        self.sim_worker_thread = None
+        self.sim_worker_running = False
+
+        # Persistent Isaac Sim worker for reusable simulation
+        self.isaac_manager = None
+
         # Dataset
         self.dataset = None
         # Task used for UI fallback and dataset frames → always cfg.single_task (set in init_dataset)
@@ -226,6 +234,13 @@ class CrowdInterface():
         
         # Start the auto-labeling worker thread
         self._start_auto_label_worker()
+
+        # Start the sim capture worker thread
+        self._start_sim_worker()
+
+        # Start persistent Isaac Sim worker if using sim
+        if self.use_sim:
+            self._start_persistent_isaac_worker()
 
         self._exec_gate_by_session: dict[str, dict] = {}
 
@@ -1080,10 +1095,16 @@ class CrowdInterface():
             self.demote_earlier_unanswered_criticals(latest_state_id, latest_episode_id)
             self.auto_label_previous_states(latest_state_id)
 
-            # Capture sim views for critical states when using sim
+            # Handle sim capture asynchronously to avoid blocking
             if self.use_sim:
-                sim_success = self.get_initial_views_from_sim(info)
-                info['sim_ready'] = sim_success
+                info['sim_ready'] = False  # Mark as not ready initially
+                # Queue sim work for background processing
+                self.sim_capture_queue.put_nowait({
+                    'episode_id': latest_episode_id,
+                    'state_id': latest_state_id,
+                    'state_info': info  # Pass reference for later update
+                })
+                print(f"🎥 Queued sim capture for episode {latest_episode_id}, state {latest_state_id}")
             else:
                 info['sim_ready'] = True  # Not using sim, so always ready
             
@@ -1098,6 +1119,66 @@ class CrowdInterface():
     def _auto_label_worker(self):
         for critical_state_id in iter(self.auto_label_queue.get, None):
             self._auto_label(critical_state_id)
+    
+    def _start_sim_worker(self):
+        self.sim_worker_thread = Thread(target=self._sim_worker, daemon=True)
+        self.sim_worker_thread.start()
+
+    def _start_persistent_isaac_worker(self):
+        """Start persistent Isaac Sim worker using the new manager"""
+        try:
+            isaac_sim_path = os.environ.get('ISAAC_SIM_PATH')
+            if not isaac_sim_path:
+                print("⚠️ ISAAC_SIM_PATH not set, persistent worker disabled")
+                return
+
+            # Import the manager
+            from isaac_sim.isaac_sim_worker_manager import PersistentWorkerManager
+            
+            self.isaac_manager = PersistentWorkerManager(
+                isaac_sim_path=isaac_sim_path,
+                output_base_dir=str(self._obs_cache_root / "persistent_isaac")
+            )
+            
+            initial_config = {
+                "usd_path": f"public/assets/usd/{self.task_name}.usd",
+                "robot_joints": [0.0] * 7,
+                "object_poses": {
+                    "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                }
+            }
+            
+            print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
+            self.isaac_manager.start_worker(initial_config)
+            print("✓ Persistent Isaac Sim worker ready")
+            
+        except Exception as e:
+            print(f"⚠️ Failed to start persistent Isaac worker: {e}")
+            self.isaac_manager = None
+
+
+    def _sim_worker(self):
+        for work_item in iter(self.sim_capture_queue.get, None):
+            if work_item is None:
+                break
+            
+            episode_id = work_item['episode_id']
+            state_id = work_item['state_id']
+            state_info = work_item['state_info']
+            
+            # Do the expensive sim capture
+            sim_success = self.get_initial_views_from_sim(state_info)
+            
+            # Update the state atomically
+            with self.state_lock:
+                # Verify state still exists and update it
+                if (episode_id in self.pending_states_by_episode and 
+                    state_id in self.pending_states_by_episode[episode_id]):
+                    self.pending_states_by_episode[episode_id][state_id]['sim_ready'] = sim_success
+                    print(f"🎥 Sim capture {'completed' if sim_success else 'failed'} for episode {episode_id}, state {state_id}")
+    
     
     def _auto_label(self, critical_state_id):
         '''
@@ -1645,127 +1726,64 @@ class CrowdInterface():
     # Sim
     # =========================
     def get_initial_views_from_sim(self, state_info) -> bool:
-        """
-        Capture initial views from Isaac Sim and update state_info's view_paths.
-        Returns True if successful, False otherwise.
-        """
+        """Use persistent worker for fast sim capture"""
+        if not self.isaac_manager:
+            print("⚠️ Isaac manager not available")
+            return False
+            
         try:
-            isaac_sim_path = os.environ.get('ISAAC_SIM_PATH')
-            
-            # Paths
-            repo_root = self._repo_root()
-            view_capture_worker_path = repo_root / "backend/isaac_sim/initial_view_capture.py"
-            python_executable = os.path.join(isaac_sim_path, "python.sh")
-            
-            # Extract info from state_info
+            # Extract state info
+            joint_positions = state_info.get("joint_positions", {})
             episode_id = state_info.get("episode_id", "unknown")
             state_id = state_info.get("state_id", 0)
-            joint_positions = state_info.get("joint_positions", {})
             
-            # Convert joint positions dict to list for JSON serialization
+            # Convert joint positions dict to list
             joint_positions_list = []
             for joint_name in JOINT_NAMES:
                 joint_positions_list.append(joint_positions.get(joint_name, 0.0))
             
-            # Create config for Isaac Sim worker
             config = {
                 "usd_path": f"public/assets/usd/{self.task_name}.usd",
                 "robot_joints": joint_positions_list,
                 "object_poses": {
-                    "Cube_01": {"pos": [0.5, 0.0, 0.1], "rot": [0, 0, 0, 1]},
-                    "Cube_02": {"pos": [0.5, 0.2, 0.1], "rot": [0, 0, 0, 1]},
-                    "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
+                    "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
+                    "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
+                    "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
             }
             
-            # Create temporary directory for this episode
-            output_dir = self._episode_cache_dir(episode_id) / "sim_views" / f"state_{state_id}"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Write config file
-            config_file = output_dir / "config.json"
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=2)
-            
-            print(f"🎥 Starting Isaac Sim view capture for episode {episode_id}, state {state_id}...")
-            
-            # Run Isaac Sim worker
-            cmd = [
-                python_executable,
-                str(view_capture_worker_path),
-                "--config", str(config_file),
-                "--output-dir", str(output_dir)
-            ]
-            
-            # Run the command and capture output
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minute timeout
-                cwd=str(repo_root)
+            # Use persistent worker for fast capture
+            result = self.isaac_manager.update_state_and_capture(
+                config, 
+                f"ep_{episode_id}_state_{state_id}"
             )
             
-            if result.returncode != 0:
-                print(f"⚠️ Isaac Sim worker failed with return code {result.returncode}")
-                print(f"STDERR: {result.stderr}")
-                return False
-            
-            # Parse the JSON output from Isaac Sim worker
-            try:
-                # The worker outputs JSON to stdout
-                output_lines = result.stdout.strip().split('\n')
-                json_output = None
-                for line in reversed(output_lines):  # Check from end for JSON
-                    try:
-                        json_output = json.loads(line)
-                        break
-                    except json.JSONDecodeError:
-                        continue
+            if result.get("status") == "success":
+                # Map Isaac Sim camera names to our expected names
+                sim_result = result.get("result", {})
+                sim_to_our_mapping = {
+                    "front_rgb": "front",
+                    "left_rgb": "left", 
+                    "right_rgb": "right",
+                    "top_rgb": "top"
+                }
                 
-                if not json_output or json_output.get("status") != "success":
-                    print(f"⚠️ Isaac Sim worker didn't return success status")
-                    print(f"Output: {result.stdout}")
-                    return False
+                view_paths = {}
+                for sim_name, our_name in sim_to_our_mapping.items():
+                    if sim_name in sim_result:
+                        view_paths[our_name] = sim_result[sim_name]
                 
-            except Exception as e:
-                print(f"⚠️ Failed to parse Isaac Sim worker output: {e}")
-                print(f"Output: {result.stdout}")
-                return False
-            
-            # Map Isaac Sim camera names to our expected camera names
-            sim_to_our_mapping = {
-                "front_rgb": "front",
-                "left_rgb": "left", 
-                "right_rgb": "right",
-                "top_rgb": "top"  # Map top to top
-            }
-            
-            # Build view_paths dict using the final robot-visible images
-            view_paths = {}
-            for sim_name, our_name in sim_to_our_mapping.items():
-                if sim_name in json_output:
-                    img_path = json_output[sim_name]
-                    if os.path.exists(img_path):
-                        view_paths[our_name] = img_path
-                        print(f"✓ Captured sim view for '{our_name}': {img_path}")
-                    else:
-                        print(f"⚠️ Sim view file not found: {img_path}")
-            
-            # Update the state_info with new view_paths
-            if view_paths:
-                state_info["view_paths"] = view_paths
-                return True
-            
-        except subprocess.TimeoutExpired:
-            print("⚠️ Isaac Sim worker timed out")
+                if view_paths:
+                    state_info["view_paths"] = view_paths
+                    state_info["sim_ready"] = True
+                    return True
+                    
+            print(f"⚠️ Isaac capture failed: {result}")
             return False
+            
         except Exception as e:
-            print(f"⚠️ Isaac Sim view capture failed: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"⚠️ Isaac Sim capture failed: {e}")
             return False
-
 
     # =========================
     # Miscellaneous

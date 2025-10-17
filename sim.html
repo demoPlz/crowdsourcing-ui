@@ -4922,18 +4922,20 @@ loader.load(
       views.clear();
       viewsGrid.innerHTML = '';
       
-      // Get available camera poses and textures
+      // Get available camera poses and textures in the desired order
       const availableViews = [];
       
-      Object.keys(camPoses).forEach(poseKey => {
-        const viewName = poseKey.replace('_pose', '');
-        
-        if (viewTextures[viewName] && cameraModels[viewName]) {
+      // Define the desired view order: front (top-left), left (top-right), top (bottom-left), right (bottom-right)
+      const viewOrder = ['front', 'left', 'top', 'right'];
+      
+      viewOrder.forEach(viewName => {
+        const poseKey = viewName + '_pose';
+        if (camPoses[poseKey] && viewTextures[viewName] && cameraModels[viewName]) {
           availableViews.push({
             name: viewName,
             poseKey,
-            texture: viewTextures[viewName],      // keep if you need size/aspect
-            imageSrc: state.views?.[viewName],     // <- add the base64 JPEG for CSS bg
+            texture: viewTextures[viewName],
+            imageSrc: state.views?.[viewName],
             model: cameraModels[viewName],
             pose: camPoses[poseKey]
           });
