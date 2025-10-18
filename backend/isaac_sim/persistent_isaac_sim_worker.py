@@ -23,6 +23,8 @@ class PersistentWorker:
         self.output_dir = output_dir
         self.max_users = max_users
         self.isaac_worker = IsaacSimWorker(simulation_app=simulation_app)
+        # Set communication directory so Isaac worker can check for direct commands
+        self.isaac_worker.worker_communication_dir = output_dir
         self.running = True
         
         # Communication files
@@ -53,13 +55,23 @@ class PersistentWorker:
         # Main command processing loop
         while self.running:
             try:
-                # Check for new commands
+                # PRIORITY 1: Always check for new commands first
                 command = self._check_for_command()
                 if command:
                     result = self._process_command(command)
                     self._send_result(result)
+                    # Immediately loop back to check for more commands
+                    continue
                 
-                # Continuously update physics and animations if animation mode is active
+                # PRIORITY 2: Handle animations and chunked generation when no commands are pending
+                work_done = False
+                
+                # Process chunked frame generation (non-blocking)
+                if self.isaac_worker.chunked_generation_state:
+                    generation_work = self.isaac_worker.process_chunked_frame_generation(frames_per_chunk=3)
+                    work_done = work_done or generation_work
+                
+                # Handle active animations (replay mode)
                 if self.isaac_worker.animation_mode and self.isaac_worker.active_animations:
                     # Update physics
                     if self.isaac_worker.world:
@@ -67,12 +79,14 @@ class PersistentWorker:
                     
                     # Update all user animations (joint interpolation)
                     self.isaac_worker.update_animations()
-                    
-                    # Shorter delay for smoother animation
-                    time.sleep(0.016)  # ~60 FPS
+                    work_done = True
+                
+                if work_done:
+                    # Very short delay for responsive command checking when doing work
+                    time.sleep(0.005)  # 5ms - allows ~200 Hz command checking
                 else:
-                    # Longer delay when not animating
-                    time.sleep(0.1)
+                    # Moderate delay when idle
+                    time.sleep(0.05)  # 50ms - still responsive
                 
             except Exception as e:
                 print(f"Error in worker loop: {e}")

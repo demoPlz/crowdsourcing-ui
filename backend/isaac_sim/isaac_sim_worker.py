@@ -5,15 +5,110 @@ Isaac Sim worker script with two modes:
 2. Animation mode (for physics simulation with direct joint control)
 """
 
+import os
 import sys
 import json
 import argparse
 import time
 import threading
 import signal
+import traceback
 from collections import defaultdict
 from PIL import Image
 from isaacsim import SimulationApp
+
+class AnimationFrameCache:
+    """Cache system for storing and replaying animation frames efficiently"""
+    def __init__(self, user_id: int, duration: float, fps: float = 30.0):
+        self.user_id = user_id
+        self.duration = duration
+        self.fps = fps
+        self.frame_interval = 1.0 / fps
+        self.total_frames = int(duration * fps)
+        
+        # Frame storage: frame_index -> {camera_name: image_path}
+        self.frames = {}
+        self.frame_count = 0
+        self.is_complete = False
+        self.generation_start_time = None
+        self.replay_start_time = None
+        self.current_replay_frame = 0
+        
+        # Track which cameras we have
+        self.camera_names = set()
+        
+    def start_generation(self):
+        """Mark the start of frame generation"""
+        self.generation_start_time = time.time()
+        self.frames.clear()
+        self.frame_count = 0
+        self.is_complete = False
+        print(f"📹 Starting frame generation for user {self.user_id} - {self.total_frames} frames at {self.fps} FPS")
+        
+    def add_frame(self, frame_index: int, camera_data: dict):
+        """Add a frame to the cache
+        Args:
+            frame_index: The frame number (0-based)
+            camera_data: Dict of {camera_name: image_path}
+        """
+        self.frames[frame_index] = camera_data.copy()
+        self.camera_names.update(camera_data.keys())
+        self.frame_count += 1
+        
+        if frame_index == self.total_frames - 1:
+            self.is_complete = True
+            generation_time = time.time() - self.generation_start_time
+            print(f"✅ Frame generation complete for user {self.user_id}: {self.frame_count} frames in {generation_time:.2f}s")
+        
+    def get_current_replay_frame(self) -> dict | None:
+        """Get the current frame for replay based on elapsed time"""
+        if not self.is_complete:
+            return None
+            
+        if self.replay_start_time is None:
+            self.replay_start_time = time.time()
+            self.current_replay_frame = 0
+            
+        # Calculate which frame we should be showing
+        elapsed = time.time() - self.replay_start_time
+        target_frame = int((elapsed % self.duration) * self.fps)
+        
+        # If we've looped, reset the replay start time for smoother looping
+        if target_frame < self.current_replay_frame:
+            self.replay_start_time = time.time()
+            target_frame = 0
+            
+        self.current_replay_frame = target_frame
+        
+        # Return the frame data
+        return self.frames.get(target_frame)
+        
+    def reset_replay(self):
+        """Reset replay to start from beginning"""
+        self.replay_start_time = None
+        self.current_replay_frame = 0
+        
+    def clear_cache(self):
+        """Clear all cached frames and clean up files"""
+        if self.frames:
+            print(f"🧹 Clearing frame cache for user {self.user_id} - {len(self.frames)} frames")
+            
+            # Delete frame files from disk
+            for frame_data in self.frames.values():
+                for image_path in frame_data.values():
+                    try:
+                        if os.path.exists(image_path):
+                            os.remove(image_path)
+                    except Exception as e:
+                        print(f"Warning: Could not delete frame file {image_path}: {e}")
+                        
+        self.frames.clear()
+        self.frame_count = 0
+        self.is_complete = False
+        self.camera_names.clear()
+        self.generation_start_time = None
+        self.replay_start_time = None
+        self.current_replay_frame = 0
 
 class IsaacSimWorker:
     def __init__(self, simulation_app=None):
@@ -30,6 +125,15 @@ class IsaacSimWorker:
         self.hide_robot_funcs = None  # Store hide/show functions
         self.simulation_app = simulation_app  # Store simulation app reference
         self.last_sync_config = None  # Store last synchronized config for animation reset
+        
+        # === NEW: Frame cache system for efficient animation replay ===
+        self.frame_caches = {}  # user_id -> AnimationFrameCache
+        self.frame_generation_in_progress = set()  # Track which users are generating frames
+        self.animation_stop_requested = set()  # Track users for whom stop has been requested during generation
+        self.worker_communication_dir = None  # Will be set by persistent worker for direct command checking
+        
+        # === NEW: Chunked frame generation system ===
+        self.chunked_generation_state = {}  # user_id -> generation state for async processing
         
     def initialize_simulation(self, config):
         """One-time simulation setup that can be reused across state updates"""
@@ -541,7 +645,7 @@ class IsaacSimWorker:
         
     def start_user_animation(self, user_id, goal_joints, duration=3.0):
         """Start animation for specific user using direct joint control
-        ALWAYS starts fresh from the synchronized initial state"""
+        NEW: First execution generates all frames headlessly, subsequent requests replay cached frames"""
         if user_id not in self.user_environments:
             return {"error": f"User {user_id} environment not found"}
             
@@ -555,19 +659,55 @@ class IsaacSimWorker:
         # Convert goal_joints to numpy array
         goal_joints = np.array(goal_joints)
         
+        # Check if we already have a complete frame cache for this animation
+        cache_key = f"{user_id}_{hash(tuple(goal_joints))}_{duration}"
+        if user_id in self.frame_caches and self.frame_caches[user_id].is_complete:
+            # Use cached frames for instant replay
+            cache = self.frame_caches[user_id]
+            cache.reset_replay()
+            print(f"🎬 Using cached animation for user {user_id} - {cache.frame_count} pre-generated frames")
+            
+            # Mark as active animation for the replay system
+            self.active_animations[user_id] = {
+                'type': 'replay',
+                'cache': cache,
+                'start_time': time.time(),
+                'active': True
+            }
+            
+            return {
+                "status": "animation_started", 
+                "user_id": user_id, 
+                "mode": "cached_replay",
+                "frame_count": cache.frame_count
+            }
+        
+        # First time or different animation - need to generate frames
+        print(f"🎬 Generating new animation frames for user {user_id}")
+        
         # STEP 1: Stop any existing animation for this user to ensure clean start
         if user_id in self.active_animations:
             print(f"🔄 Stopping existing animation for user {user_id} to start fresh")
             self.active_animations[user_id]['active'] = False
             del self.active_animations[user_id]
         
-        # STEP 2: CRITICAL - Reset ENTIRE environment (robot + objects) to fresh synchronized state
-        # This ensures every animation starts from the exact same scene state
+        # STEP 2: Clear any existing frame cache
+        if user_id in self.frame_caches:
+            self.frame_caches[user_id].clear_cache()
+            
+        # STEP 3: Create new frame cache
+        fps = 30.0  # Standard frame rate
+        self.frame_caches[user_id] = AnimationFrameCache(user_id, duration, fps)
+        cache = self.frame_caches[user_id]
+        
+        # STEP 4: Mark user as generating frames (prevent capture requests during generation)
+        self.frame_generation_in_progress.add(user_id)
+        
+        # STEP 5: CRITICAL - Reset ENTIRE environment (robot + objects) to fresh synchronized state
         print(f"🆕 PERFORMING FULL FRESH RESET for user {user_id} before animation")
         self._reset_user_environment_to_sync_state(user_id)
         
-        # STEP 3: Get the fresh initial state from the latest synchronized state
-        # This ensures every animation starts from the current frontend state
+        # STEP 6: Get the fresh initial state from the latest synchronized state
         if hasattr(self, 'last_sync_config') and 'robot_joints' in self.last_sync_config:
             initial_joints_7d = np.array(self.last_sync_config['robot_joints'])
             print(f"📍 Using synchronized initial state: {initial_joints_7d}")
@@ -580,48 +720,253 @@ class IsaacSimWorker:
         initial_joints = np.append(initial_joints_7d, initial_joints_7d[-1])
         
         # Ensure goal_joints has same dimension as initial_joints
-        # Frontend sends 7 values, but robot has 8 (last joint is mimic)
         if len(goal_joints) == 7:
-            # Duplicate the last joint value for the mimic joint
             goal_joints = np.append(goal_joints, goal_joints[-1])
             print(f"Extended goal_joints from 7 to 8 dimensions: {goal_joints}")
         elif len(goal_joints) != 8:
+            self.frame_generation_in_progress.discard(user_id)
             return {"error": f"Goal joints dimension mismatch: got {len(goal_joints)}, expected 7 or 8"}
             
         print(f"🆕 FRESH START - Initial: {initial_joints}, Goal: {goal_joints}")
         
-        # STEP 4: Additional verification - robot position should already be set by reset but confirm
-        robot.set_joint_positions(initial_joints)
+        # STEP 7: Set up CHUNKED frame generation (non-blocking)
+        print(f"📹 Setting up chunked frame generation for {duration}s animation at {fps} FPS")
         
-        # Let physics settle to ensure clean initial state
-        for step in range(3):
-            self.world.step(render=True)
+        try:
+            cache.start_generation()
             
-        print(f"✅ Full environment {user_id} reset to fresh initial state: robot + objects")
-        
-        # STEP 4: Store animation parameters for fresh animation
-        self.active_animations[user_id] = {
-            'initial_joints': initial_joints.copy(),
-            'goal_joints': goal_joints,
-            'duration': duration,
-            'start_time': time.time(),
-            'active': True
-        }
-        
-        return {"status": "animation_started", "user_id": user_id, "fresh_start": True}
+            # Set up chunked generation state
+            self.chunked_generation_state[user_id] = {
+                'cache': cache,
+                'robot': robot,
+                'initial_joints': initial_joints,
+                'goal_joints': goal_joints,
+                'fps': fps,
+                'total_frames': cache.total_frames,
+                'current_frame': 0,
+                'frame_interval': 1.0 / fps,
+                'generation_complete': False
+            }
+            
+            print(f"✅ Chunked generation setup complete for user {user_id} - will generate {cache.total_frames} frames incrementally")
+            
+            # Return immediately - frames will be generated in background by worker loop
+            return {
+                "status": "animation_starting", 
+                "user_id": user_id, 
+                "mode": "chunked_generation_setup",
+                "total_frames": cache.total_frames
+            }
+            
+        except Exception as e:
+            print(f"❌ Error setting up chunked generation for user {user_id}: {e}")
+            traceback.print_exc()
+            
+            # Cleanup on error
+            if user_id in self.frame_caches:
+                self.frame_caches[user_id].clear_cache()
+                del self.frame_caches[user_id]
+            if user_id in self.chunked_generation_state:
+                del self.chunked_generation_state[user_id]
+                
+            return {"error": f"Animation setup failed: {str(e)}"}
+            
+        finally:
+            # Always remove from generation in progress since we're now using chunked approach
+            self.frame_generation_in_progress.discard(user_id)
         
     def stop_user_animation(self, user_id):
-        """Stop animation for specific user and reset to fresh synchronized state"""
+        """Stop animation for specific user and reset to fresh synchronized state
+        NEW: Also cleans up frame cache to prevent memory leaks"""
+        print(f"[Worker] 🛑 Starting stop_user_animation for user {user_id}")
+        start_time = time.time()
+        
+        # CRITICAL: If this user is currently generating frames, signal immediate stop
+        if user_id in self.frame_generation_in_progress or user_id in self.chunked_generation_state:
+            print(f"[Worker] ⚡ User {user_id} is generating frames - requesting immediate stop")
+            self.animation_stop_requested.add(user_id)
+        
         if user_id in self.active_animations:
             self.active_animations[user_id]['active'] = False
             del self.active_animations[user_id]
-            print(f"🛑 Stopped animation for user {user_id}")
+            print(f"[Worker] 🛑 Stopped animation for user {user_id}")
             
             # Reset this user's environment back to the fresh synchronized state
+            reset_start = time.time()
             self._reset_user_environment_to_sync_state(user_id)
-            print(f"🔄 Reset user {user_id} to fresh synchronized state")
+            reset_elapsed = time.time() - reset_start
+            print(f"[Worker] 🔄 Reset user {user_id} to fresh synchronized state in {reset_elapsed:.3f}s")
             
-        return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True}
+        # NEW: Clean up frame cache when animation stops
+        cache_start = time.time()
+        if user_id in self.frame_caches:
+            print(f"[Worker] 🧹 Cleaning up frame cache for user {user_id}")
+            self.frame_caches[user_id].clear_cache()
+            del self.frame_caches[user_id]
+        cache_elapsed = time.time() - cache_start
+        
+        # Remove from frame generation tracking
+        self.frame_generation_in_progress.discard(user_id)
+        # Clear any pending stop requests
+        self.animation_stop_requested.discard(user_id)
+        
+        total_elapsed = time.time() - start_time
+        print(f"[Worker] ✅ TOTAL stop_user_animation completed in {total_elapsed:.3f}s (reset: {reset_elapsed:.3f}s, cache: {cache_elapsed:.3f}s)")
+            
+        return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True, "cache_cleared": True}
+        
+    def process_chunked_frame_generation(self, frames_per_chunk=3):
+        """Process a few frames of chunked generation for all active users
+        Returns True if any generation work was done, False if all complete"""
+        import numpy as np
+        work_done = False
+        
+        for user_id in list(self.chunked_generation_state.keys()):
+            state = self.chunked_generation_state[user_id]
+            
+            # Check if this user's generation should be stopped
+            if user_id in self.animation_stop_requested:
+                print(f"🛑 Stopping chunked generation for user {user_id} due to stop request")
+                self.animation_stop_requested.discard(user_id)
+                # Clean up
+                if user_id in self.frame_caches:
+                    self.frame_caches[user_id].clear_cache()
+                    del self.frame_caches[user_id]
+                del self.chunked_generation_state[user_id]
+                continue
+                
+            if state['generation_complete']:
+                continue
+                
+            # Process a chunk of frames
+            cache = state['cache']
+            robot = state['robot']
+            frames_processed = 0
+            
+            while (frames_processed < frames_per_chunk and 
+                   state['current_frame'] < state['total_frames']):
+                
+                frame_idx = state['current_frame']
+                
+                # Calculate progress (0.0 to 1.0)
+                progress = frame_idx / (state['total_frames'] - 1) if state['total_frames'] > 1 else 0.0
+                
+                # Smooth interpolation (ease-in-out)
+                smooth_progress = 0.5 * (1 - np.cos(np.pi * progress))
+                
+                # Interpolate joint positions
+                current_joints = state['initial_joints'] + (state['goal_joints'] - state['initial_joints']) * smooth_progress
+                
+                # Apply to robot
+                robot.set_joint_positions(current_joints)
+                
+                # Let physics settle
+                self.world.step(render=True)
+                
+                # Capture frame to cache
+                frame_data = self._capture_user_frame_to_cache(user_id, frame_idx)
+                if frame_data:
+                    cache.add_frame(frame_idx, frame_data)
+                    
+                state['current_frame'] += 1
+                frames_processed += 1
+                work_done = True
+                
+                # Progress indicator
+                if frame_idx % 30 == 0 or frame_idx == state['total_frames'] - 1:
+                    percent = (frame_idx + 1) / state['total_frames'] * 100
+                    print(f"📹 Chunked generation progress user {user_id}: {frame_idx + 1}/{state['total_frames']} ({percent:.1f}%)")
+            
+            # Check if generation is complete for this user
+            if state['current_frame'] >= state['total_frames']:
+                print(f"✅ Chunked frame generation complete for user {user_id}")
+                state['generation_complete'] = True
+                
+                # Start replay mode
+                cache.reset_replay()
+                self.active_animations[user_id] = {
+                    'type': 'replay',
+                    'cache': cache,
+                    'start_time': time.time(),
+                    'active': True
+                }
+                
+                # Clean up generation state
+                del self.chunked_generation_state[user_id]
+                
+        return work_done
+        
+    def _check_for_stop_command_during_generation(self, user_id: int) -> bool:
+        """Check if a stop command is pending for this user during frame generation
+        Returns True if stop command detected, False otherwise"""
+        if not self.worker_communication_dir:
+            return False  # Fallback to flag-based checking if no communication dir set
+            
+        try:
+            import json
+            command_file = f"{self.worker_communication_dir}/commands.json"
+            command_signal_file = f"{command_file}.signal"
+            
+            # Check if there's a pending command
+            if os.path.exists(command_signal_file) and os.path.exists(command_file):
+                with open(command_file, 'r') as f:
+                    command = json.load(f)
+                    
+                # Check if it's a stop command for this user
+                if (command.get('action') == 'stop_user_animation' and 
+                    command.get('user_id') == user_id):
+                    print(f"🛑 DETECTED stop command for user {user_id} during frame generation!")
+                    return True
+                    
+        except Exception as e:
+            # If file reading fails, continue with generation
+            print(f"Warning: Could not check for stop commands: {e}")
+            
+        return False
+        
+    def _capture_user_frame_to_cache(self, user_id: int, frame_index: int) -> dict | None:
+        """Capture a single frame for the frame cache during generation
+        Returns dict of {camera_name: image_path} or None if failed"""
+        if user_id not in self.user_environments:
+            return None
+            
+        import os
+        
+        # Create frame-specific directory
+        frame_dir = f"/tmp/isaac_worker/user_{user_id}_frames/frame_{frame_index:04d}"
+        os.makedirs(frame_dir, exist_ok=True)
+        
+        cameras = self.user_environments[user_id]['cameras']
+        captured_files = {}
+        
+        for camera_name, camera in cameras.items():
+            try:
+                rgb_data = camera.get_rgb()
+                if rgb_data is not None:
+                    clean_name = camera_name.lower().replace('camera_', '')
+                    filename = f"{clean_name}_{frame_index:04d}.jpg"
+                    filepath = os.path.join(frame_dir, filename)
+                    Image.fromarray(rgb_data).save(filepath, 'JPEG', quality=85)
+                    captured_files[clean_name] = filepath
+            except Exception as e:
+                print(f"Warning: Failed to capture {camera_name} for frame {frame_index}: {e}")
+                
+        return captured_files if captured_files else None
+    
+    def cleanup_all_frame_caches(self):
+        """Clean up all frame caches - call this on shutdown"""
+        print("🧹 Cleaning up all frame caches...")
+        for user_id in list(self.frame_caches.keys()):
+            try:
+                self.frame_caches[user_id].clear_cache()
+                del self.frame_caches[user_id]
+                print(f"✅ Cleared cache for user {user_id}")
+            except Exception as e:
+                print(f"⚠️ Error clearing cache for user {user_id}: {e}")
+        
+        self.frame_caches.clear()
+        self.frame_generation_in_progress.clear()
+        print("✅ All frame caches cleaned up")
         
     def _reset_user_environment_to_sync_state(self, user_id):
         """Reset a user's environment back to the last synchronized state
@@ -749,7 +1094,8 @@ class IsaacSimWorker:
             print(f"❌ Failed to reset user {user_id} environment: {e}")
         
     def update_animations(self):
-        """Update all active animations (called each frame)"""
+        """Update all active animations (called each frame)
+        NEW: Handles both legacy live animations and efficient replay system"""
         import numpy as np
         
         current_time = time.time()
@@ -758,37 +1104,92 @@ class IsaacSimWorker:
             if not anim_data['active']:
                 continue
                 
-            elapsed = current_time - anim_data['start_time']
-            progress = min(elapsed / anim_data['duration'], 1.0)
+            anim_type = anim_data.get('type', 'legacy')
             
-            # Smooth interpolation (ease-in-out)
-            smooth_progress = 0.5 * (1 - np.cos(np.pi * progress))
-            
-            # Interpolate joint positions
-            initial = anim_data['initial_joints']
-            goal = anim_data['goal_joints']
-            
-            # Debug: Check shapes match
-            if initial.shape != goal.shape:
-                print(f"⚠️ Shape mismatch in user {user_id}: initial {initial.shape} vs goal {goal.shape}")
-                continue
+            if anim_type == 'replay':
+                # NEW: Frame-based replay system - no physics simulation needed
+                # Frames are already generated and cached, just update timing
+                cache = anim_data['cache']
+                if cache.is_complete:
+                    # The cache handles its own timing and looping
+                    # No robot position updates needed as frames contain all visual data
+                    pass
+                else:
+                    # If cache is not complete, something went wrong
+                    print(f"⚠️ Animation cache for user {user_id} is not complete, stopping animation")
+                    anim_data['active'] = False
+                    
+            else:
+                # LEGACY: Original live physics simulation system
+                elapsed = current_time - anim_data['start_time']
+                progress = min(elapsed / anim_data['duration'], 1.0)
                 
-            current_joints = initial + (goal - initial) * smooth_progress
-            
-            # Apply to robot
-            robot = self.user_environments[user_id]['robot']
-            robot.set_joint_positions(current_joints)
-            
-            # Loop animation when complete
-            if progress >= 1.0:
-                anim_data['start_time'] = current_time  # Restart loop
+                # Smooth interpolation (ease-in-out)
+                smooth_progress = 0.5 * (1 - np.cos(np.pi * progress))
+                
+                # Interpolate joint positions
+                initial = anim_data['initial_joints']
+                goal = anim_data['goal_joints']
+                
+                # Debug: Check shapes match
+                if initial.shape != goal.shape:
+                    print(f"⚠️ Shape mismatch in user {user_id}: initial {initial.shape} vs goal {goal.shape}")
+                    continue
+                    
+                current_joints = initial + (goal - initial) * smooth_progress
+                
+                # Apply to robot
+                robot = self.user_environments[user_id]['robot']
+                robot.set_joint_positions(current_joints)
+                
+                # Loop animation when complete
+                if progress >= 1.0:
+                    anim_data['start_time'] = current_time  # Restart loop
                 
     def capture_user_frame(self, user_id, output_dir):
-        """Capture current frame for specific user"""
+        """Capture current frame for specific user
+        NEW: Serves cached frames if available, falls back to live capture"""
         if user_id not in self.user_environments:
             return None
             
         import os
+        
+        # Check if this user has a frame cache and is in replay mode
+        if (user_id in self.active_animations and 
+            self.active_animations[user_id].get('type') == 'replay' and
+            user_id in self.frame_caches):
+            
+            cache = self.frame_caches[user_id]
+            current_frame_data = cache.get_current_replay_frame()
+            
+            if current_frame_data:
+                # Serve cached frame files directly (copy to expected output location)
+                os.makedirs(f"{output_dir}/user_{user_id}", exist_ok=True)
+                captured_files = {}
+                
+                for camera_name, cached_filepath in current_frame_data.items():
+                    # Copy cached file to expected output location with expected naming
+                    output_filename = f"user_{user_id}_{camera_name}.jpg"
+                    output_filepath = f"{output_dir}/user_{user_id}/{output_filename}"
+                    
+                    try:
+                        # Copy the cached frame to the output location
+                        import shutil
+                        if os.path.exists(cached_filepath):
+                            shutil.copy2(cached_filepath, output_filepath)
+                            captured_files[camera_name] = output_filepath
+                        else:
+                            print(f"⚠️ Cached frame file not found: {cached_filepath}")
+                    except Exception as e:
+                        print(f"⚠️ Error copying cached frame {cached_filepath}: {e}")
+                
+                if captured_files:
+                    # Return cached frame data
+                    return captured_files
+                else:
+                    print(f"⚠️ Failed to serve cached frames for user {user_id}, falling back to live capture")
+        
+        # FALLBACK: Original live capture system (for non-cached animations or failures)
         os.makedirs(f"{output_dir}/user_{user_id}", exist_ok=True)
         
         cameras = self.user_environments[user_id]['cameras']
@@ -849,8 +1250,10 @@ class IsaacSimWorker:
             return self.stop_user_animation(command['user_id'])
             
         elif action == 'terminate':
+            # Clean up frame caches before terminating
+            self.cleanup_all_frame_caches()
             self.running = False
-            return {"status": "terminating"}
+            return {"status": "terminating", "caches_cleaned": True}
             
         else:
             return {"error": f"Unknown action: {action}"}

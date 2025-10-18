@@ -4066,6 +4066,14 @@ loader.load(
       try {
         if (!backendAnimState.active) return;
         
+        // Immediately update local state for instant feedback
+        backendAnimState.active = false;
+        backendAnimState.streaming = false;
+        backendAnimState.user_id = null;
+        
+        console.log('✓ Animation state updated immediately');
+        
+        // Send stop request to backend (but don't wait for response)
         const response = await apiFetch('/api/animation/stop', {
           method: 'POST'
         });
@@ -4073,17 +4081,15 @@ loader.load(
         const result = await response.json();
         
         if (result.status === 'success') {
-          backendAnimState.active = false;
-          backendAnimState.streaming = false;
-          backendAnimState.user_id = null;
-          
-          console.log('✓ Animation stopped');
+          console.log('✓ Backend animation stop confirmed');
         } else {
-          console.error('❌ Animation stop failed:', result.message);
+          console.error('❌ Backend animation stop failed:', result.message);
+          // Backend failed, but we already updated UI - that's fine
         }
         
       } catch (error) {
         console.error('❌ Animation stop error:', error);
+        // Backend failed, but we already updated UI - that's fine
       }
     }
     
@@ -4181,32 +4187,41 @@ loader.load(
     // Toggle animation ON/OFF - now uses backend
     async function toggleAnimation() {
       if (backendAnimState.active) {
-        // Stop backend animation
-        await stopBackendAnimation();
-        
-        // Update UI
+        // OPTIMIZATION: Immediately update UI for instant visual feedback
+        // Don't wait for backend confirmation to make transition feel instant
         animateBtn.classList.remove('active');
         animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
         
-        // Restore UI elements  
-        setPoseGizmosVisible(true);
-        applyPostAnimationVisibility();
-        setHUDHiddenForAnimation(false);
-        
-        // IMPORTANT: Show Three.js robot and hide Isaac Sim stream
+        // IMPORTANT: Immediately show Three.js robot and stop streaming
         robotVisible = true;
         robot.visible = true;
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
         
-        // Stop Isaac Sim frame streaming
+        // Stop Isaac Sim frame streaming immediately
         backendAnimState.streaming = false;
         
-        // Return to static images (refresh views from server)
-        await refreshViews();
+        // Restore UI elements immediately  
+        setPoseGizmosVisible(true);
+        applyPostAnimationVisibility();
+        setHUDHiddenForAnimation(false);
         
-        console.log('✅ Animation stopped - showing Three.js robot and static images');
+        console.log('✅ Animation UI updated immediately - Three.js robot visible');
+        
+        // Backend cleanup in background (don't await to avoid lag)
+        stopBackendAnimation().then(() => {
+          console.log('✅ Backend animation cleanup completed');
+        }).catch(error => {
+          console.error('❌ Backend animation cleanup failed:', error);
+        });
+        
+        // Refresh views in background for updated static images (don't await)
+        refreshViews().then(() => {
+          console.log('✅ Static views refreshed');
+        }).catch(error => {
+          console.error('❌ Static views refresh failed:', error);
+        });
         
       } else {
         // Start backend animation
@@ -5424,22 +5439,27 @@ loader.load(
     cancelAnimationIfRunning = (reason = '') => {
       if (!animState.enabled && !backendAnimState.active) return;
 
-      // Stop backend animation if active
+      // OPTIMIZATION: Immediately stop backend animation and update UI
       if (backendAnimState.active) {
-        stopBackendAnimation();
-        
-        // Show Three.js robot and stop streaming when animation is cancelled
+        // Immediate UI updates for instant feedback
         robotVisible = true;
         robot.visible = true;
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
         
-        // Stop Isaac Sim frame streaming
+        // Stop Isaac Sim frame streaming immediately
         backendAnimState.streaming = false;
         
-        // Return to static images
-        refreshViews();
+        console.log('✅ Animation cancelled immediately - showing Three.js robot');
         
-        console.log('✅ Animation cancelled - showing Three.js robot and static images');
+        // Backend cleanup in background (don't await)
+        stopBackendAnimation().catch(error => {
+          console.error('❌ Backend animation cleanup failed:', error);
+        });
+        
+        // Refresh views in background (don't await)
+        refreshViews().catch(error => {
+          console.error('❌ Static views refresh failed:', error);
+        });
       }
 
       // Turn OFF animation (same as clicking "Animate" again to stop)
