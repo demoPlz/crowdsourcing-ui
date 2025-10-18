@@ -4192,16 +4192,13 @@ loader.load(
         
         // Restore UI elements  
         setPoseGizmosVisible(true);
+        applyPostAnimationVisibility();
         setHUDHiddenForAnimation(false);
         
         // IMPORTANT: Show Three.js robot and hide Isaac Sim stream
         robotVisible = true;
         robot.visible = true;
-        userHasAdjustedPose = true; // Ensure robot stays visible
         if (toggleRobotBtn) toggleRobotBtn.textContent = 'hide robot model';
-        
-        // Apply visibility settings (now that userHasAdjustedPose is true)
-        applyPostAnimationVisibility();
         
         // Stop Isaac Sim frame streaming
         backendAnimState.streaming = false;
