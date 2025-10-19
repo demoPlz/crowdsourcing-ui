@@ -811,38 +811,27 @@ class IsaacSimWorker:
         
         # CRITICAL: If this user is currently generating frames, signal immediate stop
         if user_id in self.frame_generation_in_progress or user_id in self.chunked_generation_state:
-            print(f"[Worker] ⚡ User {user_id} is generating frames - requesting immediate stop")
             self.animation_stop_requested.add(user_id)
         
         # Reset the user environment (always do this for clean state)
         reset_start = time.time()
-        reset_elapsed = 0.0
         
         if user_id in self.active_animations:
             self.active_animations[user_id]['active'] = False
             del self.active_animations[user_id]
-            print(f"[Worker] 🛑 Stopped animation for user {user_id}")
             
         # Reset this user's environment back to the fresh synchronized state
         self._reset_user_environment_to_sync_state(user_id)
-        reset_elapsed = time.time() - reset_start
-        print(f"[Worker] 🔄 Reset user {user_id} to fresh synchronized state in {reset_elapsed:.3f}s")
             
         # NEW: Clean up frame cache when animation stops
-        cache_start = time.time()
         if user_id in self.frame_caches:
-            print(f"[Worker] 🧹 Cleaning up frame cache for user {user_id}")
             self.frame_caches[user_id].clear_cache()
             del self.frame_caches[user_id]
-        cache_elapsed = time.time() - cache_start
         
         # Remove from frame generation tracking
         self.frame_generation_in_progress.discard(user_id)
         # Clear any pending stop requests
         self.animation_stop_requested.discard(user_id)
-        
-        total_elapsed = time.time() - start_time
-        print(f"[Worker] ✅ TOTAL stop_user_animation completed in {total_elapsed:.3f}s (reset: {reset_elapsed:.3f}s, cache: {cache_elapsed:.3f}s)")
             
         return {"status": "animation_stopped", "user_id": user_id, "reset_to_fresh": True, "cache_cleared": True}
         
@@ -903,14 +892,13 @@ class IsaacSimWorker:
                 frames_processed += 1
                 work_done = True
                 
-                # Progress indicator
-                if frame_idx % 30 == 0 or frame_idx == state['total_frames'] - 1:
+                # Progress indicator (only log major milestones to reduce overhead)
+                if frame_idx == 0 or frame_idx == state['total_frames'] - 1:
                     percent = (frame_idx + 1) / state['total_frames'] * 100
-                    print(f"📹 Chunked generation progress user {user_id}: {frame_idx + 1}/{state['total_frames']} ({percent:.1f}%)")
+                    print(f"📹 Chunked generation: user {user_id} frame {frame_idx + 1}/{state['total_frames']} ({percent:.1f}%)")
             
             # Check if generation is complete for this user
             if state['current_frame'] >= state['total_frames']:
-                print(f"✅ Chunked frame generation complete for user {user_id}")
                 state['generation_complete'] = True
                 
                 # Start replay mode
@@ -1020,13 +1008,10 @@ class IsaacSimWorker:
             robot = env_data['robot']
             world_path = env_data['world_path']
             
-            print(f"🔄 FULL FRESH RESET for user {user_id} - robot AND objects")
-            
             # STEP 1: Reset robot joints to synchronized state
             initial_q = np.array(self.last_sync_config.get('robot_joints', [0.0] * 7))
             initial_q = np.append(initial_q, initial_q[-1])  # Add mimic joint
             
-            print(f"🔄 RESETTING user {user_id} robot to fresh state: {initial_q}")
             robot.set_joint_positions(initial_q)
             
             # STEP 2: Reset objects to fresh synchronized state for ALL environments
@@ -1040,7 +1025,6 @@ class IsaacSimWorker:
             
             if user_id == 0:
                 # User 0: Use original object references - reset to absolute positions
-                print(f"🔧 Resetting objects for user 0 (original environment) using stored object references")
                 
                 if 'Cube_01' in object_states and 'cube_01' in self.objects:
                     state = object_states['Cube_01']
@@ -1051,7 +1035,6 @@ class IsaacSimWorker:
                         self.objects['cube_01'].set_world_pose(position=pos, orientation=rot)
                         self.objects['cube_01'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         self.objects['cube_01'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ User 0 Cube_01 reset to fresh pos: {pos} (physics cleared)")
                     
                 if 'Cube_02' in object_states and 'cube_02' in self.objects:
                     state = object_states['Cube_02'] 
@@ -1062,7 +1045,6 @@ class IsaacSimWorker:
                         self.objects['cube_02'].set_world_pose(position=pos, orientation=rot)
                         self.objects['cube_02'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         self.objects['cube_02'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ User 0 Cube_02 reset to fresh pos: {pos} (physics cleared)")
                     
                 if 'Tennis' in object_states and 'tennis_ball' in self.objects:
                     state = object_states['Tennis']
@@ -1073,16 +1055,13 @@ class IsaacSimWorker:
                         self.objects['tennis_ball'].set_world_pose(position=pos, orientation=rot)
                         self.objects['tennis_ball'].set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                         self.objects['tennis_ball'].set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                        print(f"✅ User 0 Tennis ball reset to fresh pos: {pos} (physics cleared)")
                 
             else:
                 # Cloned environments: Use scene registry objects WITH SPATIAL OFFSET
-                print(f"🔧 Resetting objects for user {user_id} (cloned environment) using scene registry WITH OFFSET")
                 
                 # Calculate the spatial offset for this environment (same as sync logic)
                 environment_spacing = 50.0
                 spatial_offset = np.array([user_id * environment_spacing, user_id * environment_spacing, 0])
-                print(f"📍 User {user_id} reset spatial offset: {spatial_offset}")
                 
                 # Reset each object using scene registry with spatial offset
                 object_mappings = [
@@ -1100,8 +1079,6 @@ class IsaacSimWorker:
                         offset_pos = original_pos + spatial_offset
                         rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                         
-                        print(f"🔄 Reset {config_key}: Original pos {original_pos} + offset {spatial_offset} = {offset_pos}")
-                        
                         # Try to get object from scene registry
                         if self.world.scene.object_exists(scene_name):
                             scene_obj = self.world.scene.get_object(scene_name)
@@ -1109,17 +1086,10 @@ class IsaacSimWorker:
                             scene_obj.set_world_pose(position=offset_pos, orientation=rot)
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
-                            print(f"✅ User {user_id} {config_key} reset via scene registry to offset pos: {offset_pos} (physics cleared)")
-                        else:
-                            print(f"⚠️ Scene object {scene_name} not found for user {user_id} - object may not be registered")
                             
-                print(f"📍 User {user_id} objects reset to fresh synchronized state WITH SPATIAL OFFSET")
-            
             # Let physics settle after all resets are complete
             for step in range(8):
                 self.world.step(render=True)
-            
-            print(f"✅ FULL FRESH RESET COMPLETE for user {user_id} - robot AND objects at synchronized state")
             
         except Exception as e:
             print(f"❌ Failed to reset user {user_id} environment: {e}")
