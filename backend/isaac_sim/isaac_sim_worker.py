@@ -237,6 +237,20 @@ class IsaacSimWorker:
             "Tennis": {"pos": [0.5, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
 
+        # Grasp detection: Check if gripper force exceeds threshold (same as frontend)
+        GRASP_THRESHOLD_N = 50.0  # Same threshold as frontend
+        gripper_force = config.get('left_carriage_external_force', 0.0)
+        
+        if abs(gripper_force) >= GRASP_THRESHOLD_N:
+            # Object is grasped - set gripper joints to closed position
+            initial_q[-2] = 0.0  # 7th dimension (left gripper)
+            initial_q[-1] = 0.0  # 8th dimension (right gripper)
+            print(f"🤏 Grasp detected (force: {gripper_force:.1f}N >= {GRASP_THRESHOLD_N}N) - closing gripper in simulation")
+        else:
+            print(f"✋ No grasp (force: {gripper_force:.1f}N < {GRASP_THRESHOLD_N}N) - using original gripper positions")
+
+        self.last_sync_config['robot_joints'] = initial_q
+
         # Update robot joints
         self.robot.set_joint_positions(initial_q)
 
@@ -733,7 +747,7 @@ class IsaacSimWorker:
         # Handle gripper action if provided
         if gripper_action is not None:
             if gripper_action == "grasp" or gripper_action == "close":
-                goal_joints[-1] = goal_joints[-2] = 0.0  # Closed gripper position
+                goal_joints[-1] = goal_joints[-2] = 0.000  # Closed gripper position
                 print(f"🤏 Gripper action: {gripper_action} -> setting gripper to closed (0.0)")
             elif gripper_action == "open":
                 goal_joints[-1] = goal_joints[-2] = 0.044  # Open gripper position  

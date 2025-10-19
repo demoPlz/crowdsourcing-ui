@@ -1741,23 +1741,23 @@ class CrowdInterface():
             joint_positions = state_info.get("joint_positions", {})
             episode_id = state_info.get("episode_id", "unknown")
             state_id = state_info.get("state_id", 0)
+            left_carriage_external_force = state_info.get("left_carriage_external_force", 0.0)
             
             # Convert joint positions dict to list
             joint_positions_list = []
             for joint_name in JOINT_NAMES:
                 joint_positions_list.append(joint_positions.get(joint_name, 0.0))
-            
+
             config = {
                 "usd_path": f"public/assets/usd/{self.task_name}.usd",
                 "robot_joints": joint_positions_list,
+                "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": {
                     "Cube_01": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
                     "Cube_02": {"pos": [0.2, 0.2, 0.1], "rot": [0, 0, 0, 1]},
                     "Tennis": {"pos": [0.2, -0.2, 0.1], "rot": [0, 0, 0, 1]}
                 }
-            }
-            
-            # Use persistent worker for fast capture with animation sync
+            }            # Use persistent worker for fast capture with animation sync
             result = self.isaac_manager.update_state_and_sync_animations(
                 config, 
                 f"ep_{episode_id}_state_{state_id}"
