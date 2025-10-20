@@ -875,18 +875,121 @@ class IsaacSimWorker:
                 frame_idx = state['current_frame']
                 
                 # Use apply_action for physics-based animation with PD controllers
-                # Apply the final goal position repeatedly - physics will handle smooth interpolation automatically
+                # Fix articulation controller corruption by reinitializing when needed
                 try:
                     from omni.isaac.core.utils.types import ArticulationAction
+                    
+                    # One-time controller setup + trajectory constants
+                    if frame_idx == 0:
+                        try:
+                            controller = robot.get_articulation_controller()
+                            kps, kds = controller.get_gains()
+                            print(f"🔍 Robot PD gains for user {user_id}: stiffness={kps}, damping={kds}")
+                            
+                            # Check if gains are too low (common cause of drooping)
+                            low_stiffness = any(kp < 1000 for kp in kps if kp is not None)
+                            if low_stiffness:
+                                print(f"⚠️ WARNING: Low stiffness detected! Robot may droop. Consider increasing stiffness.")
+                                
+                            # Apply comprehensive PD gains + force limits + velocity caps
+                            print(f"🎯 Applying optimal PD gains with proper limits...")
+                            import numpy as np
+                            
+                            # Tighter distal joint dynamics with minimum-jerk trajectories
+                            kps_arm = [2.0e5, 2.0e5, 1.6e5, 1.6e5, 1.6e5, 1.6e5]  # Higher stiffness for wrist
+                            kds_arm = [4.5e3, 4.5e3, 5.0e3, 5.0e3, 5.0e3, 5.0e3]  # Higher damping for stability
+                            
+                            # Gripper prismatic fingers: prevent sliding/creeping
+                            kps_grip = [5.0e4, 5.0e4] 
+                            kds_grip = [1.0e3, 1.0e3]
+                            
+                            # Combined arrays
+                            optimal_kps = np.array(kps_arm + kps_grip, dtype=np.float32)
+                            optimal_kds = np.array(kds_arm + kds_grip, dtype=np.float32)
+                            
+                            # Max torque/force limits: higher for base joints, realistic limits
+                            max_efforts_arm = [30.0, 30.0, 20.0, 20.0, 12.0, 12.0]  # N·m
+                            max_efforts_grip = [150.0, 150.0]  # N (prismatic force)
+                            max_efforts = np.array(max_efforts_arm + max_efforts_grip, dtype=np.float32)
+                            
+                            # Tighter velocity caps: prevent overshoot on moving targets
+                            max_vels_arm = [2.0, 2.0, 2.0, 1.8, 1.5, 1.5]  # rad/s (lower for distal joints)
+                            max_vels_grip = [0.3, 0.3]  # m/s (controlled prismatic motion)
+                            max_velocities = np.array(max_vels_arm + max_vels_grip, dtype=np.float32)
+                            
+                            # Apply all limits to controller
+                            controller.set_gains(kps=optimal_kps, kds=optimal_kds)
+                            controller.set_max_efforts(max_efforts)
+                            controller.set_max_velocities(max_velocities)
+                            
+                            print(f"✅ Applied trajectory-optimized gains:")
+                            print(f"   📍 PD: arm(200k→160k/4.5k→5k), gripper(50k/1k)")
+                            print(f"   ⚡ Max force: arm(30-12 N·m), gripper(150N)")
+                            print(f"   🚀 Max vel: arm(2.0→1.5 rad/s), gripper(0.3 m/s)")
+                            
+                        except Exception as gain_error:
+                            print(f"Could not apply trajectory gains: {gain_error}")
+                        
+                        # Precompute trajectory parameters once per animation
+                        state['q0'] = robot.get_joint_positions()  # Current actual position
+                        state['qg'] = state['goal_joints']         # Target goal position  
+                        state['T'] = state['total_frames'] / state['fps']  # Animation duration
+                        print(f"🎯 Trajectory setup: T={state['T']:.2f}s")
+                    
+                    # ---- per-frame trajectory waypoint (ALWAYS runs) ----
+                    t = frame_idx / state['fps']  # Current time
+                    tau = min(max(t / state['T'], 0.0), 1.0)  # Normalized time [0,1]
+                    
+                    # Minimum-jerk profile: s(τ) and its derivative ṡ(τ)
+                    s = 10*tau**3 - 15*tau**4 + 6*tau**5
+                    sdot = (30*tau**2 - 60*tau**3 + 30*tau**4) / state['T']  # ds/dt
+                    
+                    # Interpolated position and velocity targets
+                    q_des = state['q0'] + s * (state['qg'] - state['q0'])
+                    qd_des = sdot * (state['qg'] - state['q0'])
+                    
+                    # Feed both position AND velocity targets for smooth tracking
+                    action = ArticulationAction(
+                        joint_positions=q_des.tolist(),
+                        joint_velocities=qd_des.tolist()
+                    )
+                    robot.apply_action(action)
+                except Exception as gain_error:
+                    print(f"Could not apply trajectory gains: {gain_error}")
+                    # Fallback to simple step input
                     action = ArticulationAction(joint_positions=state['goal_joints'].tolist())
                     robot.apply_action(action)
-                except ImportError:
-                    # Fallback to direct position setting if ArticulationAction not available
-                    print(f"Warning: ArticulationAction not available, using set_joint_positions fallback")
-                    robot.set_joint_positions(state['goal_joints'])
-                except Exception as e:
-                    print(f"Warning: apply_action failed for user {user_id}: {e}, using set_joint_positions fallback")
-                    robot.set_joint_positions(state['goal_joints'])
+                except AttributeError as e:
+                    if "'NoneType' object has no attribute 'get_applied_actions'" in str(e):
+                        # Articulation controller lost connection to physics view - reinitialize it
+                        print(f"🔧 Reinitializing articulation controller for user {user_id} frame {frame_idx}")
+                        try:
+                            # Force reinitialize the articulation controller
+                            robot.initialize()
+                            # Retry the action after reinitialization - use trajectory if available
+                            if 'q0' in state and 'qg' in state and 'T' in state:
+                                # Use trajectory approach
+                                t = frame_idx / state['fps']
+                                tau = min(max(t / state['T'], 0.0), 1.0)
+                                s = 10*tau**3 - 15*tau**4 + 6*tau**5
+                                sdot = (30*tau**2 - 60*tau**3 + 30*tau**4) / state['T']
+                                q_des = state['q0'] + s * (state['qg'] - state['q0'])
+                                qd_des = sdot * (state['qg'] - state['q0'])
+                                action = ArticulationAction(
+                                    joint_positions=q_des.tolist(),
+                                    joint_velocities=qd_des.tolist()
+                                )
+                            else:
+                                # Fallback to step input
+                                action = ArticulationAction(joint_positions=state['goal_joints'].tolist())
+                            robot.apply_action(action)
+                            print(f"✅ Successfully reinitialized and applied action for user {user_id}")
+                        except Exception as reinit_error:
+                            print(f"❌ Failed to reinitialize articulation controller: {reinit_error}")
+                            raise reinit_error
+                    else:
+                        # Different AttributeError - re-raise it
+                        raise e
                 
                 # Let physics settle
                 self.world.step(render=True)
@@ -1032,6 +1135,15 @@ class IsaacSimWorker:
             initial_q = np.append(initial_q, initial_q[-1])  # Add mimic joint
             
             robot.set_joint_positions(initial_q)
+            
+            # CRITICAL: Ensure articulation controller stays properly initialized after reset
+            # This prevents the "_articulation_view is None" error in subsequent animations
+            try:
+                # Force reinitialize the robot to refresh its internal controller state
+                robot.initialize()
+                print(f"✅ Reinitialized robot controller for user {user_id} after reset")
+            except Exception as controller_error:
+                print(f"⚠️ Warning: Could not reinitialize robot controller for user {user_id}: {controller_error}")
             
             # STEP 2: Reset objects to fresh synchronized state for ALL environments
             # Use the correct object references for each environment type
@@ -1205,13 +1317,16 @@ class IsaacSimWorker:
         capture_interval = 1.0 / 30.0  # 30 FPS
         
         while self.running and self.animation_mode:
-            # Update physics
+            # 1) advance generation (this produces actions + steps caches forward)
+            self.process_chunked_frame_generation(frames_per_chunk=3)
+            
+            # 2) advance physics
             self.world.step(render=True)
             
-            # Update all user animations
+            # 3) update replays
             self.update_animations()
             
-            # Capture frames at intervals
+            # 4) capture frames at intervals
             current_time = time.time()
             if current_time - last_capture_time >= capture_interval:
                 for user_id in self.active_animations:
