@@ -241,7 +241,7 @@ class IsaacSimWorker:
 
         # Let physics settle after initial positioning
         for step in range(20):
-            self.world.step(render=True)
+            self.world.step(render=False)
             
         # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
         if grasped:
@@ -267,11 +267,11 @@ class IsaacSimWorker:
                 self.robot.apply_action(action)
                 
                 # Step physics
-                self.world.step(render=True)
+                self.world.step(render=False)
         
         # Final physics settling
         for step in range(3):
-            self.world.step(render=True)
+            self.world.step(render=False)
 
         
     def update_state(self, config):
@@ -318,7 +318,7 @@ class IsaacSimWorker:
 
         # Let physics settle after object positioning
         for step in range(20):
-            self.world.step(render=True)
+            self.world.step(render=False)
 
         self.set_robot_joints()
         
@@ -336,14 +336,14 @@ class IsaacSimWorker:
 
         # Let physics settle with robot hidden
         for step in range(10):
-            self.world.step(render=True)
+            self.world.step(render=True)  # Need render=True before camera capture
         
         # Temporarily hide robot for static capture
         self.hide_robot_funcs['hide']()
         
         # Let physics settle with robot hidden
         for step in range(10):
-            self.world.step(render=True)
+            self.world.step(render=True)  # Need render=True before camera capture
 
         # Capture static images
         front_rgb = self.cameras['Camera_Front'].get_rgb()
@@ -356,7 +356,7 @@ class IsaacSimWorker:
         
         # Let physics settle with robot restored
         for step in range(10):
-            self.world.step(render=True)
+            self.world.step(render=False)  # After capture, render=False is fine
 
         # Save static images
         Image.fromarray(front_rgb).save(f'{output_dir}/static_front_image.jpg', 'JPEG', quality=90)
@@ -422,7 +422,7 @@ class IsaacSimWorker:
             
             # Let physics settle
             for step in range(10):
-                self.world.step(render=True)
+                self.world.step(render=False)
             
             print("Animation mode will use direct joint control only")
             
@@ -456,7 +456,7 @@ class IsaacSimWorker:
                         
                         # Let physics settle
                         for step in range(20):
-                            self.world.step(render=True)
+                            self.world.step(render=False)
                         
                         # Get robot
                         robot_path = f"{target_path}/wxai"
@@ -613,8 +613,8 @@ class IsaacSimWorker:
                                 
                     print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
                 
-                for step in range(20):
-                    self.world.step(render=True)
+                for step in range(50):
+                    self.world.step(render=False)
 
                 self.set_robot_joints()
                 
@@ -623,7 +623,7 @@ class IsaacSimWorker:
         
         # Let physics settle across all environments
         for step in range(10):
-            self.world.step(render=True)
+            self.world.step(render=False)
             
         print("Animation environment synchronization complete")
 
@@ -1021,7 +1021,7 @@ class IsaacSimWorker:
                         raise e
                 
                 # Let physics settle
-                self.world.step(render=True)
+                self.world.step(render=True)  # Need render=True during frame generation for camera capture
                 
                 # Capture frame to cache
                 frame_data = self._capture_user_frame_to_cache(user_id, frame_idx)
@@ -1225,8 +1225,8 @@ class IsaacSimWorker:
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
             
-            for step in range(20):  # Increased from 8 to account for gripper operations
-                self.world.step(render=True)
+            for step in range(50):
+                self.world.step(render=False)
 
             robot.initialize()
 
@@ -1234,7 +1234,7 @@ class IsaacSimWorker:
 
             # Let physics settle after all resets are complete (extended for gripper operations)
             for step in range(12):  # Increased from 8 to account for gripper operations
-                self.world.step(render=True)
+                self.world.step(render=False)
             
         except Exception as e:
             print(f"❌ Failed to reset user {user_id} environment: {e}")
@@ -1328,7 +1328,7 @@ class IsaacSimWorker:
             self.process_chunked_frame_generation(frames_per_chunk=3)
             
             # 2) advance physics
-            self.world.step(render=True)
+            self.world.step(render=False)
             
             # 3) update replays
             self.update_animations()

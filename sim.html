@@ -819,6 +819,28 @@
     transform:none;
   }
 
+  /* Animation status indicator positioned outside main UI */
+  #animation-status-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    padding: 8px 12px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+    backdrop-filter: blur(10px);
+  }
+
+  #animation-status-container .animation-status {
+    font-size: 12px !important;
+    color: #666 !important;
+    margin: 0 !important;
+    text-align: left !important;
+    display: block !important;
+  }
+
   #viewport .confirm-bar .confirm-button:disabled:hover{
     transform:none;
     box-shadow:none;
@@ -5401,17 +5423,8 @@ loader.load(
     animateBtn.textContent = 'Animate';
     animateBtn.onclick = toggleAnimation;
 
-    // Animation status indicator
-    const animStatusIndicator = document.createElement('div');
-    animStatusIndicator.className = 'animation-status';
-    animStatusIndicator.style.cssText = `
-      font-size: 11px;
-      color: #666;
-      margin-top: 4px;
-      text-align: center;
-      display: none;
-    `;
-    animStatusIndicator.textContent = 'Checking animation status...';
+    // Animation status indicator - use external container
+    const animStatusIndicator = document.querySelector('#animation-status-container .animation-status');
 
     // Add status checking
     let animationStatusTimer = null;
@@ -5434,12 +5447,9 @@ loader.load(
             animStatusIndicator.style.color = '#f59e0b'; // orange
             animateBtn.disabled = !backendAnimState.active; // Only disable if not our animation
           }
-          
-          animStatusIndicator.style.display = 'block';
         } else {
           animStatusIndicator.textContent = '⚠️ Animation unavailable';
           animStatusIndicator.style.color = '#ef4444'; // red
-          animStatusIndicator.style.display = 'block';
           if (!backendAnimState.active) {
             animateBtn.disabled = true;
           }
@@ -5449,7 +5459,6 @@ loader.load(
         console.error('❌ Status check failed:', error);
         animStatusIndicator.textContent = '⚠️ Animation status unknown';
         animStatusIndicator.style.color = '#ef4444';
-        animStatusIndicator.style.display = 'block';
       }
     }
     
@@ -5826,9 +5835,6 @@ loader.load(
 
     // Place Animate to the LEFT of Confirm
     confirmBar.insertBefore(animateBtn, confirmBtn);
-    
-    // Add animation status indicator below the animate button
-    confirmBar.appendChild(animStatusIndicator);
 
     /* === NEW: keep buttons in sync with TAC / locks === */
     function reflectButtonInteractivity(){
@@ -6022,6 +6028,12 @@ window.addEventListener('pagehide', () => {
     </div>
   </div>
 </div>
+
+<!-- Animation status indicator outside main UI -->
+<div id="animation-status-container">
+  <div class="animation-status">Checking animation status...</div>
+</div>
+
 <div id="bigCursor" aria-hidden="true"><div class="ring"></div><div class="dot"></div></div>
 <!-- The REC indicator is injected into #viewport via JS so it stays anchored on the card -->
 
