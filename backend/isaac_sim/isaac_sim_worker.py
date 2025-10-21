@@ -129,13 +129,13 @@ class IsaacSimWorker:
         self.simulation_app = simulation_app  # Store simulation app reference
         self.last_sync_config = None  # Store last synchronized config for animation reset
         
-        # === NEW: Frame cache system for efficient animation replay ===
+        # === Frame cache system for efficient animation replay ===
         self.frame_caches = {}  # user_id -> AnimationFrameCache
         self.frame_generation_in_progress = set()  # Track which users are generating frames
         self.animation_stop_requested = set()  # Track users for whom stop has been requested during generation
         self.worker_communication_dir = None  # Will be set by persistent worker for direct command checking
         
-        # === NEW: Chunked frame generation system ===
+        # === Chunked frame generation system ===
         self.chunked_generation_state = {}  # user_id -> generation state for async processing
         
     def initialize_simulation(self, config):
@@ -151,6 +151,7 @@ class IsaacSimWorker:
         from omni.isaac.core.articulations import Articulation
         from pxr import Gf, UsdGeom, Usd
         from isaacsim.sensors.camera import Camera, get_all_camera_objects
+        from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
         
         # Configuration
         USD_PATH = config['usd_path']
@@ -181,6 +182,7 @@ class IsaacSimWorker:
 
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
+        self.robot_prim = get_prim_at_path(ROBOT_PATH)
         self.objects['cube_01'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
         self.objects['cube_02'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
         self.objects['tennis_ball'] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
@@ -202,16 +204,11 @@ class IsaacSimWorker:
         # Create robot hide/show functions (only once)
         def hide_robot():
             """Alternative: Move robot far away (preserves everything)"""
-            hide_robot.original_pos, hide_robot.original_rot = self.robot.get_world_pose()
-            hide_robot.current_joint_positions = self.robot.get_joint_positions()
-            # Move robot below ground
-            self.robot.set_world_pose(position=np.array([0, 0, -100]), orientation=hide_robot.original_rot)
+            set_prim_visibility(self.robot_prim, False)
 
         def show_robot():
             """Restore robot to original position"""
-            self.robot.set_world_pose(position=hide_robot.original_pos, 
-                                    orientation=hide_robot.original_rot)
-            self.robot.set_joint_positions(hide_robot.current_joint_positions)
+            set_prim_visibility(self.robot_prim, True)
         
         self.hide_robot_funcs = {'hide': hide_robot, 'show': show_robot}
         
@@ -288,6 +285,10 @@ class IsaacSimWorker:
                 pos = np.array(state["pos"])
                 rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                 self.objects['tennis_ball'].set_world_pose(position=pos, orientation=rot)
+
+        # Let physics settle after object positioning
+        for step in range(20):
+            self.world.step(render=True)
 
         # Update robot joints with OPEN gripper (prevents collision/ejection)
         self.robot.set_joint_positions(initial_q_open)
@@ -726,7 +727,7 @@ class IsaacSimWorker:
         
     def start_user_animation(self, user_id, goal_joints, duration=3.0, gripper_action=None):
         """Start animation for specific user using direct joint control
-        NEW: First execution generates all frames headlessly, subsequent requests replay cached frames"""
+        First execution generates all frames headlessly, subsequent requests replay cached frames"""
         if user_id not in self.user_environments:
             return {"error": f"User {user_id} environment not found"}
             
@@ -875,7 +876,7 @@ class IsaacSimWorker:
         
     def stop_user_animation(self, user_id):
         """Stop animation for specific user and reset to fresh synchronized state
-        NEW: Also cleans up frame cache to prevent memory leaks"""
+        Also cleans up frame cache to prevent memory leaks"""
         print(f"[Worker] 🛑 Starting stop_user_animation for user {user_id}")
         start_time = time.time()
         
@@ -893,7 +894,7 @@ class IsaacSimWorker:
         # Reset this user's environment back to the fresh synchronized state
         self._reset_user_environment_to_sync_state(user_id)
             
-        # NEW: Clean up frame cache when animation stops
+        # Clean up frame cache when animation stops
         if user_id in self.frame_caches:
             self.frame_caches[user_id].clear_cache()
             del self.frame_caches[user_id]
