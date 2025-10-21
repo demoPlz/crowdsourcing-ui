@@ -214,6 +214,65 @@ class IsaacSimWorker:
         
         self.simulation_initialized = True
         print("Simulation initialized successfully - ready for state updates")
+
+    def set_robot_joints(self):
+        import numpy as np
+
+        # Detect grasp
+        gripper_external_force = self.last_sync_config.get('left_carriage_external_force',0)
+        grasped = gripper_external_force > 50 # GRASPED_THRESHOLD
+        robot_joints = self.last_sync_config['robot_joints']
+        robot_joints_open_gripper = robot_joints.copy()
+
+        if grasped:
+            robot_joints_open_gripper[-1] = robot_joints_open_gripper[-2] = 0.044
+        
+        self.robot.set_joint_positions(robot_joints_open_gripper)
+
+        # erase velocity and goal from usd
+        ndof = 8
+        from omni.isaac.core.utils.types import ArticulationAction
+        self.robot.set_joint_velocities(np.zeros_like(robot_joints_open_gripper))
+        action = ArticulationAction(
+            joint_positions=robot_joints_open_gripper.tolist(),
+            joint_velocities=[0.0]*ndof  # optional but helps keep things quiet
+        )
+        self.robot.apply_action(action)   # sets drive targets = current pose; no motion
+
+        # Let physics settle after initial positioning
+        for step in range(20):
+            self.world.step(render=True)
+            
+        # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
+        if grasped:
+            # Create target position with original (closed) gripper values
+            target_q = robot_joints.copy()  # This has the original closed gripper positions
+            
+            # Apply smooth closing action over several steps for stable grasp
+            for close_step in range(15):  # ~0.5 seconds at 30Hz
+                # Interpolate from current open position to target closed position
+                current_q = self.robot.get_joint_positions()
+                alpha = (close_step + 1) / 15  # Smooth interpolation factor
+                
+                # Only interpolate gripper joints, keep arm joints as-is
+                interpolated_q = current_q.copy()
+                interpolated_q[-2] = current_q[-2] + alpha * (target_q[-2] - current_q[-2])  # Left gripper
+                interpolated_q[-1] = current_q[-1] + alpha * (target_q[-1] - current_q[-1])  # Right gripper
+                
+                # Apply action with moderate force to avoid crushing
+                action = ArticulationAction(
+                    joint_positions=interpolated_q.tolist(),
+                    joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
+                )
+                self.robot.apply_action(action)
+                
+                # Step physics
+                self.world.step(render=True)
+        
+        # Final physics settling
+        for step in range(3):
+            self.world.step(render=True)
+
         
     def update_state(self, config):
         """Update robot joints and object poses without recreating simulation"""
@@ -222,47 +281,18 @@ class IsaacSimWorker:
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
             
-        # Store the config for animation reset purposes
+        # Store the config
         self.last_sync_config = config.copy()
-            
-        # Get state from config
-        initial_q = np.array(config.get('robot_joints', [0.0] * 7))
-        initial_q = np.append(initial_q, initial_q[-1])
+        # Clone last dimension for mimic joint
+        self.last_sync_config['robot_joints'] = \
+            np.append(self.last_sync_config['robot_joints'], \
+                      self.last_sync_config['robot_joints'][-1])
+        
         object_states = config.get('object_poses', {
             "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
             "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
             "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
-
-        # Grasp detection: Check if gripper force exceeds threshold (same as frontend)
-        # GUARD: Skip automatic gripper closing during animation mode to prevent interference
-        grasp_detected = False
-        gripper_force = 0.0
-        
-        if not self.animation_mode:
-            GRASP_THRESHOLD_N = 50.0  # Same threshold as frontend
-            gripper_force = config.get('left_carriage_external_force', 0.0)
-            
-            if abs(gripper_force) >= GRASP_THRESHOLD_N:
-                grasp_detected = True
-                print(f"🤏 Grasp detected (force: {gripper_force:.1f}N >= {GRASP_THRESHOLD_N}N) - will close gripper smoothly after positioning")
-            else:
-                print(f"✋ No grasp (force: {gripper_force:.1f}N < {GRASP_THRESHOLD_N}N) - using original gripper positions")
-        else:
-            print(f"🎬 Animation mode active - skipping force-based gripper auto-close")
-
-        # PHYSICS-FRIENDLY APPROACH: Always set robot with OPEN gripper first
-        # This prevents collision/ejection issues when gripper would overlap with objects
-        initial_q_open = initial_q.copy()
-        if grasp_detected:
-            # Keep arm joints as specified, but force gripper OPEN for initial positioning
-            original_gripper_left = initial_q[-2]
-            original_gripper_right = initial_q[-1] 
-            initial_q_open[-2] = max(original_gripper_left, 0.044)  # Ensure minimum opening
-            initial_q_open[-1] = max(original_gripper_right, 0.044) # Ensure minimum opening
-            print(f"🔧 Setting initial pose with OPEN gripper: L={initial_q_open[-2]:.4f}, R={initial_q_open[-1]:.4f}")
-            
-        self.last_sync_config['robot_joints'] = initial_q  # Store original for sync purposes
 
         # Update object poses FIRST (before robot positioning)
         if self.objects['cube_01'].is_valid():
@@ -290,57 +320,7 @@ class IsaacSimWorker:
         for step in range(20):
             self.world.step(render=True)
 
-        # Update robot joints with OPEN gripper (prevents collision/ejection)
-        self.robot.set_joint_positions(initial_q_open)
-        
-        ndof = len(self.robot.dof_names)
-        from omni.isaac.core.utils.types import ArticulationAction
-        self.robot.set_joint_velocities(np.zeros_like(initial_q_open))
-        action = ArticulationAction(
-            joint_positions=initial_q_open.tolist(),
-            joint_velocities=[0.0]*ndof  # optional but helps keep things quiet
-        )
-        self.robot.apply_action(action)   # sets drive targets == current pose; no motion
-
-        # Let physics settle after initial positioning
-        for step in range(20):
-            self.world.step(render=True)
-            
-        # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
-        if grasp_detected and not self.animation_mode:
-            print(f"🤏 Applying physics-based gripper closing for grasp (force: {gripper_force:.1f}N)")
-            
-            # Create target position with original (closed) gripper values
-            target_q = initial_q.copy()  # This has the original closed gripper positions
-            
-            # Apply smooth closing action over several steps for stable grasp
-            for close_step in range(15):  # ~0.5 seconds at 30Hz
-                # Interpolate from current open position to target closed position
-                current_q = self.robot.get_joint_positions()
-                alpha = (close_step + 1) / 15  # Smooth interpolation factor
-                
-                # Only interpolate gripper joints, keep arm joints as-is
-                interpolated_q = current_q.copy()
-                interpolated_q[-2] = current_q[-2] + alpha * (target_q[-2] - current_q[-2])  # Left gripper
-                interpolated_q[-1] = current_q[-1] + alpha * (target_q[-1] - current_q[-1])  # Right gripper
-                
-                # Apply action with moderate force to avoid crushing
-                action = ArticulationAction(
-                    joint_positions=interpolated_q.tolist(),
-                    joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
-                )
-                self.robot.apply_action(action)
-                
-                # Step physics
-                self.world.step(render=True)
-                
-            print(f"✅ Completed physics-based gripper closing in {15} steps")
-        
-        # Final physics settling
-        for step in range(3):
-            self.world.step(render=True)
-            
-        print("State updated successfully")
+        self.set_robot_joints()
         
     def capture_current_state_images(self, output_dir):
         """Capture images with current state (robot temporarily hidden for capture only)"""
@@ -552,16 +532,17 @@ class IsaacSimWorker:
         
         # Store the sync config so animations can reset to this state
         self.last_sync_config = config.copy()
+        # Clone last dimension for mimic joint
+        self.last_sync_config['robot_joints'] = \
+            np.append(self.last_sync_config['robot_joints'], \
+                      self.last_sync_config['robot_joints'][-1])
         
-        # Get state from config
-        initial_q = np.array(config.get('robot_joints', [0.0] * 7))
-        initial_q = np.append(initial_q, initial_q[-1])
         object_states = config.get('object_poses', {
             "Cube_01": {"pos": [0.6, 0.0, 0.1], "rot": [0, 0, 0, 1]},
             "Cube_02": {"pos": [0.6, 0.2, 0.1], "rot": [0, 0, 0, 1]},
             "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]}
         })
-        
+
         # Update each animation environment
         for user_id, env_data in self.user_environments.items():
             try:
@@ -641,9 +622,7 @@ class IsaacSimWorker:
                                 
                     print(f"📍 User {user_id} objects synced using scene registry WITH SPATIAL OFFSET")
                     
-                # Update robot joints after objects are initialized
-                robot.set_joint_positions(initial_q)
-                print(f"Synced environment {user_id} ({world_path})")
+                self.set_robot_joints()
                 
             except Exception as e:
                 print(f"Warning: Failed to sync environment {user_id}: {e}")
@@ -790,16 +769,7 @@ class IsaacSimWorker:
         self._reset_user_environment_to_sync_state(user_id)
         
         # STEP 6: Get the fresh initial state from the latest synchronized state
-        if hasattr(self, 'last_sync_config') and 'robot_joints' in self.last_sync_config:
-            initial_joints_7d = np.array(self.last_sync_config['robot_joints'])
-            print(f"📍 Using synchronized initial state: {initial_joints_7d}")
-        else:
-            # Fallback to default position if no sync config available
-            initial_joints_7d = np.array([0.0] * 7)
-            print("⚠️ No sync config available, using default initial position")
-        
-        # Convert to 8D (add mimic joint)
-        initial_joints = np.append(initial_joints_7d, initial_joints_7d[-1])
+        initial_joints = self.last_sync_config['robot_joints']
         
         # Ensure goal_joints has same dimension as initial_joints
         if len(goal_joints) == 7:
@@ -1182,10 +1152,6 @@ class IsaacSimWorker:
         if user_id not in self.user_environments:
             return
             
-        if not hasattr(self, 'last_sync_config') or self.last_sync_config is None:
-            print(f"⚠️ No sync config available for user {user_id} reset")
-            return
-            
         import numpy as np
         import omni.usd
         from pxr import Gf, UsdGeom
@@ -1193,34 +1159,6 @@ class IsaacSimWorker:
         try:
             env_data = self.user_environments[user_id]
             robot = env_data['robot']
-            
-            # STEP 1: Reset robot joints to synchronized state
-            initial_q = np.array(self.last_sync_config.get('robot_joints', [0.0] * 7))
-            initial_q = np.append(initial_q, initial_q[-1])  # Add mimic joint
-            
-            # PHYSICS-FRIENDLY APPROACH: Apply same gripper opening strategy as update_state()
-            # Only open gripper if it's actually closed in sync state (same as grasp detection logic)
-            initial_q_open = initial_q.copy()
-            
-            # Store original gripper state for potential closing later
-            original_gripper_left = initial_q[-2]
-            original_gripper_right = initial_q[-1]
-            
-            # Check if gripper is actually closed in the synchronized state
-            gripper_is_closed = (original_gripper_left < 0.02 or original_gripper_right < 0.02)
-            
-            if gripper_is_closed:
-                # Only force gripper OPEN if it's actually closed (same logic as grasp detection)
-                initial_q_open[-2] = 0.02  # Force to minimum safe opening
-                initial_q_open[-1] = 0.02  # Force to minimum safe opening
-                print(f"🔧 Animation reset: gripper was closed, opening first L={initial_q_open[-2]:.4f}, R={initial_q_open[-1]:.4f}")
-                needs_gripper_closing = True
-            else:
-                # Gripper was already open, use original positions without modification
-                print(f"✋ Animation reset: gripper was already open, using original positions L={original_gripper_left:.4f}, R={original_gripper_right:.4f}")
-                needs_gripper_closing = False
-            
-            # STEP 2: Reset objects to fresh synchronized state for ALL environments
             # Use the correct object references for each environment type
             
             object_states = self.last_sync_config.get('object_poses', {
@@ -1293,49 +1231,9 @@ class IsaacSimWorker:
                             scene_obj.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
                             scene_obj.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
             
-            robot.set_joint_positions(initial_q_open)  # Set with OPEN gripper first
+            self.set_robot_joints()
             
-            # Let physics settle with open gripper
-            for step in range(10):
-                self.world.step(render=True)
-            
-            # PHYSICS-BASED GRIPPER CLOSING: If gripper was closed in sync state, smoothly close it
-            if needs_gripper_closing:
-                print(f"🤏 Applying physics-based gripper closing for animation reset")
-                
-                from omni.isaac.core.utils.types import ArticulationAction
-                
-                # Apply smooth closing action over several steps for stable grasp
-                for close_step in range(10):  # Shorter duration for reset
-                    # Interpolate from current open position to target closed position
-                    current_q = robot.get_joint_positions()
-                    alpha = (close_step + 1) / 10  # Smooth interpolation factor
-                    
-                    # Only interpolate gripper joints, keep arm joints as-is
-                    interpolated_q = current_q.copy()
-                    interpolated_q[-2] = current_q[-2] + alpha * (initial_q[-2] - current_q[-2])  # Left gripper
-                    interpolated_q[-1] = current_q[-1] + alpha * (initial_q[-1] - current_q[-1])  # Right gripper
-                    
-                    # Apply action with moderate force to avoid crushing
-                    action = ArticulationAction(
-                        joint_positions=interpolated_q.tolist(),
-                        joint_efforts=[0, 0, 0, 0, 0, 0, 50.0, 50.0]  # Moderate gripper force
-                    )
-                    robot.apply_action(action)
-                    
-                    # Step physics
-                    self.world.step(render=True)
-                    
-                print(f"✅ Completed physics-based gripper closing for animation reset")
-            
-            # CRITICAL: Ensure articulation controller stays properly initialized after reset
-            # This prevents the "_articulation_view is None" error in subsequent animations
-            try:
-                # Force reinitialize the robot to refresh its internal controller state
-                robot.initialize()
-                print(f"✅ Reinitialized robot controller for user {user_id} after reset")
-            except Exception as controller_error:
-                print(f"⚠️ Warning: Could not reinitialize robot controller for user {user_id}: {controller_error}")
+            robot.initialize()
 
             # Let physics settle after all resets are complete (extended for gripper operations)
             for step in range(12):  # Increased from 8 to account for gripper operations

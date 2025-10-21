@@ -157,7 +157,7 @@ class PersistentWorkerManager:
                     return True
                     
                 print(f"Worker simulation not ready yet (attempt {attempt + 1}/{timeout})")
-                time.sleep(0.5)  # Wait 500ms before retry
+                time.sleep(1)  # Wait 500ms before retry
                 
             except Exception as e:
                 print(f"Status check failed (attempt {attempt + 1}): {e}")
