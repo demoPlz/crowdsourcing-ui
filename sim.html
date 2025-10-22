@@ -483,6 +483,7 @@
     background: #f65c5c;
     color: white;
     width: 100%;
+    min-width: 100px; /* Fixed width to prevent expansion with longer text */
     font-size: 15px;
     font-weight: 600;
     padding: 10px 16px;
@@ -502,6 +503,12 @@
     background: #ed3a3a; /* brighter while active */
     box-shadow: 0 0 0 3px rgba(124, 58, 237, .25), 0 8px 18px rgba(0,0,0,.18);
     opacity: 1;
+  }
+  .controls-container .animate-button.rendering {
+    background: #dc2626; /* red-600 - indicates processing */
+    cursor: wait;
+    pointer-events: none; /* Prevent clicks while rendering */
+    animation: renderingPulse 1.5s ease-in-out infinite;
   }
 
   .controls-container .task-completed-button { 
@@ -868,6 +875,7 @@
 /* Light orange Animate (lower-right, left of Confirm) */
 #viewport .confirm-bar .animate-button{
   background:#fb923c; /* orange-400 - light orange */
+  min-width: 100px; /* Fixed width to prevent expansion with longer text */
 }
 
 #viewport .confirm-bar .animate-button:hover{
@@ -882,6 +890,26 @@
 #viewport .confirm-bar .animate-button.active{
   background:#ea580c; /* orange-600 - darker orange */
   box-shadow:0 0 0 3px rgba(234,88,12,.25), 0 2px 8px rgba(0,0,0,.15);
+}
+
+/* Rendering state - slightly darker with subtle pulse */
+#viewport .confirm-bar .animate-button.rendering{
+  background:#dc2626; /* red-600 - indicates processing */
+  cursor: wait;
+  pointer-events: none; /* Prevent clicks while rendering */
+  animation: renderingPulse 1.5s ease-in-out infinite;
+}
+
+/* Subtle pulse animation for rendering state */
+@keyframes renderingPulse {
+  0%, 100% { 
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.8;
+    transform: scale(1.02);
+  }
 }
 
 /* Square corners stay enforced globally (already covered by your blanket rule),
@@ -4113,19 +4141,22 @@ loader.load(
         
         console.log('✓ Animation state updated immediately');
         
-        // Send stop request to backend (but don't wait for response)
-        const response = await apiFetch('/api/animation/stop', {
+        // Send stop request to backend WITHOUT waiting for response
+        // This allows expensive physics operations to happen in background
+        apiFetch('/api/animation/stop', {
           method: 'POST'
-        });
-        
-        const result = await response.json();
-        
-        if (result.status === 'success') {
-          console.log('✓ Backend animation stop confirmed');
-        } else {
-          console.error('❌ Backend animation stop failed:', result.message);
+        }).then(async response => {
+          const result = await response.json();
+          if (result.status === 'success') {
+            console.log('✓ Backend animation stop confirmed');
+          } else {
+            console.error('❌ Backend animation stop failed:', result.message);
+            // Backend failed, but we already updated UI - that's fine
+          }
+        }).catch(error => {
+          console.error('❌ Animation stop error:', error);
           // Backend failed, but we already updated UI - that's fine
-        }
+        });
         
       } catch (error) {
         console.error('❌ Animation stop error:', error);
@@ -4242,7 +4273,8 @@ loader.load(
       if (backendAnimState.active) {
         // OPTIMIZATION: Immediately update UI for instant visual feedback
         // Don't wait for backend confirmation to make transition feel instant
-        animateBtn.classList.remove('active');
+        animateBtn.classList.remove('active', 'rendering');
+        animateBtn.textContent = 'Animate'; // Ensure text is reset
         animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
@@ -4278,30 +4310,47 @@ loader.load(
         });
         
       } else {
-        // Start backend animation
-        const success = await startBackendAnimation();
+        // Show rendering state immediately
+        animateBtn.textContent = 'Rendering...';
+        animateBtn.classList.add('rendering');
         
-        if (success) {
-          // Update UI for animation mode
-          animateBtn.classList.add('active');
-          animState.enabled = false; // Disable frontend animation - only use backend
-          animating = true;
-          updateGripArrowVisibility();
+        try {
+          // Start backend animation
+          const success = await startBackendAnimation();
           
-          // Hide UI elements during animation
-          setPoseGizmosVisible(false);
-          setHUDHiddenForAnimation(true);
-          
-          // IMPORTANT: Hide Three.js robot and start Isaac Sim streaming
-          robotVisible = false;
-          robot.visible = false;
-          if (toggleRobotBtn) toggleRobotBtn.textContent = 'show robot model';
-          
-          // Start Isaac Sim frame streaming
-          backendAnimState.streaming = true;
-          startFrameCapture(); // Start timer-based frame capture
-          
-          console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
+          if (success) {
+            // Update UI for animation mode
+            animateBtn.textContent = 'Animate'; // Restore original text
+            animateBtn.classList.remove('rendering');
+            animateBtn.classList.add('active');
+            animState.enabled = false; // Disable frontend animation - only use backend
+            animating = true;
+            updateGripArrowVisibility();
+            
+            // Hide UI elements during animation
+            setPoseGizmosVisible(false);
+            setHUDHiddenForAnimation(true);
+            
+            // IMPORTANT: Hide Three.js robot and start Isaac Sim streaming
+            robotVisible = false;
+            robot.visible = false;
+            if (toggleRobotBtn) toggleRobotBtn.textContent = 'show robot model';
+            
+            // Start Isaac Sim frame streaming
+            backendAnimState.streaming = true;
+            startFrameCapture(); // Start timer-based frame capture
+            
+            console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
+          } else {
+            // Reset button state on failure
+            animateBtn.textContent = 'Animate';
+            animateBtn.classList.remove('rendering');
+          }
+        } catch (error) {
+          // Reset button state on error
+          animateBtn.textContent = 'Animate';
+          animateBtn.classList.remove('rendering');
+          console.error('❌ Animation start error:', error);
         }
       }
     }
@@ -5316,7 +5365,10 @@ loader.load(
         animState.enabled = false;
         animating = false;
         updateGripArrowVisibility();
-        if (animateBtn) animateBtn.classList.remove('active');
+        if (animateBtn) {
+          animateBtn.classList.remove('active', 'rendering');
+          animateBtn.textContent = 'Animate';
+        }
         setPoseGizmosVisible(true);
         setGhostMode(false);
         applyPostAnimationVisibility();
@@ -5508,7 +5560,8 @@ loader.load(
 
       // Turn OFF animation (same as clicking "Animate" again to stop)
       animState.enabled = false;
-      animateBtn.classList.remove('active');
+      animateBtn.classList.remove('active', 'rendering');
+      animateBtn.textContent = 'Animate'; // Reset text in case it was showing "Rendering..."
 
       animating = false;
       updateGripArrowVisibility();
@@ -5841,7 +5894,10 @@ loader.load(
       const tacOn = taskCompletedSelected === true;
       if (animateBtn) {
         animateBtn.disabled = tacOn;         // disable Animate when TAC is on
-        if (tacOn) animateBtn.classList.remove('active');
+        if (tacOn) {
+          animateBtn.classList.remove('active', 'rendering');
+          animateBtn.textContent = 'Animate';
+        }
       }
       // Reset stays enabled
     }

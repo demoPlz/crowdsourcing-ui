@@ -6,16 +6,9 @@ Isaac Sim worker script with two modes:
 """
 
 import os
-import sys
-import json
-import argparse
 import time
-import threading
-import signal
 import traceback
-from collections import defaultdict
 from PIL import Image
-from isaacsim import SimulationApp
 
 class AnimationFrameCache:
     """Cache system for storing and replaying animation frames efficiently"""
@@ -625,8 +618,8 @@ class IsaacSimWorker:
                 print(f"Warning: Failed to sync environment {user_id}: {e}")
         
         # Let physics settle across all environments
-        for step in range(10):
-            self.world.step(render=False)
+        # for step in range(10):
+        #     self.world.step(render=False)
             
         print("Animation environment synchronization complete")
 
@@ -859,7 +852,7 @@ class IsaacSimWorker:
             del self.active_animations[user_id]
             
         # Reset this user's environment back to the fresh synchronized state
-        # self._reset_user_environment_to_sync_state(user_id) #ATTENTION
+        self._reset_user_environment_to_sync_state(user_id) #ATTENTION
             
         # Clean up frame cache when animation stops
         if user_id in self.frame_caches:
@@ -1237,8 +1230,8 @@ class IsaacSimWorker:
             self.set_robot_joints()
 
             # Let physics settle after all resets are complete (extended for gripper operations)
-            for step in range(12):  # Increased from 8 to account for gripper operations
-                self.world.step(render=True)
+            # for step in range(12):  # Increased from 8 to account for gripper operations
+            #     self.world.step(render=True)
             
         except Exception as e:
             print(f"❌ Failed to reset user {user_id} environment: {e}")
