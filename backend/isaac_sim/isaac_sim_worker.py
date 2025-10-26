@@ -143,9 +143,9 @@ class IsaacSimWorker:
         import carb
         import omni.usd
         from omni.isaac.core import World
-        from omni.isaac.core.prims import RigidPrim
+        from omni.isaac.core.prims import XFormPrim, RigidPrim
         from omni.isaac.core.articulations import Articulation
-        from pxr import Gf, UsdGeom, Usd
+        from pxr import UsdPhysics
         from isaacsim.sensors.camera import Camera, get_all_camera_objects
         from isaacsim.core.utils.prims import get_prim_at_path, set_prim_visibility
         
@@ -182,6 +182,29 @@ class IsaacSimWorker:
         self.objects['cube_01'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_01_PATH, name="cube_01"))
         self.objects['cube_02'] = self.world.scene.add(RigidPrim(prim_path=OBJ_CUBE_02_PATH, name="cube_02"))
         self.objects['tennis_ball'] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
+        
+        from omni.isaac.core.prims import XFormPrim
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()  # just to confirm they exist; not modifying
+
+        for path, key in [
+            ("/World/drawer_shell", "drawer_shell"),
+            ("/World/tray_01",     "tray_01"),
+            ("/World/tray_02",     "tray_02"),
+            ("/World/tray_03",     "tray_03"),
+        ]:
+            prim = stage.GetPrimAtPath(path)
+            if not prim or not prim.IsValid():
+                print(f"⚠️ Missing prim: {path} (skipping)")
+                self.objects[key] = None
+                continue
+
+            # Important: XFormPrim wrapper only. We do NOT set any pose here.
+            self.objects[key] = self.world.scene.add(XFormPrim(prim_path=path, name=key))
+            print(f"✓ Registered as-authored: {path} → objects['{key}']")
+
+
 
         # Get cameras (only once)
         stage = omni.usd.get_context().get_stage()

@@ -1142,7 +1142,7 @@ class CrowdInterface():
             )
             
             initial_config = {
-                "usd_path": f"public/assets/usd/{self.task_name}.usd",
+                "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
                 "robot_joints": [0.0] * 7,
                 "object_poses": {
                     "Cube_01": {"pos": [0.4, 0.0, 0.1], "rot": [0, 0, 0, 1]},
