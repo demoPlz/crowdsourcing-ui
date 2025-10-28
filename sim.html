@@ -4293,11 +4293,16 @@ loader.load(
         applyPostAnimationVisibility();
         setHUDHiddenForAnimation(false);
         
+        // Update Verify button state since animation is stopping
+        updateVerifyButtonState();
+        
         console.log('✅ Animation UI updated immediately - Three.js robot visible');
         
         // Backend cleanup in background (don't await to avoid lag)
         stopBackendAnimation().then(() => {
           console.log('✅ Backend animation cleanup completed');
+          // Update button state again after backend confirms animation stopped
+          updateVerifyButtonState();
         }).catch(error => {
           console.error('❌ Backend animation cleanup failed:', error);
         });
@@ -4339,6 +4344,9 @@ loader.load(
             // Start Isaac Sim frame streaming
             backendAnimState.streaming = true;
             startFrameCapture(); // Start timer-based frame capture
+            
+            // Update Verify button state since animation is now active
+            updateVerifyButtonState();
             
             console.log('✅ Animation started - hiding Three.js robot and streaming Isaac Sim');
           } else {
@@ -5348,7 +5356,31 @@ loader.load(
     confirmBtn.textContent = 'Verify';
     confirmBtn.className = 'confirm-button';
 
+    // Function to update Verify button state based on animation status
+    function updateVerifyButtonState() {
+      if (!confirmBtn) return;
+      
+      if (backendAnimState.active) {
+        confirmBtn.disabled = true;
+        confirmBtn.title = 'End animation to verify';
+        confirmBtn.classList.add('inactive');
+      } else {
+        // Only re-enable if button hasn't been used yet
+        if (!verifyButtonUsed) {
+          confirmBtn.disabled = false;
+          confirmBtn.title = '';
+          confirmBtn.classList.remove('inactive');
+        }
+      }
+    }
+
     confirmBtn.onclick = async () => {
+      // Check if animation is currently active
+      if (backendAnimState.active) {
+        console.log('⚠️ Cannot verify while animation is running - please stop animation first');
+        return;
+      }
+
       // Check if button has already been used
       if (verifyButtonUsed) {
         console.log('⚠️ Verify button already used in this session');
@@ -5886,6 +5918,9 @@ loader.load(
 
     // Evaluate initial interactivity (usually enabled because sliders = defaults)
     updateGripperInteractivity();
+
+    // Set initial Verify button state
+    updateVerifyButtonState();
 
     // Add reset button to its own bar (lower-left, standalone like confirm)
     resetBar.appendChild(resetBtn);
