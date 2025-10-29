@@ -1,6 +1,3 @@
 [submodule "trossen_arm_description"]
 	path = static/trossen_arm_description
 	url = https://github.com/TrossenRobotics/trossen_arm_description.git
-[submodule "external/FoundationPose"]
-	path = external/FoundationPose
-	url = https://github.com/NVlabs/FoundationPose.git
