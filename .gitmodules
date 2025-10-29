@@ -1,3 +1,7 @@
 [submodule "trossen_arm_description"]
 	path = static/trossen_arm_description
 	url = https://github.com/TrossenRobotics/trossen_arm_description.git
+[submodule "external/any6d"]
+	path = external/any6d
+	url = git@github.com:demoPlz/any6d.git
+	branch = main
