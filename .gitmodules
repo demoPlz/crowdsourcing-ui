@@ -5,3 +5,9 @@
 	path = external/any6d
 	url = git@github.com:demoPlz/any6d.git
 	branch = main
+[submodule "external/nvdiffrast"]
+	path = external/nvdiffrast
+	url = https://github.com/NVlabs/nvdiffrast.git
+[submodule "external/pytorch3d"]
+	path = external/pytorch3d
+	url = https://github.com/facebookresearch/pytorch3d.git
