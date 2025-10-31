@@ -12,7 +12,7 @@ dist/
 build/
 
 # IDE files
-.vscode/
+# .vscode/
 .idea/
 *.swp
 *.swo

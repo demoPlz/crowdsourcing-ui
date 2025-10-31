@@ -39,10 +39,13 @@ class CrowdInterfaceConfig():
             "Cube_Red": "Red cube", 
             "Tennis": "Tennis ball"
         } # {name of xform: name for langsam}
+        
+        # Resolve mesh paths to absolute paths
+        repo_root = Path(__file__).resolve().parent.parent
         self.object_mesh_paths: dict[str, str] = {
-            "Cube_Blue": "public/assets/cube.obj",
-            "Cube_Red": "public/assets/cube.obj",
-            "Tennis":  "public/assets/sphere.obj"
+            "Cube_Blue": str((repo_root / "public/assets/cube.obj").resolve()),
+            "Cube_Red": str((repo_root / "public/assets/cube.obj").resolve()),
+            "Tennis":  str((repo_root / "public/assets/sphere_new.obj").resolve())
         }
 
     @classmethod
@@ -109,7 +112,9 @@ class CrowdInterfaceConfig():
             "num_autofill_actions": self.num_autofill_actions,
             "use_manual_prompt": self.use_manual_prompt,
             "show_demo_videos": self.show_demo_videos,
-            "use_sim": self.use_sim
+            "use_sim": self.use_sim,
+            "objects": self.objects,
+            "object_mesh_paths": self.object_mesh_paths
         }
         
         # Handle demo video recording settings

@@ -1,0 +1,169 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        
+        {
+            "name": "Isaac Sim: Launch sim_session_toy.py",
+            "type": "debugpy",
+            "request": "launch",
+
+            // Use Isaac Sim's Python so all omniverse libs resolve
+            "python": "/home/yilong/isaac-sim/python.sh",
+
+            // Run the sim_session_toy.py script
+            "program": "${workspaceFolder}/backend/sim_session_toy.py",
+
+            // Your backend prints URLs and keeps the app alive
+            "cwd": "/home/yilong/crowdsourcing-ui",
+
+            // Environment the backend expects
+            "env": {
+                "LIVESTREAM": "2",
+                "ROS_PACKAGE_PATH": "/home/yilong/crowdsourcing-ui/public/assets"
+            },
+
+            // Good defaults for Omniverse debugging
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "redirectOutput": true
+            },
+
+
+
+        {
+            "name": "Record Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/collect_data.py",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "subProcess": true,
+            "args": [
+                "--robot.type=trossen_ai_single_arm",
+                "--robot.max_relative_target=null",
+                "--control.type=record",
+                "--control.fps=30",
+                "--control.single_task=Put the objects on the desk into the middle drawer",
+                "--task-name=drawer",
+                "--control.repo_id=${env:USER}/new_debug_6",
+                "--control.data_collection_policy_repo_id=${env:USER}/new_debug_6_dcp",
+                "--control.tags=[\"tutorial\"]",
+                "--control.warmup_time_s=5",
+                "--control.num_episodes=2",
+                "--control.push_to_hub=false",
+                "--control.num_image_writer_processes=8",
+                "--control.play_sound=false",
+                // "--autofill-critical-states",
+                "--required-responses-per-critical-state=2",
+                // "--num-autofill-actions=10",
+
+                // "--use-manual-prompt",
+
+                "--show-demo-videos",
+
+                // "--record-ui-demo-videos",
+                // "--save-critical-manicam-sequence",
+                
+                // "--auto-clear-demo",
+            ]
+        },
+
+        {
+            "name": "Record Data (Manual Pose Workers)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/collect_data.py",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "subProcess": true,
+            "env": {
+                "SKIP_POSE_WORKERS": "1"
+            },
+            "args": [
+                "--robot.type=trossen_ai_single_arm",
+                "--robot.max_relative_target=null",
+                "--control.type=record",
+                "--control.fps=30",
+                "--control.single_task=Put the objects on the desk into the middle drawer",
+                "--task-name=drawer",
+                "--control.repo_id=${env:USER}/new_debug_6",
+                "--control.data_collection_policy_repo_id=${env:USER}/new_debug_6_dcp",
+                "--control.tags=[\"tutorial\"]",
+                "--control.warmup_time_s=5",
+                "--control.num_episodes=2",
+                "--control.push_to_hub=false",
+                "--control.num_image_writer_processes=8",
+                "--control.play_sound=false",
+                "--required-responses-per-critical-state=2",
+                "--show-demo-videos",
+            ]
+        },
+
+
+        {
+            "name": "Record Data with Policy",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/collect_data.py",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--robot.type=trossen_ai_single_arm",
+                "--robot.max_relative_target=null",
+                "--control.type=record",
+                "--control.fps=30",
+                "--control.single_task=Pick up the red block.",
+                "--control.repo_id=${env:USER}/pick_line_crowd_25",
+                "--control.data_collection_policy_repo_id=${env:USER}/pick_line_crowd_dcp_25",
+                "--control.tags=[\"tutorial\"]",
+                "--control.warmup_time_s=5",
+                "--control.num_episodes=25",
+                "--control.push_to_hub=false",
+                "--control.num_image_writer_processes=8",
+                "--control.play_sound=false",
+
+                "--"
+            ]
+        },
+        {
+            "name": "Debug Pose Worker (Any6D310)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/any6d/pose_worker.py",
+            "python": "/home/yilong/miniconda3/envs/Any6D310/bin/python",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/Any6D310/lib:/home/yilong/miniconda3/envs/Any6D310/targets/x86_64-linux/lib:${env:LD_LIBRARY_PATH}",
+                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/Any6D310",
+                "CONDA_DEFAULT_ENV": "Any6D310"
+            },
+            "args": [
+                "--jobs-dir", "/tmp/crowd_obs_cache/pose_jobs",
+                "--object", "Cube_Blue",
+                "--mesh", "${workspaceFolder}/public/assets/cube.obj",
+                "--prompt", "blue cube"
+            ]
+        },
+
+        {
+            "name": "Debug run_demo_realsense (Any6D310)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/external/any6d/run_demo_realsense.py",
+            "python": "/home/yilong/miniconda3/envs/Any6D310/bin/python",
+            "justMyCode": false,
+            "console": "integratedTerminal",
+            "env": {
+                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/Any6D310/lib:/home/yilong/miniconda3/envs/Any6D310/targets/x86_64-linux/lib:${env:LD_LIBRARY_PATH}",
+                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/Any6D310",
+                "CONDA_DEFAULT_ENV": "Any6D310"
+            },
+            "args": [
+                "--mesh_path", "/home/yilong/crowdsourcing-ui/public/assets/cube.obj",
+                "--show_debug"
+            ]
+        }
+    ]
+}

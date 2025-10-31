@@ -3,19 +3,34 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
+import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 import trimesh
 from PIL import Image
 
+# Add external/any6d to sys.path so we can import estimater, foundationpose, etc.
+# This file is at: backend/any6d/estimate_pose.py
+# Target directory: external/any6d/
+_BACKEND_DIR = Path(__file__).resolve().parent  # backend/any6d/
+_REPO_ROOT = _BACKEND_DIR.parent.parent         # crowdsourcing-ui/
+_EXTERNAL_ANY6D = _REPO_ROOT / "external" / "any6d"
+
+if str(_EXTERNAL_ANY6D) not in sys.path:
+    sys.path.insert(0, str(_EXTERNAL_ANY6D))
+
+# Also add lang-segment-anything for lang_sam imports
+_LANG_SAM_DIR = _EXTERNAL_ANY6D / "lang-segment-anything"
+if str(_LANG_SAM_DIR) not in sys.path:
+    sys.path.insert(0, str(_LANG_SAM_DIR))
+
 # External deps expected by your environment:
 #   nvdiffrast.torch as dr
-#   lang_sam.LangSAM
-#   estimater.Any6D
-#   foundationpose.learning.training.predict_score.ScorePredictor
-#   foundationpose.learning.training.predict_pose_refine.PoseRefinePredictor
-#   foundationpose.estimater.FoundationPose
+#   lang_sam.LangSAM (from lang-segment-anything/)
+#   estimater.Any6D (from external/any6d/)
+#   foundationpose.* (from external/any6d/)
 
 import nvdiffrast.torch as dr
 from lang_sam import LangSAM
@@ -66,14 +81,14 @@ def create_engines(
     _ = m.vertex_normals
 
     glctx_any6d = dr.RasterizeCudaContext()
-    any6d = Any6D(mesh=m, debug=debug, debug_dir=None, glctx=glctx_any6d)
+    any6d = Any6D(mesh=m, debug=debug, debug_dir='./any6d_debug', glctx=glctx_any6d)
 
     scorer = ScorePredictor()
     refiner = PoseRefinePredictor()
     glctx_found = dr.RasterizeCudaContext()
     fpose = FoundationPose(
         model_pts=m.vertices, model_normals=m.vertex_normals, mesh=m,
-        scorer=scorer, refiner=refiner, glctx=glctx_found, debug=debug, debug_dir=None,
+        scorer=scorer, refiner=refiner, glctx=glctx_found, debug=debug, debug_dir='./any6d_debug',
     )
     return PoseEngines(langsam=langsam, any6d=any6d, fpose=fpose)
 
@@ -270,6 +285,7 @@ def estimate_pose_from_tensors(
     # ---- Input preparation
     rgb_np = _rgb_torch_to_uint8_numpy(rgb_t)                # (H,W,3) uint8 RGB
     depth_np = _depth_torch_to_f32_numpy(depth_t)            # (H,W) float32 meters
+    depth_np *= 0.001
     K_np = _K_to_numpy(K)
 
     H, W = rgb_np.shape[:2]
@@ -297,12 +313,9 @@ def estimate_pose_from_tensors(
         image_pil = Image.fromarray(rgb_np)
         out = langsam.predict([image_pil], [language_prompt])[0]
         masks = np.asarray(out.get("masks", []))
-        # Pick the best scoring mask if scores present, else first
-        if "mask_scores" in out and out["mask_scores"] is not None and len(out["mask_scores"]) == len(masks):
-            scores = np.asarray(out["mask_scores"])
-            idx = int(np.argmax(scores)) if scores.size else 0
-        else:
-            idx = 0
+    
+        scores = np.asarray(out["mask_scores"])
+        idx = int(np.argmax(scores)) if scores.size else 0
         lang_mask = masks[idx].astype(bool) if masks.size else np.zeros((H, W), dtype=bool)
     except Exception as e:
         return PoseOutput(

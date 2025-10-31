@@ -13,6 +13,9 @@ Usage:
     --object Cube_Blue \
     --mesh assets/meshes/cube_blue.obj \
     --prompt "blue cube"
+  
+Debug mode:
+  Set POSE_WORKER_DEBUG=1 to enable debugpy - worker will WAIT for debugger to attach
 """
 
 import argparse
@@ -25,6 +28,46 @@ from pathlib import Path
 import numpy as np
 import torch
 import trimesh
+
+# ========== DEBUGPY SUPPORT ==========
+# Check if debug mode is enabled via environment variable
+if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
+    try:
+        import debugpy
+        # Use a different port for each object to avoid conflicts
+        object_name = sys.argv[sys.argv.index("--object") + 1] if "--object" in sys.argv else "unknown"
+        # Hash object name to get a consistent port offset (0-9)
+        port_offset = hash(object_name) % 10
+        debug_port = 5678 + port_offset
+        
+        # Check if already listening (in case of restart)
+        if not debugpy.is_client_connected():
+            try:
+                debugpy.listen(("localhost", debug_port))
+                print(f"\n{'='*60}", flush=True)
+                print(f"🐛 [{object_name}] DEBUGPY READY", flush=True)
+                print(f"🐛 Port: {debug_port}", flush=True)
+                print(f"🐛 Attach config: 'Attach to Pose Worker ({object_name})'", flush=True)
+                print(f"🐛 WAITING FOR DEBUGGER TO ATTACH...", flush=True)
+                print(f"{'='*60}\n", flush=True)
+                
+                # BLOCK until debugger attaches
+                debugpy.wait_for_client()
+                print(f"✅ [{object_name}] Debugger attached! Continuing...\n", flush=True)
+                
+                # Optional: break at the start
+                # debugpy.breakpoint()
+            except Exception as listen_err:
+                print(f"⚠️  Failed to listen on port {debug_port}: {listen_err}", flush=True)
+                print(f"⚠️  Continuing without debugger...", flush=True)
+    except ImportError:
+        print("⚠️  debugpy not installed in Any6D310 environment.", flush=True)
+        print("⚠️  Install with: conda activate Any6D310 && pip install debugpy", flush=True)
+    except Exception as e:
+        print(f"⚠️  Debugpy setup failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+# =====================================
 
 # Ensure pose_fn is importable (assumes same repo)
 THIS_DIR = Path(__file__).resolve().parent
@@ -51,13 +94,7 @@ def _extract_rgb_depth(obs: dict) -> tuple[torch.Tensor, torch.Tensor]:
     - Depth expected shape (480,640) float meters
     """
     # RGB
-    rgb = (
-        obs.get("observation.images.cam_main") or
-        obs.get("observation.images.main") or
-        obs.get("observation.cam_main") or
-        obs.get("rgb") or
-        obs.get("image")
-    )
+    rgb = obs.get("observation.images.cam_main")
     if rgb is None:
         raise KeyError("RGB not found in obs dict (expected observation.images.cam_main, etc.)")
     if isinstance(rgb, np.ndarray):
@@ -67,12 +104,7 @@ def _extract_rgb_depth(obs: dict) -> tuple[torch.Tensor, torch.Tensor]:
         rgb = rgb.permute(1, 2, 0).contiguous()  # CHW->HWC
 
     # DEPTH
-    depth = (
-        obs.get("depth") or
-        obs.get("observation.depth") or
-        obs.get("observation.depth_main") or
-        obs.get("observation.depth.cam_main")
-    )
+    depth = obs.get("depth")
     if depth is None:
         raise KeyError("depth not found in obs dict (expected 'depth' key or similar)")
     if isinstance(depth, np.ndarray):
@@ -145,6 +177,7 @@ def main():
     tmpdir.mkdir(parents=True, exist_ok=True)
 
     # Load mesh & create engines (expensive) once
+    print(f"[{args.object}] 🔄 Initializing models...", flush=True)
     try:
         mesh = trimesh.load(args.mesh)
         if mesh.is_empty:
@@ -180,13 +213,17 @@ def main():
             continue
 
         job_id = job.get("job_id", "unknown")
-        episode_id = str(job.get("episode_id"))
+        episode_id = int(job.get("episode_id"))
         state_id = int(job.get("state_id"))
         obs_path = job.get("obs_path")
         prompt = job.get("prompt") or args.prompt or args.object
         K = _as_K_array(job.get("K"))
         est_iters = int(job.get("est_refine_iter") or args.est_refine_iter or 20)
         track_iters = int(job.get("track_refine_iter") or args.track_refine_iter or 8)
+
+        print(f"[{args.object}] 🔍 Processing job {job_id} (ep={episode_id}, state={state_id})", flush=True)
+        print(f"[{args.object}]    obs_path: {obs_path}", flush=True)
+        print(f"[{args.object}]    prompt: {prompt}", flush=True)
 
         result = {
             "job_id": job_id,
@@ -213,6 +250,7 @@ def main():
             # Make each call independent
             reset_tracking(engines)
 
+            print(f"[{args.object}] 🎯 Running pose estimation...", flush=True)
             out = estimate_pose_from_tensors(
                 mesh=mesh,
                 rgb_t=rgb_t,
@@ -228,10 +266,16 @@ def main():
                 result["success"] = True
                 result["pose_cam_T_obj"] = out.pose_cam_T_obj.detach().cpu().numpy().tolist()
                 result["mask_area"] = int(out.extras.get("mask_area", 0))
+                print(f"[{args.object}] ✅ Pose estimation SUCCESS! mask_area={result['mask_area']}", flush=True)
+                print(f"[{args.object}]    pose_cam_T_obj: {result['pose_cam_T_obj']}", flush=True)
             else:
                 result["error"] = out.extras.get("error", "pose failed")
+                print(f"[{args.object}] ❌ Pose estimation FAILED: {result['error']}", flush=True)
         except Exception as e:
             result["error"] = f"pose exception: {e}"
+            print(f"[{args.object}] ❌ Pose estimation EXCEPTION: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
         # Optional visualization
         try:
@@ -251,12 +295,14 @@ def main():
         # Emit result JSON
         try:
             write_json_atomic(result, outbox, f"{job_id}.json")
+            print(f"[{args.object}] 📤 Result written to outbox: {job_id}.json (success={result['success']})", flush=True)
         except Exception as e:
             print(f"[{args.object}] ⚠️ failed to write result for {job_id}: {e}", flush=True)
 
         # Remove the claimed job file
         try:
             job_path.unlink()
+            print(f"[{args.object}] 🗑️  Job file removed", flush=True)
         except Exception:
             pass
 
