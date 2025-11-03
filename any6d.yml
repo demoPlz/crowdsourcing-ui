@@ -1,0 +1,18 @@
+name: any6d
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  # build utilities / headers that help native extensions
+  - cmake
+  - ninja
+  - pkg-config
+  - eigen=3.4.0        # they require Eigen 3.4.x
+
+  - pip:
+      # ---- PyTorch 2.4.x with CUDA 12.1 (matches their guide) ----
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.4.1
+      - torchvision==0.19.1
+      - torchaudio==2.4.1

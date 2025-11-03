@@ -11,3 +11,6 @@
 [submodule "external/pytorch3d"]
 	path = external/pytorch3d
 	url = https://github.com/facebookresearch/pytorch3d.git
+[submodule "external/lerobot_trossen"]
+	path = external/lerobot_trossen
+	url = git@github.com:demoPlz/lerobot_trossen.git
