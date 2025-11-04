@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 pose_worker.py
-Runs inside the Any6D310 conda environment.
+Runs inside the any6d conda environment.
 - Watches <jobs_dir>/inbox for JSON jobs
 - Loads RGB/Depth tensors from 'obs_path'
 - Runs estimate_pose_from_tensors(...) using pose_fn
 - Writes results to <jobs_dir>/outbox as JSON (+ optional visualization PNG)
 
 Usage:
-  conda run -n Any6D310 python pose_worker.py \
+  conda run -n any6d python pose_worker.py \
     --jobs-dir /tmp/crowd_obs_cache/pose_jobs \
     --object Cube_Blue \
     --mesh assets/meshes/cube_blue.obj \
@@ -61,8 +61,8 @@ if os.getenv("POSE_WORKER_DEBUG", "0") == "1":
                 print(f"⚠️  Failed to listen on port {debug_port}: {listen_err}", flush=True)
                 print(f"⚠️  Continuing without debugger...", flush=True)
     except ImportError:
-        print("⚠️  debugpy not installed in Any6D310 environment.", flush=True)
-        print("⚠️  Install with: conda activate Any6D310 && pip install debugpy", flush=True)
+        print("⚠️  debugpy not installed in any6d environment.", flush=True)
+        print("⚠️  Install with: conda activate any6d && pip install debugpy", flush=True)
     except Exception as e:
         print(f"⚠️  Debugpy setup failed: {e}", flush=True)
         import traceback

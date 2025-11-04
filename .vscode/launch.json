@@ -1,6 +1,8 @@
 {
     "version": "0.2.0",
     "configurations": [
+
+
         
         
         {
@@ -127,38 +129,62 @@
             ]
         },
         {
-            "name": "Debug Pose Worker (Any6D310)",
+            "name": "Debug Pose Worker (any6d) - Manual Start",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "justMyCode": false,
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "${workspaceFolder}"
+                }
+            ]
+        },
+        {
+            "name": "Debug Pose Worker (any6d)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/backend/any6d/pose_worker.py",
-            "python": "/home/yilong/miniconda3/envs/Any6D310/bin/python",
+            "python": "/home/yilong/miniconda3/envs/any6d/bin/python",
             "justMyCode": false,
             "console": "integratedTerminal",
             "env": {
-                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/Any6D310/lib:/home/yilong/miniconda3/envs/Any6D310/targets/x86_64-linux/lib:${env:LD_LIBRARY_PATH}",
-                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/Any6D310",
-                "CONDA_DEFAULT_ENV": "Any6D310"
+                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/any6d",
+                "CONDA_DEFAULT_ENV": "any6d",
+                "CUDA_HOME": "/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux",
+                "CUDA_PATH": "/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux",
+                "PATH": "/home/yilong/miniconda3/envs/any6d/nvvm/bin:/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/bin:/home/yilong/miniconda3/envs/any6d/bin:${env:PATH}",
+                "CPATH": "/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/include:${env:CPATH}",
+                "CPLUS_INCLUDE_PATH": "/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/include:${env:CPLUS_INCLUDE_PATH}",
+                "LIBRARY_PATH": "/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/lib:/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/lib64:${env:LIBRARY_PATH}",
+                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/any6d/nvvm/lib64:/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/lib:/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/lib64:/home/yilong/miniconda3/envs/any6d/lib:${env:LD_LIBRARY_PATH}",
+                "TORCH_CUDA_ARCH_LIST": "12.0",
+                "PYTHONDONTWRITEBYTECODE": "1"
             },
             "args": [
                 "--jobs-dir", "/tmp/crowd_obs_cache/pose_jobs",
-                "--object", "Cube_Blue",
-                "--mesh", "${workspaceFolder}/public/assets/cube.obj",
-                "--prompt", "blue cube"
+                "--object", "Tennis",
+                "--mesh", "${workspaceFolder}/public/assets/sphere.obj",
+                "--prompt", "tennis ball"
             ]
         },
 
         {
-            "name": "Debug run_demo_realsense (Any6D310)",
+            "name": "Debug run_demo_realsense (any6d)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/external/any6d/run_demo_realsense.py",
-            "python": "/home/yilong/miniconda3/envs/Any6D310/bin/python",
+            "python": "/home/yilong/miniconda3/envs/any6d/bin/python",
             "justMyCode": false,
             "console": "integratedTerminal",
             "env": {
-                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/Any6D310/lib:/home/yilong/miniconda3/envs/Any6D310/targets/x86_64-linux/lib:${env:LD_LIBRARY_PATH}",
-                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/Any6D310",
-                "CONDA_DEFAULT_ENV": "Any6D310"
+                "LD_LIBRARY_PATH": "/home/yilong/miniconda3/envs/any6d/lib:/home/yilong/miniconda3/envs/any6d/targets/x86_64-linux/lib:${env:LD_LIBRARY_PATH}",
+                "CONDA_PREFIX": "/home/yilong/miniconda3/envs/any6d",
+                "CONDA_DEFAULT_ENV": "any6d"
             },
             "args": [
                 "--mesh_path", "/home/yilong/crowdsourcing-ui/public/assets/cube.obj",

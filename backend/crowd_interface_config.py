@@ -45,7 +45,7 @@ class CrowdInterfaceConfig():
         self.object_mesh_paths: dict[str, str] = {
             "Cube_Blue": str((repo_root / "public/assets/cube.obj").resolve()),
             "Cube_Red": str((repo_root / "public/assets/cube.obj").resolve()),
-            "Tennis":  str((repo_root / "public/assets/sphere_new.obj").resolve())
+            "Tennis":  str((repo_root / "public/assets/sphere.obj").resolve())
         }
 
     @classmethod

@@ -260,7 +260,7 @@ class CrowdInterface():
         self._start_obs_stream_worker()
 
         # ---------------- Pose estimation (cross-env) ----------------
-        # Disk-backed job queue shared with Any6D310 env workers
+        # Disk-backed job queue shared with any6d env workers
         self.pose_jobs_root = (self._obs_cache_root / "pose_jobs").resolve()
         self.pose_inbox = self.pose_jobs_root / "inbox"
         self.pose_outbox = self.pose_jobs_root / "outbox"
@@ -270,7 +270,7 @@ class CrowdInterface():
                 d.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
-        # Spawn one worker per object (Any6D310 env)
+        # Spawn one worker per object (any6d env)
         self._pose_worker_procs: dict[str, subprocess.Popen] = {}
         self._start_pose_workers()
         # Watch for results from workers
@@ -549,9 +549,9 @@ class CrowdInterface():
             "POSE_WORKER_SCRIPT",
             str((Path(__file__).resolve().parent / "any6d" / "pose_worker.py").resolve())
         )
-        pose_env = os.getenv("POSE_ENV", "Any6D310")
+        pose_env = os.getenv("POSE_ENV", "any6d")
         
-        # Build CUDA library paths for Any6D310
+        # Build CUDA library paths for any6d
         conda_prefix = Path.home() / "miniconda3" / "envs" / pose_env
         cuda_lib_path = f"{conda_prefix}/lib:{conda_prefix}/targets/x86_64-linux/lib"
         worker_env = os.environ.copy()
@@ -662,21 +662,23 @@ class CrowdInterface():
     def _intrinsics_for_pose(self) -> list[list[float]]:
         """
         Choose a 3x3 K to send to pose workers.
-        Prefers the 'front' camera Knew, else any available camera, else a safe default.
+        Priority:
+        1. RealSense D455 intrinsics (if available) - matches run_demo_realsense.py
+        2. Front camera Knew
+        3. Any available camera Knew
+        4. Fallback default
         Returns a Python list-of-lists (JSON-serializable).
         """
-        # Prefer front K
-        m = self._camera_models.get("front")
-        if m and "Knew" in m:
-            return m["Knew"]
-        # Any camera model
-        for m in self._camera_models.values():
-            if "Knew" in m:
-                return m["Knew"]
-        # Fallback default
-        return [[600.0, 0.0, 320.0],
-                [0.0, 600.0, 240.0],
-                [0.0,   0.0,   1.0]]
+
+        realsense_calib = Path(__file__).resolve().parent.parent / "calib" / "intrinsics_realsense_d455.npz"
+        if realsense_calib.exists():
+            data = np.load(realsense_calib, allow_pickle=True)
+            K = np.asarray(data["Knew"], dtype=np.float64)  # Use Knew (same as K for RealSense)
+            return K.tolist()
+        else:
+            print("⚠️  RealSense D455 intrinsics not found")
+            exit(1)
+        
 
     def _enqueue_pose_jobs_for_state(
         self,
