@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 
 # Environment variables
 .env
@@ -21,8 +20,10 @@ build/
 .DS_Store
 Thumbs.db
 
-calib/cam*
-calib/*.png
+# Calibration files
+data/calib/cam*
+data/calib/*.png
+data/calib/*
 
 # Python cache files
 __pycache__/

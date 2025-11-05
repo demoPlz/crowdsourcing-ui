@@ -425,9 +425,9 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         if "T_three" not in extr:
             return jsonify({"error": "extrinsics must include T_three (4x4)"}), 400
 
-        # Resolve ../calib path relative to this file
+        # Resolve ../data/calib path relative to this file
         base_dir = Path(__file__).resolve().parent
-        calib_dir = (base_dir / ".." / "calib").resolve()
+        calib_dir = (base_dir / ".." / "data" / "calib").resolve()
         calib_dir.mkdir(parents=True, exist_ok=True)
         out_path = calib_dir / f"manual_calibration_{cam}.json"
 

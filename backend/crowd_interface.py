@@ -41,28 +41,28 @@ JOINT_NAMES = [
 # Use T_three from extrinsics (camera world for Three.js) and map1/map2 from intrinsics to undistort.
 REAL_CALIB_PATHS = {
     "front": {
-        "intr": "calib/intrinsics_front_1_640x480.npz",
-        "extr": "calib/extrinsics_front_1.npz",
+        "intr": "data/calib/intrinsics_front_1_640x480.npz",
+        "extr": "data/calib/extrinsics_front_1.npz",
     },
     "left": {
-        "intr": "calib/intrinsics_left_2_640x480.npz",
-        "extr": "calib/extrinsics_left_2.npz",
+        "intr": "data/calib/intrinsics_left_2_640x480.npz",
+        "extr": "data/calib/extrinsics_left_2.npz",
     },
     "right": {
-        "intr": "calib/intrinsics_right_3_640x480.npz",
-        "extr": "calib/extrinsics_right_3.npz",
+        "intr": "data/calib/intrinsics_right_3_640x480.npz",
+        "extr": "data/calib/extrinsics_right_3.npz",
     },
     "perspective": {
-        "intr": "calib/intrinsics_perspective_4_640x480.npz",
-        "extr": "calib/extrinsics_perspective_4.npz",
+        "intr": "data/calib/intrinsics_perspective_4_640x480.npz",
+        "extr": "data/calib/extrinsics_perspective_4.npz",
     },
 }
 
 SIM_CALIB_PATHS = {
-    "front": "calib/calibration_front_sim.json",
-    "left": "calib/calibration_left_sim.json",
-    "right": "calib/calibration_right_sim.json",
-    "top": "calib/calibration_top_sim.json",
+    "front": "data/calib/calibration_front_sim.json",
+    "left": "data/calib/calibration_left_sim.json",
+    "right": "data/calib/calibration_right_sim.json",
+    "top": "data/calib/calibration_top_sim.json",
 }
 
 _REALSENSE_BLOCKLIST = (
@@ -278,7 +278,7 @@ class CrowdInterface():
 
         # --- Important-state cam_main image sequence sink ---
         self.save_maincam_sequence = bool(save_maincam_sequence)
-        self._prompt_seq_dir = Path(prompt_sequence_dir or "prompts/drawer/snapshots").resolve()
+        self._prompt_seq_dir = Path(prompt_sequence_dir or "data/prompts/drawer/snapshots").resolve()
         self._prompt_seq_index = 1
         # Track which states have been saved to maintain chronological ordering
         self._saved_sequence_states: set[tuple[str, int]] = set()  # (episode_id, state_id)
@@ -667,7 +667,7 @@ class CrowdInterface():
         Returns a Python list-of-lists (JSON-serializable).
         """
 
-        realsense_calib = Path(__file__).resolve().parent.parent / "calib" / "intrinsics_realsense_d455.npz"
+        realsense_calib = Path(__file__).resolve().parent.parent / "data" / "calib" / "intrinsics_realsense_d455.npz"
         if realsense_calib.exists():
             data = np.load(realsense_calib, allow_pickle=True)
             K = np.asarray(data["Knew"], dtype=np.float64)  # Use Knew (same as K for RealSense)
@@ -1035,7 +1035,7 @@ class CrowdInterface():
     
     def _calib_dir(self) -> Path:
         base_dir = Path(__file__).resolve().parent
-        return (base_dir / ".." / "calib").resolve()
+        return (base_dir / ".." / "data" / "calib").resolve()
 
     def _load_gripper_tip_calibration(self) -> dict:
         """
@@ -1849,7 +1849,7 @@ class CrowdInterface():
 
     def _prompts_root_dir(self) -> Path:
         """Root folder containing prompts/."""
-        return (Path(__file__).resolve().parent / ".." / "prompts").resolve()
+        return (Path(__file__).resolve().parent / ".." / "data" / "prompts").resolve()
 
     def _task_dir(self, task_name: str | None = None) -> Path:
         tn = task_name or self.task_name()
