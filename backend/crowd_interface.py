@@ -21,6 +21,8 @@ from math import cos, sin
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.robot_devices.control_utils import sanity_check_dataset_robot_compatibility, sanity_check_dataset_name
 
+from calibration_manager import CalibrationManager
+
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
     "left":        4,
@@ -226,13 +228,14 @@ class CrowdInterface():
         self._pose_estimation_threads: dict[str, Thread] = {}
         self._pose_estimation_queue: queue.Queue = queue.Queue(maxsize=8)
 
-        # Will be filled by _load_calibrations()
-        self._undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        self._camera_models: dict[str, dict] = {}
-        self._camera_poses = self._load_calibrations()
-        # ---- Gripper tip calibration (left/right {x,y,z}) ----
-        self._calib_lock = Lock()
-        self._gripper_tip_calib = self._load_gripper_tip_calibration()  # {"left":{x,y,z},"right":{x,y,z}}
+        # Calibration manager
+        repo_root = Path(__file__).resolve().parent.parent
+        self.calibration = CalibrationManager(
+            use_sim=self.use_sim,
+            repo_root=repo_root,
+            real_calib_paths=REAL_CALIB_PATHS,
+            sim_calib_paths=SIM_CALIB_PATHS
+        )
 
         # Debounced episode finalization
         self.episode_finalize_grace_s = 2.0
@@ -479,9 +482,9 @@ class CrowdInterface():
         views = self._load_views_from_disk(view_paths)
 
         out["views"] = views
-        out["camera_poses"] = self._camera_poses
-        out["camera_models"] = self._camera_models
-        out["gripper_tip_calib"] = self._gripper_tip_calib
+        out["camera_poses"] = self.calibration.get_camera_poses()
+        out["camera_models"] = self.calibration.get_camera_models()
+        out["gripper_tip_calib"] = self.calibration.get_gripper_tip_calib()
         
         # --- Attach example video URL (direct file URL; byte-range capable) ---
         if self.show_demo_videos:
@@ -663,8 +666,7 @@ class CrowdInterface():
         4. Fallback default
         Returns a Python list-of-lists (JSON-serializable).
         """
-
-        realsense_calib = Path(__file__).resolve().parent.parent / "data" / "calib" / "intrinsics_realsense_d455.npz"
+        realsense_calib = self.calibration.repo_root / "data" / "calib" / "intrinsics_realsense_d455.npz"
         if realsense_calib.exists():
             data = np.load(realsense_calib, allow_pickle=True)
             K = np.asarray(data["Knew"], dtype=np.float64)  # Use Knew (same as K for RealSense)
@@ -831,252 +833,15 @@ class CrowdInterface():
             pass
 
     # =========================
-    # Calibration Management
+    # Calibration Management (delegated to CalibrationManager)
     # =========================
-    # --- Helper Methods ---
-
-    def _make_camera_poses(self) -> dict[str, list]: #Fallback
-        def euler_pose(x: float, y: float, z: float,
-               roll: float, pitch: float, yaw: float) -> list[list[float]]:
-            """
-            Build a 4x4 **world** matrix (row-major list-of-lists) from
-            T = Trans(x,y,z) · Rz(yaw) · Ry(pitch) · Rx(roll)
-            """
-            cr, sr = cos(roll),  sin(roll)
-            cp, sp = cos(pitch), sin(pitch)
-            cy, sy = cos(yaw),   sin(yaw)
-
-            # column-major rotation
-            Rrow = np.array([
-                [ cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
-                [ sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
-                [   -sp,              cp*sr,              cp*cr]
-            ])
-
-            T = np.eye(4)
-            T[:3, :3] = Rrow.T
-            T[:3,  3] = [x, y, z]
-            return T.tolist()
-        
-        return {
-            #           x     y     z     roll   pitch   yaw
-            "front_pose":       euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
-            "left_pose":        euler_pose(0.2, -1.0, 0.15, -np.pi/2, 0.0, 0.0),
-            "right_pose":       euler_pose(0.2,  1.0, 0.15, np.pi/2, 0.0, np.pi),
-            "top_pose":         euler_pose(1.3,  1.0, 1.0, np.pi/4, -np.pi/4, -3*np.pi/4),
-        }
     
-    def _load_calibrations(self) -> dict[str, list]:
-        """
-        Load per-camera extrinsics (→ camera_poses) and intrinsics (→ undistortion  Knew for projection).
-        Falls back to placeholder poses for any camera missing calibrations.
-        
-        In sim mode: loads both real calibrations (for camera operations) and sim calibrations (for frontend).
-        In real mode: loads real calibrations only.
-        """
-        poses = self._make_camera_poses()  # start with fallbacks
-        self._undistort_maps = {}
-        self._camera_models = {}
-
-        # Base directory for calibration files
-        base_dir = Path(__file__).resolve().parent
-        manual_dir = (base_dir / ".." / "calib").resolve()
-
-        if self.use_sim:
-            # In sim mode: load sim calibrations directly for frontend
-            # (real calibrations are loaded for camera operations but not used for frontend)
-            return self._load_sim_calibrations_for_frontend(poses, manual_dir)
-        else:
-            # In real mode: load real calibrations + manual overrides for frontend
-            return self._load_real_calibrations_for_frontend(poses, manual_dir)
-
-    def _load_sim_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
-        """Load sim calibrations directly from SIM_CALIB_PATHS for frontend use."""
-        for name in ["front", "left", "right", "top"]:
-            if name not in SIM_CALIB_PATHS:
-                continue
-                
-            sim_file = SIM_CALIB_PATHS[name]
-            if not os.path.exists(sim_file):
-                print(f"⚠️ Sim calibration file not found: {sim_file}")
-                continue
-                
-            try:
-                with open(sim_file, "r", encoding="utf-8") as f:
-                    scal = json.load(f)
-                
-                intr_s = (scal or {}).get("intrinsics") or {}
-                extr_s = (scal or {}).get("extrinsics") or {}
-                
-                # Load extrinsics
-                if "T_three" in extr_s and isinstance(extr_s["T_three"], list):
-                    poses[f"{name}_pose"] = extr_s["T_three"]
-                    print(f"✓ loaded SIM extrinsics for '{name}' from {sim_file}")
-                
-                # Load intrinsics
-                if all(k in intr_s for k in ("width", "height", "Knew")):
-                    self._camera_models[name] = {
-                        "model": "pinhole",
-                        "rectified": False,  # Sim calibrations don't have undistort maps
-                        "width": int(intr_s["width"]),
-                        "height": int(intr_s["height"]),
-                        "Knew": intr_s["Knew"],
-                    }
-                    
-                    # Add orthographic projection parameters if present
-                    if "projection_type" in scal:
-                        self._camera_models[name]["projection_type"] = scal["projection_type"]
-                    if "orthographic_width" in intr_s:
-                        self._camera_models[name]["orthographic_width"] = intr_s["orthographic_width"]
-                    if "orthographic_height" in intr_s:
-                        self._camera_models[name]["orthographic_height"] = intr_s["orthographic_height"]
-                    if "scale_x" in intr_s:
-                        self._camera_models[name]["scale_x"] = intr_s["scale_x"]
-                    if "scale_y" in intr_s:
-                        self._camera_models[name]["scale_y"] = intr_s["scale_y"]
-                    
-                    print(f"✓ loaded SIM intrinsics for '{name}' from {sim_file} (projection: {scal.get('projection_type', 'perspective')})")
-                    
-            except Exception as e:
-                print(f"⚠️ Failed to load sim calibration for '{name}' from {sim_file}: {e}")
-        
-        return poses
-
-    def _load_real_calibrations_for_frontend(self, poses: dict, manual_dir: Path) -> dict[str, list]:
-        """Load real calibrations + manual overrides for frontend use."""
-        for name, paths in REAL_CALIB_PATHS.items():
-            if not paths:
-                continue
-
-            # ---- Load extrinsics → camera pose ----
-            extr = paths.get("extr")
-            if extr and os.path.exists(extr):
-                try:
-                    data = np.load(extr, allow_pickle=True)
-                    if "T_three" in data:
-                        M = np.asarray(data["T_three"], dtype=np.float64)
-                    elif "T_base_cam" in data:
-                        # Convert OpenCV cam (Z forward) to Three.js cam (looks -Z)
-                        T = np.asarray(data["T_base_cam"], dtype=np.float64)
-                        Rflip = np.diag([1.0, -1.0, -1.0])
-                        M = np.eye(4, dtype=np.float64)
-                        M[:3, :3] = T[:3, :3] @ Rflip
-                        M[:3,  3] = T[:3,  3]
-                    else:
-                        M = None
-                    if M is not None:
-                        poses[f"{name}_pose"] = M.tolist()
-                        print(f"✓ loaded extrinsics for '{name}' from {extr}")
-                except Exception as e:
-                    print(f"⚠️  failed to load extrinsics for '{name}' ({extr}): {e}")
-
-            # ---- Load intrinsics → undistortion maps + Knew for projection ----
-            intr = paths.get("intr")
-            if intr and os.path.exists(intr):
-                try:
-                    idata = np.load(intr, allow_pickle=True)
-                    W = int(idata["width"])
-                    H = int(idata["height"])
-                    # Prefer rectified Knew (matches undistorted frames)
-                    Knew = np.asarray(idata["Knew"], dtype=np.float64)
-                    # Optional: precomputed undistort maps
-                    if "map1" in idata.files and "map2" in idata.files:
-                        self._undistort_maps[name] = (idata["map1"], idata["map2"])
-                        rectified = True
-                        print(f"✓ loaded undistort maps for '{name}' from {intr}")
-                    else:
-                        rectified = False
-                    # Expose per-camera intrinsics to the frontend
-                    self._camera_models[name] = {
-                        "model": "pinhole",
-                        "rectified": rectified,
-                        "width": W,
-                        "height": H,
-                        "Knew": Knew.tolist(),
-                        # (optionally include original K/D if you want)
-                        # "K": np.asarray(idata["K"], dtype=np.float64).tolist(),
-                        # "D": np.asarray(idata["D"], dtype=np.float64).ravel().tolist(),
-                    }
-                    print(f"✓ loaded intrinsics (Knew {W}x{H}) for '{name}' from {intr}")
-                except Exception as e:
-                    print(f"⚠️  failed to load intrinsics for '{name}' ({intr}): {e}")
-
-            # ---- Manual override (JSON) if present ----
-            # File: ../calib/manual_calibration_{name}.json
-            try:
-                manual_path = manual_dir / f"manual_calibration_{name}.json"
-                if manual_path.exists():
-                    with open(manual_path, "r", encoding="utf-8") as f:
-                        mcal = json.load(f)
-                    intr_m = (mcal or {}).get("intrinsics") or {}
-                    extr_m = (mcal or {}).get("extrinsics") or {}
-                    # Validate presence of fields we expect
-                    if "T_three" in extr_m and isinstance(extr_m["T_three"], list):
-                        poses[f"{name}_pose"] = extr_m["T_three"]
-                        print(f"✓ applied MANUAL extrinsics for '{name}' from {manual_path}")
-                    if all(k in intr_m for k in ("width", "height", "Knew")):
-                        # Preserve existing 'rectified' flag if any, otherwise False
-                        prev_rect = self._camera_models.get(name, {}).get("rectified", False)
-                        self._camera_models[name] = {
-                            "model": "pinhole",
-                            "rectified": prev_rect,
-                            "width": int(intr_m["width"]),
-                            "height": int(intr_m["height"]),
-                            "Knew": intr_m["Knew"],
-                        }
-                        print(f"✓ applied MANUAL intrinsics for '{name}' from {manual_path}")
-            except Exception as e:
-                print(f"⚠️  failed to apply manual calibration for '{name}': {e}")
-
-        return poses
-    
-    def _calib_dir(self) -> Path:
-        base_dir = Path(__file__).resolve().parent
-        return (base_dir / ".." / "data" / "calib").resolve()
-
-    def _load_gripper_tip_calibration(self) -> dict:
-        """
-        Load manual gripper tip calibration from ../calib/manual_gripper_tips.json
-        Returns {"left":{"x":..,"y":..,"z":..}, "right":{...}}.
-        """
-        p = self._calib_dir() / "manual_gripper_tips.json"
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # Minimal validation and float casting
-        def _clean(side):
-            s = data[side]
-            return {
-                "x": float(s["x"]),
-                "y": float(s["y"]),
-                "z": float(s["z"]),
-            }
-        return {"left": _clean("left"), "right": _clean("right")}
-
     def save_gripper_tip_calibration(self, calib: dict) -> str:
         """
-        Save {"left":{"x","y","z"},"right":{"x","y","z"}} to ../calib/manual_gripper_tips.json
-        Update in-memory self._gripper_tip_calib so the next /api/get-state reflects it.
-        Returns the written path as a string.
+        Save gripper tip calibration and return the written path.
+        Delegates to CalibrationManager.
         """
-        # sanitize + cast
-        def _want(side):
-            s = (calib.get(side) or {})
-            return {"x": float(s["x"]), "y": float(s["y"]), "z": float(s["z"])}
-        try:
-            cleaned = {"left": _want("left"), "right": _want("right")}
-        except Exception as e:
-            raise ValueError(f"invalid gripper_tip_calib payload: {e}")
-        p = self._calib_dir()
-        p.mkdir(parents=True, exist_ok=True)
-        path = p / "manual_gripper_tips.json"
-        with self._calib_lock:
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(cleaned, f, indent=2)
-                self._gripper_tip_calib = cleaned  # live update
-            except Exception as e:
-                raise IOError(f"failed to write {path}: {e}")
-        return str(path)
+        return self.calibration.save_gripper_tip_calibration(calib)
 
     # =========================
     # Database Management (persisting obs to disk and retrieving them)
