@@ -5,8 +5,9 @@ export default {
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        monitor: resolve(__dirname, 'monitor.html')
+        main: resolve(__dirname, 'src/pages/sim.html'),
+        monitor: resolve(__dirname, 'src/pages/monitor.html'),
+        real: resolve(__dirname, 'src/pages/real.html')
       }
     }
   },

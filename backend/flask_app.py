@@ -42,7 +42,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
         else:
             payload["prompt"] = f"Task: {crowd_interface.task_text or 'crowdsourced_task'}. What should the arm do next?"
 
-        # NEW: Always tell the frontend what to do with demo videos
+        # Tell the frontend what to do with demo videos
         payload["demo_video"] = crowd_interface.get_demo_video_config()
 
         response = jsonify(payload)

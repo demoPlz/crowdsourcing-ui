@@ -28,3 +28,4 @@ dependencies:
 
       # Lerobot
       - pyspacemouse
+      - pyrealsense2

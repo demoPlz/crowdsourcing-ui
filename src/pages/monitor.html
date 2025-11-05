@@ -1,0 +1,1493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Data Collection Monitor</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background:#f8fafc; height:100vh; overflow:hidden;
+        }
+        .container { display:flex; flex-direction:column; height:100vh; gap:20px; padding:20px; }
+        .top-section { display:flex; gap:20px; }
+        .camera-section { flex:3; background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:20px; }
+        .status-control-column { flex:1; display:flex; flex-direction:column; gap:20px; }
+        .status-section, .control-section {
+            background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:15px; display:flex; flex-direction:column; gap:15px;
+        }
+        .main-content { display:flex; flex:1; gap:20px; min-height:0; }
+        .left-panel, .right-panel {
+            background:white; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.08); padding:20px; display:flex; flex-direction:column;
+        }
+        .left-panel { flex:1; }
+        .panel-header { border-bottom:2px solid #e2e8f0; padding-bottom:16px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .panel-header h2 { color:#1e293b; font-size:24px; font-weight:600; }
+        .camera-views {
+            width:100%; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(2,1fr);
+            gap:12px; height:400px;
+        }
+        .camera-view {
+            background:#f1f5f9; border-radius:4px; border:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; overflow:hidden; transition:all .2s ease;
+            position:relative;
+        }
+        .camera-view:hover { border-color:#3b82f6; box-shadow:0 2px 8px rgba(59,130,246,.15); }
+        .camera-image { width:100%; height:100%; object-fit:contain; border-radius:3px; }
+        .camera-layer { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; border-radius:3px; display:none; }
+        .camera-layer.is-visible { display:block; }
+        .camera-placeholder { color:#64748b; font-size:10px; text-align:center; padding:8px; }
+        .status-card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; }
+        .status-card h3 { color:#1e293b; font-size:16px; font-weight:600; margin-bottom:12px; }
+        .status-item { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #e2e8f0; }
+        .status-item:last-child { border-bottom:none; }
+        .status-label { color:#64748b; font-size:14px; }
+        .status-value { color:#1e293b; font-weight:500; font-size:14px; }
+        .status-indicator { width:12px; height:12px; border-radius:50%; display:inline-block; margin-right:8px; }
+        .status-indicator.connected { background:#10b981; box-shadow:0 0 8px rgba(16,185,129,.4); }
+        .status-indicator.disconnected { background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,.4); }
+        .status-indicator.warning { background:#f59e0b; box-shadow:0 0 8px rgba(245,158,11,.4); }
+        .progress-bar { width:100%; height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden; }
+        .progress-fill { height:100%; background:linear-gradient(90deg,#3b82f6,#1d4ed8); border-radius:4px; transition:width .3s ease; }
+        .robot-state { padding:12px; border-radius:6px; font-weight:500; text-align:center; margin:8px 0; }
+        .robot-state.stationary { background:#d1fae5; color:#065f46; border:1px solid #6ee7b7; }
+        .robot-state.resetting { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; animation:pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.7;} }
+        .error-message { background:#fef2f2; border:1px solid #fecaca; color:#dc2626; padding:12px; border-radius:6px; font-size:14px; text-align:center; }
+        .control-buttons { display:flex; flex-direction:column; gap:12px; }
+        .control-button {
+            display:flex; align-items:center; justify-content:center; gap:8px; padding:12px 16px; border:none; border-radius:10px; font-size:14px; font-weight:600;
+            cursor:pointer; transition:all .2s ease; box-shadow:0 2px 8px rgba(0,0,0,.1);
+        }
+        .control-button:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,.15); }
+        .control-button:active { transform:translateY(0); box-shadow:0 2px 8px rgba(0,0,0,.1); }
+        .control-button:disabled { opacity:.6; cursor:not-allowed; transform:none; }
+        .control-button.loading { opacity:.7; cursor:wait; }
+        .fast-forward-btn { background:linear-gradient(135deg,#3b82f6,#1d4ed8); color:white; }
+        .fast-forward-btn:hover { background:linear-gradient(135deg,#2563eb,#1e40af); }
+        .rerecord-btn { background:linear-gradient(135deg,#f59e0b,#d97706); color:white; }
+        .rerecord-btn:hover { background:linear-gradient(135deg,#e3a008,#c2701a); }
+        .stop-btn { background:linear-gradient(135deg,#ef4444,#dc2626); color:white; }
+        .stop-btn:hover { background:linear-gradient(135deg,#dc2626,#b91c1c); }
+        .control-icon { font-size:20px; }
+
+        /* Episode charts */
+        .episode-charts-container { max-height:calc(100vh - 200px); overflow-y:auto; padding-right:8px; }
+        .episode-chart { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; margin-bottom:16px; transition:all .2s ease; }
+        .episode-chart:hover { border-color:#3b82f6; box-shadow:0 2px 8px rgba(59,130,246,.15); }
+        .episode-chart.current { border-color:#10b981; background:#f0fdf4; box-shadow:0 2px 8px rgba(16,185,129,.15); }
+        .episode-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+        .episode-title { font-weight:600; font-size:14px; color:#1e293b; }
+        .episode-stats { font-size:12px; color:#64748b; }
+        .chart-container { position:relative; height:80px; background:white; border-radius:4px; border:1px solid #e2e8f0; overflow:hidden; }
+        .chart-y-axis { position:absolute; left:0; top:10px; bottom:16px; width:32px; display:flex; flex-direction:column; justify-content:space-between; padding:0 4px; background:rgba(248,250,252,.9); border-right:1px solid #e2e8f0; }
+        .y-axis-label { font-size:10px; color:#64748b; text-align:center; }
+        .chart-bars { position:absolute; top:10px; left:32px; right:8px; height:calc(100% - 26px); display:flex; align-items:end; padding:0 8px 16px 8px; gap:1px; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; }
+        .chart-bars::-webkit-scrollbar { height:4px; }
+        .chart-bars::-webkit-scrollbar-track { background:#f1f5f9; border-radius:2px; }
+        .chart-bars::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:2px; }
+        .chart-bars::-webkit-scrollbar-thumb:hover { background:#94a3b8; }
+        .state-bar-container { flex:none; width:3px; height:100%; display:flex; flex-direction:column; justify-content:end; position:relative; min-width:2px; max-width:20px; }
+        .state-bar-container.clickable { cursor:pointer; }
+        .state-bar { background:linear-gradient(180deg,#e2e8f0,#cbd5e1); border-radius:2px 2px 0 0; transition:height .3s ease, box-shadow .15s ease, transform .1s ease; position:relative; min-height:2px; width:100%; }
+        .state-bar.empty { background:#e2e8f0; height:100% !important; }
+        .state-bar.critical-complete { background:linear-gradient(180deg,#dc2626,#991b1b) !important; }
+        .state-bar.critical-incomplete { background:linear-gradient(180deg,#f87171,#dc2626) !important; }
+        .state-bar.critical-awaiting-vlm { background:linear-gradient(180deg,#f9a8d4,#f472b6) !important; box-shadow:inset 0 0 0 1px rgba(219,39,119,.25); }
+        .state-bar.regular-complete { background:linear-gradient(180deg,#2563eb,#1d4ed8) !important; }
+        .state-bar.regular-incomplete { background:linear-gradient(180deg,#60a5fa,#2563eb) !important; }
+        .state-bar-label { position:absolute; bottom:-16px; left:50%; transform:translateX(-50%); font-size:10px; color:#64748b; white-space:nowrap; }
+        .chart-x-axis { position:absolute; bottom:0; left:32px; right:8px; height:16px; display:flex; align-items:center; padding:0 8px; background:rgba(248,250,252,.9); border-top:1px solid #e2e8f0; font-size:10px; color:#64748b; }
+
+        /* === VLM Details Modal === */
+        .modal-overlay {
+            position:fixed; inset:0; background:rgba(2,6,23,0.55); display:none; align-items:center; justify-content:center; z-index:9999;
+        }
+        .modal-overlay.show { display:flex; }
+        .modal-card {
+            width:min(1100px, 95vw);
+            height:min(85vh, 860px);
+            background:white;
+            border-radius:14px;
+            box-shadow:0 30px 80px rgba(2,6,23,0.35);
+            display:grid;
+            grid-template-columns: 60% 40%;
+            grid-template-rows: auto 1fr auto;
+            overflow:hidden;
+        }
+        .modal-header {
+            grid-column:1 / -1;
+            display:flex; align-items:center; justify-content:space-between;
+            padding:14px 16px; border-bottom:1px solid #e2e8f0; background:#f8fafc;
+        }
+        .modal-title { font-size:16px; font-weight:600; color:#0f172a; }
+        .modal-close-btn { background:transparent; border:none; font-size:20px; cursor:pointer; color:#64748b; }
+        .modal-main { display:contents; }
+        .modal-left { padding:16px; border-right:1px solid #e2e8f0; display:flex; align-items:center; justify-content:center; background:#0b1220; }
+        .modal-maincam { max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
+        .modal-right { padding:16px; display:flex; flex-direction:column; gap:12px; }
+        .field-label { font-size:12px; color:#475569; font-weight:600; }
+        .select-wrap { display:flex; gap:8px; align-items:center; }
+        .select-el { width:100%; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; background:#fff; font-size:14px; color:#0f172a; }
+        .prompt-box { flex:1; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:12px; overflow:auto; white-space:pre-wrap; font-size:14px; color:#0f172a; }
+        .kv-line { font-size:12px; color:#334155; }
+        .modal-footer { grid-column:1 / -1; display:flex; justify-content:flex-end; gap:10px; padding:12px 16px; border-top:1px solid #e2e8f0; background:#f8fafc; }
+        .btn { padding:10px 14px; border:none; border-radius:10px; font-weight:600; cursor:pointer; transition:transform .1s ease, box-shadow .2s ease; }
+        .btn:active { transform:translateY(0.5px); }
+        .btn-primary { background:#2563eb; color:white; }
+        .btn-primary:hover { box-shadow:0 6px 18px rgba(37,99,235,.25); }
+        .btn-secondary { background:#e2e8f0; color:#0f172a; }
+        .btn-danger { background:#dc2626; color:white; }
+        .muted { color:#64748b; }
+
+        /* Toasts */
+        .toast {
+            position:fixed; bottom:18px; right:18px; background:#0f172a; color:white; padding:10px 12px; border-radius:10px; box-shadow:0 8px 24px rgba(2,6,23,.25);
+            font-size:13px; z-index:10000; opacity:0; transform:translateY(8px); transition:opacity .2s ease, transform .2s ease;
+        }
+        .toast.show { opacity:1; transform:translateY(0); }
+
+        /* === NEW: Segmented toggle for Critical-only === */
+        .segmented {
+            display:inline-flex; border:1px solid #cbd5e1; border-radius:12px; overflow:hidden; background:#f8fafc;
+        }
+        .segmented button {
+            padding:8px 12px; font-weight:600; font-size:13px; border:none; background:transparent; color:#334155; cursor:pointer;
+            transition:background .15s ease, color .15s ease;
+        }
+        .segmented button + button { border-left:1px solid #e2e8f0; }
+        .segmented button.active { background:#2563eb; color:white; }
+
+        /* === NEW: Critical-only chart adjustments === */
+        .chart-bars.critical-only .state-bar-container.is-regular { display:none; }
+        .chart-bars.critical-only .state-bar-container.is-critical {
+            width:12px; min-width:12px; max-width:28px;
+        }
+        .chart-bars.critical-only .state-bar-container.clickable .state-bar {
+            box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
+        }
+        .state-bar-container.clickable .state-bar {
+            box-shadow:0 0 0 1px rgba(37,99,235,.25) inset;
+        }
+        .state-bar-container.clickable:hover .state-bar {
+            transform:translateY(-1px);
+        }
+        /* Clicked marker */
+        .state-bar-container.clicked .state-bar {
+            box-shadow:0 0 0 2px rgba(16,185,129,.9) inset, 0 0 8px rgba(16,185,129,.3) !important;
+        }
+
+        /* === NEW: Hover preview popover === */
+        .preview-popover {
+            position:fixed; z-index:10000; pointer-events:none; background:#0b1220; border:1px solid #334155; border-radius:10px; box-shadow:0 16px 40px rgba(2,6,23,.35);
+            padding:6px; display:flex; align-items:center; justify-content:center; min-width:160px; min-height:90px;
+        }
+        .preview-popover img { max-width:280px; max-height:180px; display:block; border-radius:6px; }
+        .preview-popover .loading { font-size:12px; color:#cbd5e1; padding:18px 12px; }
+        .preview-popover .badge {
+            display:none; /* Hide text badge - only show obs view */
+        }
+        /* Sticky header improvement for the toolbar */
+        .states-header { position:sticky; top:0; background:white; z-index:5; }
+
+        /* === Manual entry UI === */
+        .input, .textarea {
+            width:100%;
+            padding:10px 12px;
+            border:1px solid #cbd5e1;
+            border-radius:10px;
+            font-size:14px;
+            color:#0f172a;
+            background:#fff;
+        }
+        .textarea { min-height:110px; resize:vertical; }
+        .segmented.small button { font-size:12px; padding:6px 10px; }
+
+        /* Optional: chip if you later show a "Locked (manual)" pill */
+        .lock-chip {
+            display:inline-flex; align-items:center; gap:6px;
+            background:#ecfccb; color:#3f6212; border:1px solid #bef264;
+            border-radius:999px; padding:4px 8px; font-size:12px; font-weight:600;
+        }
+
+        /* Keep the bar clickable even if awaiting VLM */
+        .state-bar-container.is-critical .state-bar.critical-awaiting-vlm {
+            cursor:pointer;
+            box-shadow:0 0 0 2px rgba(37,99,235,.35) inset;
+        }
+
+        /* When modal is open, stop keyboard toggle from firing */
+        body.modal-open { overflow: hidden; }
+
+        /* === Modal Navigation Bar === */
+        .modal-nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex: 1; /* Take up remaining space in header */
+        }
+        .modal-nav-squares {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+        .modal-nav-square {
+            width: 12px;
+            height: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 2px;
+            background: #e2e8f0;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+        }
+        .modal-nav-square:hover {
+            background: #cbd5e1;
+            border-color: #94a3b8;
+        }
+        .modal-nav-square.current {
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.8);
+            border-color: #1d4ed8;
+        }
+        .modal-nav-square.visited {
+            background: #10b981;
+            border-color: #059669;
+        }
+        .modal-nav-square.unlabeled {
+            background: #ef4444 !important;
+            border-color: #dc2626 !important;
+        }
+        .modal-nav-square.checking-label-status {
+            background: #f59e0b;
+            border-color: #d97706;
+            animation: pulse 1s infinite;
+        }
+        .modal-nav-info {
+            font-size: 12px;
+            color: #64748b;
+            margin-left: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Top Section -->
+        <div class="top-section">
+            <div class="camera-section">
+                <div class="camera-views">
+                    <div class="camera-view" id="camera-front"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-left"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-right"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-perspective"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-obs_main"><div class="camera-placeholder">No image</div></div>
+                    <div class="camera-view" id="camera-obs_wrist"><div class="camera-placeholder">No image</div></div>
+                </div>
+            </div>
+            <div class="status-control-column">
+                <div class="status-section">
+                    <div class="status-card">
+                        <div class="status-item">
+                            <span class="status-label">Backend Server</span>
+                            <span class="status-value" id="server-status">
+                                <span class="status-indicator disconnected"></span>
+                                Checking...
+                            </span>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="robot-state stationary" id="robot-state">🛑 Robot Status Unknown</div>
+                        <div class="status-item"><span class="status-label">Current State ID</span><span class="status-value" id="current-state-id">--</span></div>
+                        <div class="status-item"><span class="status-label">State Type</span><span class="status-value" id="state-type">--</span></div>
+                        <div class="status-item"><span class="status-label">Responses</span><span class="status-value" id="state-responses">--</span></div>
+                        <div class="status-item"><span class="status-label">Pending States</span><span class="status-value" id="pending-states-count">--</span></div>
+                    </div>
+                </div>
+                <div class="control-section">
+                    <div class="control-buttons">
+                        <button class="control-button fast-forward-btn" id="fast-forward-btn"><span class="control-icon">⏩</span>Next Episode</button>
+                        <button class="control-button rerecord-btn" id="rerecord-btn"><span class="control-icon">🔄</span>Re-record Episode</button>
+                        <button class="control-button stop-btn" id="stop-btn"><span class="control-icon">⏹️</span>Stop Recording</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="left-panel" style="flex:1;">
+                <!-- NEW: header with segmented toggle -->
+                <div class="panel-header states-header">
+                    <h2>Pending States</h2>
+                    <div class="segmented" role="tablist" aria-label="State visibility mode">
+                        <button id="toggle-all" role="tab" aria-selected="false">All</button>
+                        <button id="toggle-critical" class="active" role="tab" aria-selected="true" title="Keyboard: press I">Critical only</button>
+                    </div>
+                </div>
+                <div class="episode-charts-container" id="episode-charts-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- === VLM DETAILS MODAL === -->
+    <div class="modal-overlay" id="vlm-modal">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="vlm-modal-title">
+            <div class="modal-header">
+                <!-- Navigation bar showing important states - replaces title -->
+                <div class="modal-nav-bar" id="modal-nav-bar">
+                    <div class="modal-nav-squares" id="modal-nav-squares">
+                        <!-- Squares will be populated dynamically -->
+                    </div>
+                    <div class="modal-nav-info" id="modal-nav-info">
+                        State <span id="nav-current-index">1</span> of <span id="nav-total-count">1</span>
+                    </div>
+                </div>
+                <button class="modal-close-btn" id="vlm-modal-close" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-main">
+                <div class="modal-left">
+                    <img id="modal-maincam" class="modal-maincam" alt="Main camera observation" />
+                </div>
+                <div class="modal-right">
+                    <!-- Source toggle -->
+                    <div>
+                        <div class="field-label">Source of description:</div>
+                        <div class="segmented small" id="vlm-source-toggle">
+                            <button id="src-bank" type="button" class="active">Pick from bank</button>
+                            <button id="src-manual" type="button">Manual entry</button>
+                        </div>
+                    </div>
+
+                    <!-- BANK MODE -->
+                    <div id="bank-fields">
+                        <div class="field-label">Pick description (number = VLM video id):</div>
+                        <div class="select-wrap">
+                            <select id="modal-description-select" class="select-el"></select>
+                        </div>
+                        <div style="margin-top:8px;">
+                            <div class="field-label">Current text prompt:</div>
+                            <div id="modal-prompt-text" class="prompt-box"></div>
+                        </div>
+                    </div>
+
+                    <!-- MANUAL MODE -->
+                    <div id="manual-fields" style="display:none;">
+                        <div class="field-label">Manual text prompt:</div>
+                        <textarea id="modal-manual-text" class="textarea" placeholder="Type the description you want to save..."></textarea>
+
+                        <div class="field-label" style="margin-top:8px;">Manual video id (optional):</div>
+                        <input id="modal-manual-video" class="input" type="number" placeholder="Leave blank if unknown" />
+                        <div class="muted" style="margin-top:6px;">Saving in manual mode locks this state against auto-overwrites.</div>
+                    </div>
+
+                    <!-- Key/values footer -->
+                    <div class="kv-line">
+                        <span class="muted">Episode:</span> <span id="kv-episode">-</span>
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <span class="muted">State:</span> <span id="kv-state">-</span>
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+                        <span class="muted">Video ID:</span> <span id="kv-video">-</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="vlm-modal-cancel">Close</button>
+                <button class="btn btn-primary" id="vlm-modal-save">Save Selection</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="app-toast"></div>
+
+    <script>
+        // === API bootstrap (unchanged except used by new endpoints) ===
+        async function getCurrentCloudflaredUrl() {
+            try {
+                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    return '/.netlify/functions/api';
+                }
+                // For local development, use localhost backend directly
+                console.log('[DEV] Using localhost backend');
+                return 'http://127.0.0.1:9000';
+            } catch (error) {
+                console.error('Error getting backend URL:', error);
+                if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    return '/.netlify/functions/api';
+                }
+                return 'https://reconstruction-parker-put-push.trycloudflare.com';
+            }
+        }
+        let API_BASE_URL = '/.netlify/functions/api';
+        async function initializeApiUrl() {
+            if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+                if (location.port === '5173' || location.port === '5174') {
+                    API_BASE_URL = await getCurrentCloudflaredUrl();
+                    console.log('[DEBUG] Monitor using direct cloudflared URL:', API_BASE_URL);
+                } else {
+                    API_BASE_URL = 'http://127.0.0.1:9000';
+                }
+            } else {
+                API_BASE_URL = '/.netlify/functions/api';
+                console.log('[DEBUG] Monitor using Netlify proxy:', API_BASE_URL);
+            }
+        }
+
+        // === Perf knobs ===
+        const DEBUG = false;
+        const CAMERA_POLL_MS = 250;
+        const INFO_POLL_MS   = 1000;
+
+        let latestStateInFlight = false;
+        let pendingInfoInFlight = false;
+
+        const lastCamUpdate = { front:0, left:0, right:0, perspective:0, obs_main:0, obs_wrist:0 };
+        const cameraBuffers = {};
+        const camSwapInFlight = {};
+
+        let autoRefreshInterval = null;
+
+        // DOM
+        const serverStatus = document.getElementById('server-status');
+        const robotState   = document.getElementById('robot-state');
+        const currentStateId      = document.getElementById('current-state-id');
+        const stateType           = document.getElementById('state-type');
+        const stateResponses      = document.getElementById('state-responses');
+        const pendingStatesCount  = document.getElementById('pending-states-count');
+
+        const fastForwardBtn = document.getElementById('fast-forward-btn');
+        const rerecordBtn    = document.getElementById('rerecord-btn');
+        const stopBtn        = document.getElementById('stop-btn');
+
+        const cameraViews = {
+            front: document.getElementById('camera-front'),
+            left: document.getElementById('camera-left'),
+            right: document.getElementById('camera-right'),
+            perspective: document.getElementById('camera-perspective'),
+            obs_main: document.getElementById('camera-obs_main'),
+            obs_wrist: document.getElementById('camera-obs_wrist'),
+        };
+
+        const episodeChartsContainer = document.getElementById('episode-charts-container');
+        let episodes = [];
+        let REQUIRED_RESPONSES_PER_STATE = 1;
+        let REQUIRED_RESPONSES_PER_CRITICAL_STATE = 10;
+
+        let userIsScrolling = false;
+        let scrollTimeout = null;
+
+        // === Modal State ===
+        const vlmModal = document.getElementById('vlm-modal');
+        const vlmModalClose = document.getElementById('vlm-modal-close');
+        const vlmModalCancel = document.getElementById('vlm-modal-cancel');
+        const vlmModalSave = document.getElementById('vlm-modal-save');
+        const modalMaincam = document.getElementById('modal-maincam');
+        const modalSelect  = document.getElementById('modal-description-select');
+        const modalPrompt  = document.getElementById('modal-prompt-text');
+        const kvEp         = document.getElementById('kv-episode');
+        const kvSt         = document.getElementById('kv-state');
+        const kvVid        = document.getElementById('kv-video');
+        const appToast     = document.getElementById('app-toast');
+
+        // Navigation elements
+        const modalNavSquares = document.getElementById('modal-nav-squares');
+        const navCurrentIndex = document.getElementById('nav-current-index');
+        const navTotalCount = document.getElementById('nav-total-count');
+
+        // Source toggle + fields
+        const srcToggleEl     = document.getElementById('vlm-source-toggle');
+        const srcBankBtn      = document.getElementById('src-bank');
+        const srcManualBtn    = document.getElementById('src-manual');
+        const bankFieldsEl    = document.getElementById('bank-fields');
+        const manualFieldsEl  = document.getElementById('manual-fields');
+        const manualTextEl    = document.getElementById('modal-manual-text');
+        const manualVideoEl   = document.getElementById('modal-manual-video');
+
+        let modalContext = { episodeId:null, stateId:null, selectedVideoId:null, selectedText:null, bank:[] };
+
+        let isManualMode = false;
+        function setSourceMode(manual) {
+            isManualMode = !!manual;
+            srcBankBtn.classList.toggle('active', !manual);
+            srcManualBtn.classList.toggle('active', manual);
+            bankFieldsEl.style.display   = manual ? 'none' : '';
+            manualFieldsEl.style.display = manual ? '' : 'none';
+        }
+        srcBankBtn.addEventListener('click',  () => setSourceMode(false));
+        srcManualBtn.addEventListener('click', () => setSourceMode(true));
+
+        // Keep kv video id in sync in manual mode
+        if (manualVideoEl) {
+            manualVideoEl.addEventListener('input', () => {
+                const v = manualVideoEl.value.trim();
+                kvVid.textContent = v === '' ? '-' : v;
+            });
+        }
+
+        function showToast(msg, timeout=1600) {
+            appToast.textContent = msg;
+            appToast.classList.add('show');
+            setTimeout(() => appToast.classList.remove('show'), timeout);
+        }
+
+        // --- Camera plumbing (unchanged) ---
+        function ensureCameraBuffers(cameraName) {
+            const container = cameraViews[cameraName];
+            if (!container) return null;
+            let state = cameraBuffers[cameraName];
+            if (!state) {
+                const img0 = document.createElement('img');
+                img0.className = 'camera-image camera-layer';
+                const img1 = document.createElement('img');
+                img1.className = 'camera-image camera-layer';
+                container.appendChild(img0);
+                container.appendChild(img1);
+                state = cameraBuffers[cameraName] = { imgs:[img0,img1], active:0, lastSrc:'', initialized:false };
+            }
+            return state;
+        }
+        async function updateCameraView(name, dataUrl) {
+            const container = cameraViews[name];
+            if (!container) return;
+            if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+                const state = cameraBuffers[name];
+                if (state) {
+                    state.imgs[0].classList.remove('is-visible');
+                    state.imgs[1].classList.remove('is-visible');
+                    state.initialized = false; state.lastSrc = '';
+                }
+                if (!container.querySelector('.camera-placeholder')) {
+                    const ph = document.createElement('div'); ph.className='camera-placeholder'; ph.textContent='No image';
+                    container.appendChild(ph);
+                }
+                return;
+            }
+            const now = performance.now();
+            if (now - (lastCamUpdate[name]||0) < CAMERA_POLL_MS*0.9) return;
+            const state = ensureCameraBuffers(name);
+            if (!state) return;
+            if (dataUrl === state.lastSrc) return;
+            if (camSwapInFlight[name]) return;
+            camSwapInFlight[name] = true;
+            const backIndex = 1 - state.active;
+            const backImg = state.imgs[backIndex];
+            try {
+                backImg.decoding = 'async';
+                backImg.src = dataUrl;
+                if (typeof backImg.decode === 'function') {
+                    await backImg.decode().catch(()=>{});
+                } else {
+                    await new Promise(r => backImg.complete ? r() : (backImg.onload = () => r()));
+                }
+                if (!state.initialized) {
+                    const ph = container.querySelector('.camera-placeholder'); if (ph) ph.remove();
+                    state.initialized = true;
+                }
+                state.imgs[state.active].classList.remove('is-visible');
+                backImg.classList.add('is-visible');
+                state.active = backIndex;
+                state.lastSrc = dataUrl;
+                lastCamUpdate[name] = now;
+            } finally { camSwapInFlight[name] = false; }
+        }
+
+        function updateServerStatus(connected) {
+            const indicator = serverStatus.querySelector('.status-indicator');
+            if (connected) {
+                indicator.className = 'status-indicator connected';
+                serverStatus.innerHTML = '<span class="status-indicator connected"></span>Connected';
+            } else {
+                indicator.className = 'status-indicator disconnected';
+                serverStatus.innerHTML = '<span class="status-indicator disconnected"></span>Disconnected';
+            }
+        }
+        function updateRobotState(isResetting, resetCountdown) {
+            if (isResetting) {
+                robotState.className='robot-state resetting';
+                const t = resetCountdown>0 ? ` (${Math.ceil(resetCountdown)}s)` : '';
+                robotState.textContent = `🔄 Resetting Environment${t}`;
+            } else {
+                robotState.className='robot-state stationary';
+                robotState.textContent='✅ Ready for Data Collection';
+            }
+        }
+        function updateControlButtons(isResetting) {
+            if (isResetting) {
+                fastForwardBtn.innerHTML = '<span class="control-icon">▶️</span>Start Episode';
+                fastForwardBtn.title = 'Skip remaining reset time and start episode immediately';
+            } else {
+                fastForwardBtn.innerHTML = '<span class="control-icon">⏩</span>Next Episode';
+                fastForwardBtn.title = 'Finish current episode and move to next';
+            }
+        }
+
+        // --- Episode charts ---
+        function createEpisodeChartElement(episode) {
+            const episodeDiv = document.createElement('div');
+            episodeDiv.className = 'episode-chart'; episodeDiv.id = `episode-${episode.id}`;
+            if (episode.isCurrentServing) episodeDiv.classList.add('current');
+            episodeDiv.innerHTML = `
+                <div class="episode-header">
+                    <div class="episode-title">Episode ${episode.id}</div>
+                    <div class="episode-stats" id="episode-${episode.id}-stats">
+                        ${Object.keys(episode.states).length} states, 0 responses
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-y-axis">
+                        <div class="y-axis-label">${REQUIRED_RESPONSES_PER_CRITICAL_STATE}</div>
+                        <div class="y-axis-label">${Math.floor(REQUIRED_RESPONSES_PER_CRITICAL_STATE/2)}</div>
+                        <div class="y-axis-label">0</div>
+                    </div>
+                    <div class="chart-bars" id="episode-${episode.id}-bars"></div>
+                    <div class="chart-x-axis">State IDs</div>
+                </div>
+            `;
+            episodeChartsContainer.appendChild(episodeDiv);
+            const bars = document.getElementById(`episode-${episode.id}-bars`);
+            const stats = document.getElementById(`episode-${episode.id}-stats`);
+            episode.barsContainer = bars;
+            episode.statsElement = stats;
+            episode.barEls = {};
+            episode.responsesTotal = 0;
+            episode.criticalCount = 0;
+            episode.regularCount = 0;
+
+            /* NEW: apply current filter class to new episode containers */
+            if (criticalOnlyMode) {
+                bars.classList.add('critical-only');
+            }
+        }
+
+        // === NEW: clicked/visited state tracking ===
+        const clickedCriticalStates = new Set(JSON.parse(localStorage.getItem('clickedCriticalStates') || '[]'));
+        function stateKey(ep, st) { return `${ep}:${st}`; }
+        function markClickedCritical(ep, st) {
+            const key = stateKey(ep, st);
+            if (!clickedCriticalStates.has(key)) {
+                clickedCriticalStates.add(key);
+                localStorage.setItem('clickedCriticalStates', JSON.stringify([...clickedCriticalStates]));
+            }
+            // Toggle class if element already exists
+            const episode = episodes.find(e => e.id === ep);
+            if (episode && episode.barEls && episode.barEls[st]) {
+                episode.barEls[st].classList.add('clicked');
+                episode.barEls[st].setAttribute('aria-pressed', 'true');
+                // Remove title modification to eliminate hover text tooltip
+            }
+            
+            // Update modal navigation if modal is open
+            if (vlmModal.classList.contains('show')) {
+                updateModalNavigation();
+            }
+        }
+
+        // === NEW: hover preview popover for important bars ===
+        let currentPopover = null;
+        const previewCache = new Map(); // key => dataURL (or null)
+        const previewInFlight = new Map(); // key => Promise
+
+        function showPopover(x, y, tagText, imgUrl=null) {
+            if (!currentPopover) {
+                currentPopover = document.createElement('div');
+                currentPopover.className = 'preview-popover';
+                const badge = document.createElement('div');
+                badge.className = 'badge';
+                currentPopover.appendChild(badge);
+                const inner = document.createElement('div');
+                inner.className = 'loading';
+                inner.textContent = 'Loading preview…';
+                currentPopover.appendChild(inner);
+                document.body.appendChild(currentPopover);
+            }
+            // Don't set badge text - only show obs view
+            const inner = currentPopover.querySelector('.loading') || currentPopover.querySelector('img');
+            if (imgUrl && imgUrl.startsWith('data:image/')) {
+                if (inner && inner.tagName !== 'IMG') inner.remove();
+                let img = currentPopover.querySelector('img');
+                if (!img) {
+                    img = document.createElement('img');
+                    currentPopover.appendChild(img);
+                }
+                img.src = imgUrl;
+            } else {
+                // ensure loading placeholder
+                let loading = currentPopover.querySelector('.loading');
+                if (!loading) {
+                    const existingImg = currentPopover.querySelector('img');
+                    if (existingImg) existingImg.remove();
+                    loading = document.createElement('div');
+                    loading.className = 'loading';
+                    currentPopover.appendChild(loading);
+                }
+                loading.textContent = imgUrl === null ? 'No preview' : 'Loading preview…';
+            }
+            positionPopover(x, y);
+        }
+        function positionPopover(x, y) {
+            if (!currentPopover) return;
+            const pad = 12;
+            const rect = currentPopover.getBoundingClientRect();
+            let left = x + 16;
+            let top  = y + 16;
+            const vw = window.innerWidth, vh = window.innerHeight;
+            if (left + rect.width + pad > vw) left = vw - rect.width - pad;
+            if (top + rect.height + pad > vh) top = vh - rect.height - pad;
+            currentPopover.style.left = `${left}px`;
+            currentPopover.style.top  = `${top}px`;
+        }
+        function hidePopover() {
+            if (currentPopover) {
+                currentPopover.remove();
+                currentPopover = null;
+            }
+        }
+
+        async function getMaincamPreview(ep, st) {
+            const key = stateKey(ep, st);
+            if (previewCache.has(key)) return previewCache.get(key);
+            if (previewInFlight.has(key)) return previewInFlight.get(key);
+            const p = (async () => {
+                try {
+                    const details = await fetchStateDetails(ep, st);
+                    const url = details && details.maincam_data_url ? details.maincam_data_url : null;
+                    previewCache.set(key, url);
+                    return url;
+                } catch {
+                    previewCache.set(key, null);
+                    return null;
+                } finally {
+                    previewInFlight.delete(key);
+                }
+            })();
+            previewInFlight.set(key, p);
+            return p;
+        }
+
+        // Bind click once for eligible bars
+        function bindBarClickIfEligible(barContainer, episodeId, stateId, isCritical, hasVlmBoth) {
+            barContainer.dataset.episodeId = String(episodeId);
+            barContainer.dataset.stateId   = String(stateId);
+            barContainer.classList.toggle('is-critical', !!isCritical);
+            barContainer.classList.toggle('is-regular',   !isCritical);
+
+            // NEW: critical states are always clickable (even if VLM is missing)
+            if (isCritical) {
+                barContainer.classList.add('clickable');
+                if (barContainer.dataset.clickBound !== '1') {
+                    barContainer.setAttribute('tabindex', '0'); // keyboard focus
+                    const openFn = () => { markClickedCritical(episodeId, stateId); openVlmModal(episodeId, stateId); };
+                    barContainer.addEventListener('click', openFn);
+                    barContainer.addEventListener('keydown', (e) => { if (e.key === 'Enter') openFn(); });
+                    barContainer.dataset.clickBound = '1';
+                }
+            } else {
+                barContainer.classList.remove('clickable');
+                barContainer.removeAttribute('tabindex');
+            }
+
+            // Hover preview (unchanged): only for critical bars
+            if (isCritical && barContainer.dataset.hoverBound !== '1') {
+                let hoverMoveHandler = null;
+                let hoverEnterTimeout = null;
+                barContainer.addEventListener('mouseenter', (e) => {
+                    if (!criticalOnlyMode) return;
+                    showPopover(e.clientX, e.clientY, null); // loading
+                    hoverEnterTimeout = setTimeout(async () => {
+                        const url = await getMaincamPreview(episodeId, stateId);
+                        if (currentPopover) showPopover(e.clientX, e.clientY, null, url);
+                    }, 140);
+                    hoverMoveHandler = (ev) => positionPopover(ev.clientX, ev.clientY);
+                    document.addEventListener('mousemove', hoverMoveHandler);
+                });
+                barContainer.addEventListener('mouseleave', () => {
+                    if (hoverEnterTimeout) { clearTimeout(hoverEnterTimeout); hoverEnterTimeout = null; }
+                    if (hoverMoveHandler) { document.removeEventListener('mousemove', hoverMoveHandler); hoverMoveHandler = null; }
+                    hidePopover();
+                });
+                barContainer.dataset.hoverBound = '1';
+            }
+        }
+
+        function updateEpisodeChart(episodeId, stateId, responsesReceived, isCritical, forceRefresh=false, hasVlmArtifacts /* bool */) {
+            const episode = episodes.find(ep => ep.id === episodeId);
+            if (!episode || !episode.barsContainer) return;
+
+            if (forceRefresh) {
+                const values = Object.values(episode.states || {});
+                let totalResponses=0, critical=0, regular=0;
+                for (const v of values) { totalResponses += v.responses||0; if (v.isCritical) critical++; else regular++; }
+                episode.responsesTotal=totalResponses; episode.criticalCount=critical; episode.regularCount=regular;
+                if (episode.statsElement) {
+                    episode.statsElement.textContent = `${values.length} states (🔴${critical} 🔵${regular}), ${totalResponses} responses`;
+                }
+                return;
+            }
+            if (!episode.states) episode.states = {};
+            const prev = episode.states[stateId];
+            if (!prev || prev.responses !== responsesReceived || prev.isCritical !== !!isCritical || prev.hasVlmArtifacts !== (!!hasVlmArtifacts)) {
+                if (prev) {
+                    episode.responsesTotal -= prev.responses||0;
+                    if (prev.isCritical) episode.criticalCount--; else episode.regularCount--;
+                }
+                episode.responsesTotal += (responsesReceived||0);
+                if (isCritical) episode.criticalCount++; else episode.regularCount++;
+                episode.states[stateId] = { responses: responsesReceived||0, isCritical:!!isCritical, hasVlmArtifacts:!!hasVlmArtifacts };
+            }
+
+            let barContainer = episode.barEls[stateId];
+            if (!barContainer) {
+                barContainer = document.createElement('div');
+                barContainer.className='state-bar-container';
+                const bar = document.createElement('div'); bar.className='state-bar';
+                barContainer.appendChild(bar);
+                barContainer.dataset.stateId = String(stateId);
+                const kids = episode.barsContainer.children;
+                let inserted = false;
+                for (let i=kids.length-1; i>=0; i--) {
+                    const cur = parseInt(kids[i].dataset.stateId, 10);
+                    if (cur <= stateId) { episode.barsContainer.insertBefore(barContainer, kids[i].nextSibling); inserted=true; break; }
+                }
+                if (!inserted) episode.barsContainer.insertBefore(barContainer, episode.barsContainer.firstChild);
+                episode.barEls[stateId] = barContainer;
+            }
+
+            const bar = barContainer.firstChild;
+            const required = isCritical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
+            const hasVlm = (hasVlmArtifacts === undefined) ? true : !!hasVlmArtifacts;
+
+            bar.className = 'state-bar';
+            if ((responsesReceived||0) === 0) {
+                bar.style.height = '100%';
+                if (isCritical && !hasVlm) bar.classList.add('critical-awaiting-vlm');
+                else bar.classList.add('empty');
+            } else {
+                const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
+                bar.style.height = `${pct}%`;
+                if (isCritical && !hasVlm) bar.classList.add('critical-awaiting-vlm');
+                else if (isCritical) bar.classList.add(responsesReceived >= required ? 'critical-complete' : 'critical-incomplete');
+                else bar.classList.add(responsesReceived >= required ? 'regular-complete' : 'regular-incomplete');
+            }
+
+            const pct = Math.min((responsesReceived / Math.max(1, required)) * 100, 100);
+            const vlmStr = isCritical ? (hasVlm ? 'VLM ✓ (text+video)' : 'VLM missing') : 'Regular';
+            const clicked = clickedCriticalStates.has(stateKey(episodeId, stateId)); /* NEW */
+            // Remove title attribute to eliminate hover text tooltip
+
+            // NEW: role, state classes, clicked marker
+            barContainer.classList.toggle('is-critical', !!isCritical);
+            barContainer.classList.toggle('is-regular', !isCritical);
+            barContainer.classList.toggle('clicked', clicked);
+            if (clicked) barContainer.setAttribute('aria-pressed','true'); else barContainer.removeAttribute('aria-pressed');
+
+            // Bind click (if eligible) + hover
+            bindBarClickIfEligible(barContainer, episodeId, stateId, !!isCritical, !!hasVlm);
+
+            // Header stats
+            if (episode.statsElement) {
+                const count = Object.keys(episode.states).length;
+                episode.statsElement.textContent = `${count} states (🔴${episode.criticalCount} 🔵${episode.regularCount}), ${episode.responsesTotal} responses`;
+            }
+        }
+
+        function updateCurrentEpisodeIndicator() {
+            const current = episodes.find(ep => ep.isCurrentServing);
+            document.querySelectorAll('.episode-chart').forEach(chart => chart.classList.remove('current'));
+            if (current) {
+                const el = document.getElementById(`episode-${current.id}`);
+                if (el) {
+                    el.classList.add('current');
+                    if (!userIsScrolling) el.scrollIntoView({ behavior:'smooth', block:'nearest' });
+                }
+            }
+        }
+
+        function pruneMissingEpisodes(presentIds) {
+            const present = new Set(presentIds);
+            for (let i=episodes.length-1; i>=0; i--) {
+                const ep = episodes[i];
+                if (!present.has(ep.id)) {
+                    const el = document.getElementById(`episode-${ep.id}`);
+                    if (el) el.remove();
+                    episodes.splice(i, 1);
+                }
+            }
+            updateCurrentEpisodeIndicator();
+        }
+
+        function processMonitoringData(data) {
+            if (data.required_responses_per_state) REQUIRED_RESPONSES_PER_STATE = data.required_responses_per_state;
+            if (data.required_responses_per_critical_state) REQUIRED_RESPONSES_PER_CRITICAL_STATE = data.required_responses_per_critical_state;
+            if (!data.episodes) return;
+
+            pruneMissingEpisodes(Object.keys(data.episodes));
+
+            for (const [episodeId, episodeData] of Object.entries(data.episodes)) {
+                let episodeIndex = episodes.findIndex(ep => ep.id === episodeId);
+                if (episodeIndex === -1) {
+                    const newEpisode = {
+                        index: episodes.length, id: episodeId, states: {}, maxStates: 0,
+                        isComplete: episodeData.is_completed || false,
+                        isCurrentServing: episodeData.is_current_serving || false
+                    };
+                    episodes.push(newEpisode);
+                    createEpisodeChartElement(newEpisode);
+                    episodeIndex = newEpisode.index;
+                }
+                const episode = episodes[episodeIndex];
+                episode.isComplete = episodeData.is_completed || false;
+                episode.isCurrentServing = episodeData.is_current_serving || false;
+
+                if (episodeData.states) {
+                    for (const [sidStr, info] of Object.entries(episodeData.states)) {
+                        const sid = parseInt(sidStr, 10);
+                        const isCritical = !!(info.critical || false);
+                        const hasFlexBoth = Boolean(info.has_flex_text) && Boolean(info.has_flex_video);
+                        updateEpisodeChart(episodeId, sid, info.responses_received || 0, isCritical, false, (isCritical ? hasFlexBoth : true));
+                    }
+                }
+
+                const episodeElement = document.getElementById(`episode-${episodeId}`);
+                if (episodeElement) {
+                    const titleElement = episodeElement.querySelector('.episode-title');
+                    if (titleElement) {
+                        let title = `Episode ${episodeId}`;
+                        if (episode.isCurrentServing) title += ' (Current)';
+                        if (episode.isComplete) title += ' (Complete)';
+                        titleElement.textContent = title;
+                    }
+                    episodeElement.classList.toggle('current', episode.isCurrentServing);
+                    episodeElement.classList.toggle('complete', episode.isComplete);
+                }
+            }
+            updateCurrentEpisodeIndicator();
+
+            /* NEW: ensure filter is applied after updates */
+            applyCriticalOnlyMode();
+            
+            /* Update modal navigation if modal is open */
+            if (vlmModal.classList.contains('show')) {
+                updateModalNavigation();
+            }
+        }
+
+        // --- Fetchers ---
+        async function fetchLatestState() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/monitor/latest-state`, { headers:{ 'Accept':'application/json' }});
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const data = await response.json();
+                updateServerStatus(true);
+                if (data.status === 'success') {
+                    if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
+                    currentStateId.textContent = data.state_id || '--';
+                    if (data.critical !== undefined) {
+                        stateType.textContent = data.critical ? '🔴 Critical' : '🔵 Regular';
+                        const required = data.critical ? REQUIRED_RESPONSES_PER_CRITICAL_STATE : REQUIRED_RESPONSES_PER_STATE;
+                        const received = data.responses_received || 0;
+                        stateResponses.textContent = `${received}/${required}`;
+                    } else {
+                        stateType.textContent = '--'; stateResponses.textContent = '--';
+                    }
+                    updateRobotState(data.is_resetting, data.reset_countdown);
+                    updateControlButtons(data.is_resetting);
+                    if (data.total_pending_states !== undefined) pendingStatesCount.textContent = data.total_pending_states; else pendingStatesCount.textContent = '--';
+                } else if (data.status === 'no_states' || data.status === 'no_pending_states') {
+                    currentStateId.textContent = 'No states';
+                    stateType.textContent = '--';
+                    stateResponses.textContent = '--';
+                    pendingStatesCount.textContent = '0';
+                    updateRobotState(data.is_resetting, data.reset_countdown);
+                    updateControlButtons(data.is_resetting);
+                    if (data.views) for (const [name, url] of Object.entries(data.views)) updateCameraView(name, url);
+                }
+            } catch (e) {
+                console.error('Error fetching latest state:', e);
+                updateServerStatus(false);
+            }
+        }
+
+        async function fetchPendingStatesInfo() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/pending-states-info`, { headers:{ 'Accept':'application/json' }});
+                if (response.ok) {
+                    const data = await response.json();
+                    processMonitoringData(data);
+                    if (pendingStatesCount) pendingStatesCount.textContent = data.total_pending || 0;
+                }
+            } catch (e) {
+                console.error('Error fetching pending states info:', e);
+            }
+        }
+
+        // --- Description bank helpers ---
+        function extractThusText(s) {
+            if (!s) return '';
+            const idx = s.toLowerCase().indexOf('thus:');
+            if (idx >= 0) return s.slice(idx + 5).trim().replace(/^[\s-:,]+/, '');
+            return s.trim();
+        }
+        function parseDescriptionBank(raw) {
+            // Raw can be a string (one numbered item per line) or an array of {id,text}
+            if (Array.isArray(raw)) {
+                return raw
+                    .filter(x => typeof x === 'object' && x && typeof x.id !== 'undefined')
+                    .map(x => ({ id: Number(x.id), text: String(x.text || ''), thus_text: extractThusText(String(x.text||'')) }))
+                    .sort((a,b) => a.id - b.id);
+            }
+            if (typeof raw !== 'string') return [];
+            const out = [];
+            const lines = raw.split('\n');
+            for (const line of lines) {
+                const m = line.match(/^\s*(\d+)\.\s*(.+)$/);
+                if (!m) continue;
+                const id = Number(m[1]);
+                const text = m[2].trim();
+                out.push({ id, text, thus_text: extractThusText(text) });
+            }
+            out.sort((a,b) => a.id - b.id);
+            return out;
+        }
+
+        async function fetchDescriptionBank() {
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/description-bank`, { headers:{ 'Accept':'application/json' }});
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                if (data && data.ok === true) {
+                    return parseDescriptionBank(data.entries || data.raw_text || []);
+                }
+                return null;
+            } catch {
+                return null;
+            }
+        }
+
+        // --- Modal logic ---
+        function openModal()  { vlmModal.classList.add('show'); document.body.classList.add('modal-open'); }
+        function closeModal() { vlmModal.classList.remove('show'); document.body.classList.remove('modal-open'); }
+
+        function populateDropdown(items, selectedId) {
+            modalSelect.innerHTML = '';
+            for (const it of items) {
+                const opt = document.createElement('option');
+                opt.value = String(it.id);
+                opt.textContent = `${it.id} - ${it.thus_text}`;
+                if (it.id === selectedId) opt.selected = true;
+                modalSelect.appendChild(opt);
+            }
+        }
+
+        async function fetchStateDetails(episodeId, stateId) {
+            const url = new URL(`${API_BASE_URL}/api/state-details`, location.origin);
+            url.searchParams.set('episode_id', episodeId);
+            url.searchParams.set('state_id', stateId);
+            const resp = await fetch(url.toString().replace(location.origin,''), { headers:{ 'Accept':'application/json' }});
+            if (!resp.ok) throw new Error(`Failed to fetch state details (${resp.status})`);
+            const data = await resp.json();
+            if (!data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Bad response');
+            return data;
+        }
+
+        async function openVlmModal(episodeId, stateId) {
+            try {
+                // Prime modal
+                modalMaincam.src = '';
+                modalPrompt.textContent = '…';
+                kvEp.textContent = episodeId;
+                kvSt.textContent = stateId;
+                kvVid.textContent = '-';
+                modalContext = { episodeId, stateId, selectedVideoId:null, selectedText:null, bank:[] };
+                openModal();
+
+                // Load details (maincam + current VLM + bank)
+                const details = await fetchStateDetails(episodeId, stateId);
+
+                if (details.maincam_data_url) {
+                    modalMaincam.src = details.maincam_data_url;
+                }
+
+                const currentText = details.text_prompt || '';
+                const currentVid  = (typeof details.video_prompt === 'number') ? details.video_prompt : null;
+
+                // Show "NOT SET" if both text and video ID are not ready
+                const isFlexReady = currentText.trim() && (currentVid !== null);
+                modalPrompt.textContent = isFlexReady ? currentText : 'NOT SET';
+                kvVid.textContent = (currentVid !== null ? String(currentVid) : '-');
+
+                let bank = [];
+                if (details.description_bank) {
+                    bank = details.description_bank.map(entry => ({
+                        id: entry.id,
+                        thus_text: entry.text
+                    }));
+                } else {
+                    const fallback = await fetchDescriptionBank();
+                    bank = fallback || [];
+                }
+                modalContext.bank = bank;
+
+                // Populate dropdown (pre-select current video id if present)
+                populateDropdown(bank, currentVid ?? undefined);
+                modalContext.selectedVideoId = currentVid;
+                modalContext.selectedText = currentText;
+
+                // NEW: Prefill manual fields & choose default source mode
+                manualTextEl.value  = currentText || '';
+                manualVideoEl.value = (currentVid !== null && currentVid !== undefined) ? String(currentVid) : '';
+
+                // Always default to "Pick from bank" mode
+                setSourceMode(false); // false = bank mode, true = manual mode
+
+                // Keep modalContext aligned with current view
+                modalContext.selectedVideoId = currentVid ?? (bank[0]?.id ?? null);
+                modalContext.selectedText    = currentText || (bank[0]?.thus_text ?? null);
+
+                // Only show first bank entry if flex is actually ready, otherwise keep "NOT SET"
+                if (!isFlexReady && currentVid === null && bank.length) {
+                    // Don't override the "NOT SET" text - keep it as is
+                    kvVid.textContent = '-';
+                }
+
+                // Update navigation display
+                updateModalNavigation();
+            } catch (e) {
+                console.error('Error in openVlmModal:', e);
+                showToast('Failed to load VLM details.');
+                closeModal();
+            }
+        }
+
+        // Dropdown -> preview new text & video id (no save yet)
+        modalSelect.addEventListener('change', () => {
+            const selId = Number(modalSelect.value);
+            const it = modalContext.bank.find(x => x.id === selId);
+            if (it) {
+                modalContext.selectedVideoId = it.id;
+                modalContext.selectedText = it.thus_text;
+                modalPrompt.textContent = it.thus_text;
+                kvVid.textContent = String(it.id);
+            }
+        });
+
+        // Save selection to backend
+        async function saveVlmSelection() {
+            const { episodeId, stateId } = modalContext;
+
+            let payload = { episode_id: episodeId, state_id: stateId };
+            if (isManualMode) {
+                const txt = (manualTextEl.value || '').trim();
+                if (!txt) { showToast('Enter manual text.'); return; }
+
+                let vid = null;
+                const raw = (manualVideoEl.value || '').trim();
+                if (raw !== '') {
+                    const num = Number(raw);
+                    if (!Number.isFinite(num)) { showToast('Video ID must be a number.'); return; }
+                    vid = num;
+                }
+                payload.text_prompt = txt;
+                payload.video_prompt = vid;             // may be null
+                payload.manual_override = true;          // NEW: tells backend to lock this state
+                payload.source = 'manual';               // optional: for auditing
+            } else {
+                const txt = modalContext.selectedText;
+                const vid = modalContext.selectedVideoId;
+                if (!txt) { showToast('Pick a description first.'); return; }
+                payload.text_prompt = txt;
+                payload.video_prompt = vid;
+                payload.manual_override = false;
+                payload.source = 'bank';
+            }
+
+            try {
+                const resp = await fetch(`${API_BASE_URL}/api/update-flex-selection`, {
+                    method:'POST',
+                    headers:{ 'Content-Type':'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data || data.ok !== true) throw new Error(data && data.error ? data.error : 'Save failed');
+
+                markClickedCritical(episodeId, stateId);
+                
+                // Update the current text prompt in the modal
+                const savedText = isManualMode ? (manualTextEl.value || '').trim() : modalContext.selectedText;
+                if (savedText) {
+                    modalPrompt.textContent = savedText;
+                }
+                
+                // Update video ID display
+                const savedVid = isManualMode ? 
+                    ((manualVideoEl.value || '').trim() !== '' ? Number(manualVideoEl.value) : null) :
+                    modalContext.selectedVideoId;
+                kvVid.textContent = (savedVid !== null ? String(savedVid) : '-');
+                
+                showToast(isManualMode ? 'Saved (manual override locked).' : 'Updated VLM selection.');
+                // Don't close modal - keep it open for further editing
+                fetchPendingStatesInfo(); // refresh so bars/tooltips reflect new status
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to save selection.');
+            }
+        }
+
+        // Modal buttons & close mechanisms
+        vlmModalClose.addEventListener('click', closeModal);
+        vlmModalCancel.addEventListener('click', closeModal);
+        vlmModalSave.addEventListener('click', saveVlmSelection);
+        vlmModal.addEventListener('click', (e) => { if (e.target === vlmModal) closeModal(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && vlmModal.classList.contains('show')) closeModal(); });
+        
+        // Navigation between critical states with arrow keys
+        function getAllCriticalStates() {
+            const states = [];
+            for (const episode of episodes) {
+                for (const [stateId, stateInfo] of Object.entries(episode.states || {})) {
+                    if (stateInfo.isCritical) {
+                        states.push({
+                            episodeId: episode.id,
+                            stateId: parseInt(stateId, 10),
+                            hasVlmArtifacts: stateInfo.hasVlmArtifacts,
+                            sortKey: `${episode.id.padStart(6, '0')}_${stateId.padStart(6, '0')}`
+                        });
+                    }
+                }
+            }
+            return states.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+        }
+
+        function updateModalNavigation() {
+            const allCritical = getAllCriticalStates();
+            const currentIndex = allCritical.findIndex(s => 
+                s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
+            );
+
+            // Update squares
+            modalNavSquares.innerHTML = '';
+            allCritical.forEach((state, index) => {
+                const square = document.createElement('div');
+                square.className = 'modal-nav-square';
+                
+                const isVisited = clickedCriticalStates.has(stateKey(state.episodeId, state.stateId));
+                const isCurrent = index === currentIndex;
+                
+                // Start with default gray appearance, no flashing
+                if (isVisited) square.classList.add('visited');
+                if (isCurrent) square.classList.add('current');
+                
+                square.title = `Episode ${state.episodeId}, State ${state.stateId}`;
+                square.addEventListener('click', () => {
+                    openVlmModal(state.episodeId, state.stateId);
+                });
+                
+                // Check label status asynchronously without initial visual indication
+                checkStateLabelStatus(state.episodeId, state.stateId, square, isVisited);
+                
+                modalNavSquares.appendChild(square);
+            });
+
+            // Update info text
+            navCurrentIndex.textContent = currentIndex + 1;
+            navTotalCount.textContent = allCritical.length;
+        }
+
+        async function checkStateLabelStatus(episodeId, stateId, square, isVisited) {
+            try {
+                const details = await fetchStateDetails(episodeId, stateId);
+                const hasText = details.text_prompt && details.text_prompt.trim();
+                const hasVideoId = details.video_prompt !== null && details.video_prompt !== undefined;
+                const isLabeled = hasText && hasVideoId;
+                
+                // Add unlabeled styling if not labeled (regardless of visited status)
+                // Visited states keep their green color, but unlabeled ones show red
+                if (!isLabeled) {
+                    square.classList.add('unlabeled');
+                    square.title += ' (Unlabeled)';
+                }
+            } catch (e) {
+                // If we can't fetch details, assume unlabeled
+                square.classList.add('unlabeled');
+                square.title += ' (Unlabeled)';
+            }
+        }
+
+        function navigateToAdjacentCriticalState(direction) {
+            if (!vlmModal.classList.contains('show') || !modalContext.episodeId || !modalContext.stateId) return;
+            
+            const allCritical = getAllCriticalStates();
+            if (allCritical.length <= 1) return;
+            
+            const currentIndex = allCritical.findIndex(s => 
+                s.episodeId === modalContext.episodeId && s.stateId === modalContext.stateId
+            );
+            
+            if (currentIndex === -1) return;
+            
+            let nextIndex;
+            if (direction === 'next') {
+                nextIndex = (currentIndex + 1) % allCritical.length;
+            } else {
+                nextIndex = (currentIndex - 1 + allCritical.length) % allCritical.length;
+            }
+            
+            const nextState = allCritical[nextIndex];
+            openVlmModal(nextState.episodeId, nextState.stateId);
+        }
+
+        // Quick save with Ctrl+Enter / ⌘+Enter while modal is open
+        // Arrow key navigation between critical states
+        document.addEventListener('keydown', (e) => {
+            if (!vlmModal.classList.contains('show')) return;
+            
+            // Navigation with arrow keys
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                navigateToAdjacentCriticalState('prev');
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                navigateToAdjacentCriticalState('next');
+            }
+            
+            // Quick save
+            const meta = e.ctrlKey || e.metaKey;
+            if (meta && e.key === 'Enter') {
+                e.preventDefault();
+                saveVlmSelection();
+            }
+        });
+
+        // --- Controls ---
+        async function handleFastForward() {
+            const buttonText = fastForwardBtn.textContent;
+            const isStartEpisode = buttonText.includes('Start Episode');
+            const button = fastForwardBtn; button.classList.add('loading'); button.disabled = true;
+            try {
+                const endpoint = isStartEpisode ? '/api/control/start-episode' : '/api/control/next-episode';
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const result = await response.json();
+                if (result.status === 'success') {
+                    // noop: next fetch will update UI
+                } else {
+                    console.error('Failed:', result.message);
+                }
+            } catch (e) {
+                console.error(e);
+            } finally { button.classList.remove('loading'); button.disabled = false; }
+        }
+        async function handleRerecord() {
+            const b = rerecordBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/rerecord`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const j = await r.json();
+                if (j.status !== 'success') console.error('Failed:', j.message);
+            } catch (e) { console.error(e); }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
+        async function handleStop() {
+            const b = stopBtn; b.classList.add('loading'); b.disabled = true;
+            try {
+                const r = await fetch(`${API_BASE_URL}/api/control/stop`, { method:'POST', headers:{ 'Content-Type':'application/json' }});
+                const j = await r.json();
+                if (j.status !== 'success') console.error('Failed:', j.message);
+            } catch (e) { console.error(e); }
+            finally { b.classList.remove('loading'); b.disabled = false; }
+        }
+        fastForwardBtn.addEventListener('click', handleFastForward);
+        rerecordBtn.addEventListener('click', handleRerecord);
+        stopBtn.addEventListener('click', handleStop);
+
+        // === NEW: Critical-only toggle logic ===
+        let criticalOnlyMode = true; // Default to Critical only
+        const toggleAllBtn = document.getElementById('toggle-all');
+        const toggleCriticalBtn = document.getElementById('toggle-critical');
+
+        function updateToggleUI() {
+            if (criticalOnlyMode) {
+                toggleAllBtn.classList.remove('active');
+                toggleAllBtn.setAttribute('aria-selected','false');
+                toggleCriticalBtn.classList.add('active');
+                toggleCriticalBtn.setAttribute('aria-selected','true');
+            } else {
+                toggleCriticalBtn.classList.remove('active');
+                toggleCriticalBtn.setAttribute('aria-selected','false');
+                toggleAllBtn.classList.add('active');
+                toggleAllBtn.setAttribute('aria-selected','true');
+            }
+        }
+
+        function applyCriticalOnlyMode() {
+            for (const ep of episodes) {
+                if (!ep.barsContainer) continue;
+                ep.barsContainer.classList.toggle('critical-only', criticalOnlyMode);
+            }
+        }
+
+        toggleAllBtn.addEventListener('click', () => {
+            criticalOnlyMode = false;
+            updateToggleUI();
+            applyCriticalOnlyMode();
+            hidePopover();
+        });
+        toggleCriticalBtn.addEventListener('click', () => {
+            criticalOnlyMode = true;
+            updateToggleUI();
+            applyCriticalOnlyMode();
+        });
+        // Keyboard shortcut: I toggles mode
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'i' && !document.body.classList.contains('modal-open')) {
+                criticalOnlyMode = !criticalOnlyMode;
+                updateToggleUI();
+                applyCriticalOnlyMode();
+                if (!criticalOnlyMode) hidePopover();
+            }
+        });
+
+        // --- Auto-refresh ---
+        function startAutoRefresh() {
+            stopAutoRefresh();
+            autoRefreshInterval = {
+                cameras: setInterval(() => {
+                    if (!latestStateInFlight) {
+                        latestStateInFlight = true; fetchLatestState().finally(()=>latestStateInFlight=false);
+                    }
+                }, CAMERA_POLL_MS),
+                info: setInterval(() => {
+                    if (!pendingInfoInFlight) {
+                        pendingInfoInFlight = true; fetchPendingStatesInfo().finally(()=>pendingInfoInFlight=false);
+                    }
+                }, INFO_POLL_MS)
+            };
+        }
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval.cameras);
+                clearInterval(autoRefreshInterval.info);
+                autoRefreshInterval = null;
+            }
+        }
+
+        // Init
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initializeApiUrl();
+            episodeChartsContainer.addEventListener('scroll', () => {
+                userIsScrolling = true; if (scrollTimeout) clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(()=>userIsScrolling=false, 3000);
+            });
+            await fetchPendingStatesInfo();
+            fetchLatestState();
+            startAutoRefresh();
+            setTimeout(fetchPendingStatesInfo, 500);
+
+            // Initialize toggle UI state
+            updateToggleUI();
+            applyCriticalOnlyMode();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) stopAutoRefresh();
+            else startAutoRefresh();
+        });
+    </script>
+</body>
+</html>

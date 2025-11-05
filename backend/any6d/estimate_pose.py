@@ -81,14 +81,14 @@ def create_engines(
     _ = m.vertex_normals
 
     glctx_any6d = dr.RasterizeCudaContext()
-    any6d = Any6D(mesh=m, debug=debug, debug_dir='./any6d_debug', glctx=glctx_any6d)
+    any6d = Any6D(mesh=m, debug=debug, debug_dir='./output/any6d_debug', glctx=glctx_any6d)
 
     scorer = ScorePredictor()
     refiner = PoseRefinePredictor()
     glctx_found = dr.RasterizeCudaContext()
     fpose = FoundationPose(
         model_pts=m.vertices, model_normals=m.vertex_normals, mesh=m,
-        scorer=scorer, refiner=refiner, glctx=glctx_found, debug=debug, debug_dir='./any6d_debug',
+        scorer=scorer, refiner=refiner, glctx=glctx_found, debug=debug, debug_dir='./output/any6d_debug',
     )
     return PoseEngines(langsam=langsam, any6d=any6d, fpose=fpose)
 

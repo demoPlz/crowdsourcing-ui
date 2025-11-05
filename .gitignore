@@ -37,6 +37,7 @@ __pycache__/
 **/snapshots
 output/
 
+# Weights and assets of external libraries
 external/**/*.yml
 external/**/*.pth
 external/**/*.obj

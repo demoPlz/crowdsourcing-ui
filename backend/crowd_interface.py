@@ -479,11 +479,8 @@ class CrowdInterface():
         # Prefer state-aligned snapshots if available
         views = {}
         view_paths = out.pop("view_paths", None)  # don't expose file paths to the client
-        if isinstance(view_paths, dict) and view_paths:
-            views = self._load_views_from_disk(view_paths)
-        # Fallback to live previews (older states or missing files)
-        if not views:
-            views = self.snapshot_latest_views()
+        views = self._load_views_from_disk(view_paths)
+
         out["views"] = views
         out["camera_poses"] = self._camera_poses
         out["camera_models"] = self._camera_models
