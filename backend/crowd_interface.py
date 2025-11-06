@@ -6,16 +6,15 @@ import torch
 import base64
 from pathlib import Path
 from threading import Lock
-from math import cos, sin
 
-from calibration_manager import CalibrationManager
-from demo_video_manager import DemoVideoManager
-from webcam_manager import WebcamManager
-from pose_estimation_manager import PoseEstimationManager
-from observation_stream_manager import ObservationStreamManager
-from sim_manager import SimManager
-from state_manager import StateManager
-from dataset_manager import DatasetManager
+from interface_managers.calibration_manager import CalibrationManager
+from interface_managers.demo_video_manager import DemoVideoManager
+from interface_managers.webcam_manager import WebcamManager
+from interface_managers.pose_estimation_manager import PoseEstimationManager
+from interface_managers.observation_stream_manager import ObservationStreamManager
+from interface_managers.sim_manager import SimManager
+from interface_managers.state_manager import StateManager
+from interface_managers.dataset_manager import DatasetManager
 
 CAM_IDS = {
     "front":       18,   # change indices / paths as needed
@@ -23,12 +22,6 @@ CAM_IDS = {
     "right":       2,
     "perspective": 1,
 }
-
-JOINT_NAMES = [
-    "joint_0", "joint_1", "joint_2",
-    "joint_3", "joint_4", "joint_5",
-    "left_carriage_joint"
-]
 
 # Per-camera calibration file paths (extend as you calibrate more cams)
 # Use T_three from extrinsics (camera world for Three.js) and map1/map2 from intrinsics to undistort.
@@ -59,13 +52,23 @@ SIM_CALIB_PATHS = {
 }
 
 class CrowdInterface():
-    '''
-    Sits between the frontend and the backend
-    '''
+    """
+    Main interface between frontend and backend for CAPTCHA-style crowd-sourced data collection for robot manipulation.
+    
+    Coordinates all subsystem managers and provides API for:
+    - State management (episodes, states, responses)
+    - Camera/observation handling
+    - Dataset operations
+    - Calibration
+    - Demo videos and prompts
+    - Simulation rendering
+    - Pose estimation
+    """
+    
     # =========================
-    # Class methods
-    # (general & camera management, JSON building, encoding)
+    # Initialization
     # =========================
+    
     def __init__(self, 
                  required_responses_per_state= 1,
                  required_responses_per_critical_state=10,
@@ -243,8 +246,11 @@ class CrowdInterface():
             snapshot_views_callback=self.snapshot_latest_views,
             save_episode_callback=self.dataset_manager.save_episode,
         )
-
-    ### ---Camera Management---
+    
+    # =========================
+    # Camera & Observation Management
+    # =========================
+    
     def init_cameras(self):
         """Open webcams and start background capture. Delegates to WebcamManager."""
         self.webcam_manager.init_cameras()
@@ -318,8 +324,101 @@ class CrowdInterface():
         """
         return self.webcam_manager.encode_jpeg_base64(img_rgb, quality)
     
+    # =========================
+    # State Management (Delegated to StateManager)
+    # =========================
+    
+    def add_state(self,
+                  joint_positions: dict,
+                  gripper_motion: int = None,
+                  obs_dict: dict[str, torch.Tensor] = None,
+                  episode_id: str = None,
+                  left_carriage_external_force: float | None = None):
+        """Add a new state to the current episode. Delegates to StateManager."""
+        return self.state_manager.add_state(
+            joint_positions=joint_positions,
+            gripper_motion=gripper_motion,
+            obs_dict=obs_dict,
+            episode_id=episode_id,
+            left_carriage_external_force=left_carriage_external_force
+        )
 
-    # Calibration Management (delegated to CalibrationManager)
+    def set_last_state_to_critical(self):
+        """Mark the last added state as critical. Delegates to StateManager."""
+        return self.state_manager.set_last_state_to_critical()
+
+    def get_latest_state(self) -> dict:
+        """Get the latest pending critical state for labeling. Delegates to StateManager."""
+        return self.state_manager.get_latest_state()
+
+    def record_response(self, response_data: dict):
+        """Record a user response for a state. Delegates to StateManager."""
+        return self.state_manager.record_response(response_data)
+    
+    def get_pending_states_info(self) -> dict:
+        """Get episode-based state information for monitoring. Delegates to StateManager."""
+        return self.state_manager.get_pending_states_info()
+    
+    def set_active_episode(self, episode_id):
+        """Mark which episode the robot loop is currently in. Delegates to StateManager."""
+        return self.state_manager.set_active_episode(episode_id)
+
+    def set_prompt_ready(self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None) -> None:
+        """Set prompt fields and mark state as ready. Delegates to StateManager."""
+        return self.state_manager.set_prompt_ready(state_info, episode_id, state_id, text, video_id)
+    
+    def get_latest_goal(self) -> dict | None:
+        """Get and clear the latest goal for robot execution. Delegates to StateManager."""
+        return self.state_manager.get_latest_goal()
+    
+    # =========================
+    # Reset State Management
+    # =========================
+    
+    def start_reset(self, duration_s: float):
+        """Start the reset countdown timer"""
+        self.is_resetting = True
+        self.reset_start_time = time.time()
+        self.reset_duration_s = duration_s
+        print(f"🔄 Starting reset countdown: {duration_s}s")
+    
+    def stop_reset(self):
+        """Stop the reset countdown timer"""
+        self.is_resetting = False
+        self.reset_start_time = None
+        self.reset_duration_s = 0
+    
+    def get_reset_countdown(self) -> float:
+        """Get remaining reset time in seconds, or 0 if not resetting"""
+        if not self.is_resetting or self.reset_start_time is None:
+            return 0
+        
+        elapsed = time.time() - self.reset_start_time
+        remaining = max(0, self.reset_duration_s - elapsed)
+        
+        # Auto-stop when countdown reaches 0
+        if remaining <= 0 and self.is_resetting:
+            self.stop_reset()
+        
+        return remaining
+    
+    def is_in_reset(self) -> bool:
+        """Check if currently in reset state"""
+        return self.is_resetting and self.get_reset_countdown() > 0
+    
+    # =========================
+    # Dataset Management (Delegated to DatasetManager)
+    # =========================
+    
+    def init_dataset(self, cfg, robot):
+        """Initialize dataset for data collection policy training. Delegates to DatasetManager."""
+        self.task_text = self.dataset_manager.init_dataset(cfg, robot)
+        
+        # Update state manager's task_text since it was None during initialization
+        self.state_manager.task_text = self.task_text
+    
+    # =========================
+    # Calibration Management (Delegated to CalibrationManager)
     # =========================
     
     def save_gripper_tip_calibration(self, calib: dict) -> str:
@@ -330,9 +429,32 @@ class CrowdInterface():
         return self.calibration.save_gripper_tip_calibration(calib)
 
     # =========================
-    # Database Management (persisting obs to disk and retrieving them)
+    # Observation Cache Management (disk persistence)
     # =========================
-    # --- Per-state VIEW snapshot cache (persist camera images to disk) ---
+    
+    def _episode_cache_dir(self, episode_id: str) -> Path:
+        """Get or create cache directory for an episode"""
+        d = self._obs_cache_root / str(episode_id)
+        if not d.exists():
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return d
+    
+    def _persist_obs_to_disk(self, episode_id: str, state_id: int, obs: dict) -> str | None:
+        """
+        Writes the observations dict to a single file for the state and returns the path.
+        """
+        try:
+            p = self._episode_cache_dir(episode_id) / f"{state_id}.pt"
+            # Tensors/ndarrays/py objects handled by torch.save
+            torch.save(obs, p)
+            return str(p)
+        except Exception as e:
+            print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
+            return None
+    
     def _persist_views_to_disk(self, episode_id: str, state_id: int, views_b64: dict[str, str]) -> dict[str, str]:
         """
         Persist base64 (data URL) JPEGs for each camera to disk.
@@ -380,125 +502,9 @@ class CrowdInterface():
                 # Missing/removed file -> skip this camera
                 pass
         return out
-
-    # --- Observation cache helpers (spill large 'observations' to disk) ---
-    def _episode_cache_dir(self, episode_id: str) -> Path:
-        d = self._obs_cache_root / str(episode_id)
-        if not d.exists():
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-        return d
-
-    def _persist_obs_to_disk(self, episode_id: str, state_id: int, obs: dict) -> str | None:
-        """
-        Writes the observations dict to a single file for the state and returns the path.
-        """
-        try:
-            p = self._episode_cache_dir(episode_id) / f"{state_id}.pt"
-            # Tensors/ndarrays/py objects handled by torch.save
-            torch.save(obs, p)
-            return str(p)
-        except Exception as e:
-            print(f"⚠️  failed to persist obs ep={episode_id} state={state_id}: {e}")
-            return None
-
+    
     # =========================
-    # Dataset Management
-    # =========================
-    
-    def init_dataset(self, cfg, robot):
-        """Initialize dataset for data collection policy training. Delegates to DatasetManager."""
-        self.task_text = self.dataset_manager.init_dataset(cfg, robot)
-        
-        # Update state manager's task_text since it was None during initialization
-        self.state_manager.task_text = self.task_text
-
-    # =========================
-    # State management
-    # =========================
-    def add_state(self,
-                  joint_positions: dict,
-                  gripper_motion: int = None,
-                  obs_dict: dict[str, torch.Tensor] = None,
-                  episode_id: str = None,
-                  left_carriage_external_force: float | None = None):
-        '''
-        Called by lerobot code to add states to backend. Delegates to state_manager.
-        '''
-        return self.state_manager.add_state(
-            joint_positions=joint_positions,
-            gripper_motion=gripper_motion,
-            obs_dict=obs_dict,
-            episode_id=episode_id,
-            left_carriage_external_force=left_carriage_external_force
-        )
-
-    def set_last_state_to_critical(self):
-        '''Delegates to state_manager'''
-        return self.state_manager.set_last_state_to_critical()
-
-
-    def get_latest_state(self) -> dict:
-        '''Delegates to state_manager'''
-        return self.state_manager.get_latest_state()
-
-    def record_response(self, response_data: dict):
-        '''Delegates to state_manager'''
-        return self.state_manager.record_response(response_data)
-    
-    def get_pending_states_info(self) -> dict:
-        '''Delegates to state_manager'''
-        return self.state_manager.get_pending_states_info()
-    
-    # --- Goal Management ---
-    def get_latest_goal(self) -> dict | None:
-        '''Delegates to state_manager'''
-        return self.state_manager.get_latest_goal()
-    
-    # --- Reset State Management ---
-    def start_reset(self, duration_s: float):
-        """Start the reset countdown timer"""
-        self.is_resetting = True
-        self.reset_start_time = time.time()
-        self.reset_duration_s = duration_s
-        print(f"🔄 Starting reset countdown: {duration_s}s")
-    
-    def stop_reset(self):
-        """Stop the reset countdown timer"""
-        self.is_resetting = False
-        self.reset_start_time = None
-        self.reset_duration_s = 0
-    
-    def get_reset_countdown(self) -> float:
-        """Get remaining reset time in seconds, or 0 if not resetting"""
-        if not self.is_resetting or self.reset_start_time is None:
-            return 0
-        
-        elapsed = time.time() - self.reset_start_time
-        remaining = max(0, self.reset_duration_s - elapsed)
-        
-        # Auto-stop when countdown reaches 0
-        if remaining <= 0 and self.is_resetting:
-            self.stop_reset()
-        
-        return remaining
-    
-    def is_in_reset(self) -> bool:
-        """Check if currently in reset state"""
-        return self.is_resetting and self.get_reset_countdown() > 0
-
-    def set_active_episode(self, episode_id):
-        '''Delegates to state_manager'''
-        return self.state_manager.set_active_episode(episode_id)
-
-    def set_prompt_ready(self, state_info: dict, episode_id: int, state_id: int, text: str | None, video_id: int | None) -> None:
-        '''Delegates to state_manager'''
-        return self.state_manager.set_prompt_ready(state_info, episode_id, state_id, text, video_id)
-
-    # =========================
-    # Prompting and Demo Media
+    # Prompting and Demo Media Management
     # =========================
 
     def _prompts_root_dir(self) -> Path:
@@ -563,10 +569,7 @@ class CrowdInterface():
         }
     
     # =========================
-    # Sim
-    # =========================
-    # =========================
-    # Animation Management (delegated to SimManager)
+    # Simulation & Animation Management (Delegated to SimManager)
     # =========================
     
     def start_animation(self, session_id: str, goal_pose: dict = None, goal_joints: list = None, duration: float = 3.0, gripper_action: str = None) -> dict:
@@ -590,9 +593,8 @@ class CrowdInterface():
         return self.sim_manager.release_animation_session(session_id)
 
     # =========================
-    # Miscellaneous
+    # Utility Methods
     # =========================
-    # ---------- Demo video config helpers (tell the frontend where to save) ----------
     def _repo_root(self) -> Path:
         """Root of the repo (backend assumes this file lives under <repo>/scripts or similar)."""
         return (Path(__file__).resolve().parent / "..").resolve()
@@ -610,8 +612,7 @@ class CrowdInterface():
     def set_events(self, events):
         """Set the events object for keyboard-like control functionality"""
         self.events = events
-
-    # ---------- Episode -> video ----------
+    
     def load_main_cam_from_obs(self, obs: dict) -> np.ndarray | None:
         """
         Extract 'observation.images.cam_main' as RGB uint8 HxWx3; returns None if missing.
