@@ -1,4 +1,4 @@
-"""Script for teleoperating a Trossen WidowX AI arm via a Flask API,"""
+"""Script for teleoperating a Trossen WidowX AI arm via a Flask API."""
 
 from __future__ import annotations
 
