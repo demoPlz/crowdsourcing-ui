@@ -1,4 +1,5 @@
-"""Entry point for collecting robot manipulation data with crowd-sourced labeling.
+"""Entry point for collecting robot manipulation data with crowd-sourced labeling. Adapted from lerobot's
+control_robot.py.
 
 Example usage:
     python backend/collect_data.py \
