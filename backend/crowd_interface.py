@@ -45,8 +45,8 @@ class CrowdInterface:
 
     def __init__(
         self,
-        required_responses_per_state=1,
-        required_responses_per_critical_state=10,
+        required_responses_per_state: int = 1,
+        required_responses_per_critical_state: int = 10,
         autofill_critical_states: bool = False,
         num_autofill_actions: int | None = None,
         use_manual_prompt: bool = False,
