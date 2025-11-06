@@ -1,3 +1,9 @@
+"""
+CrowdInterface - Main Backend Interface
+
+Coordinates all subsystem managers to provide an API for crowd-sourced robot data collection.
+"""
+
 import os
 import tempfile
 import numpy as np
@@ -15,47 +21,13 @@ from interface_managers.observation_stream_manager import ObservationStreamManag
 from interface_managers.sim_manager import SimManager
 from interface_managers.state_manager import StateManager
 from interface_managers.dataset_manager import DatasetManager
-
-CAM_IDS = {
-    "front":       18,   # change indices / paths as needed
-    "left":        4,
-    "right":       2,
-    "perspective": 1,
-}
-
-# Per-camera calibration file paths (extend as you calibrate more cams)
-# Use T_three from extrinsics (camera world for Three.js) and map1/map2 from intrinsics to undistort.
-REAL_CALIB_PATHS = {
-    "front": {
-        "intr": "data/calib/intrinsics_front_1_640x480.npz",
-        "extr": "data/calib/extrinsics_front_1.npz",
-    },
-    "left": {
-        "intr": "data/calib/intrinsics_left_2_640x480.npz",
-        "extr": "data/calib/extrinsics_left_2.npz",
-    },
-    "right": {
-        "intr": "data/calib/intrinsics_right_3_640x480.npz",
-        "extr": "data/calib/extrinsics_right_3.npz",
-    },
-    "perspective": {
-        "intr": "data/calib/intrinsics_perspective_4_640x480.npz",
-        "extr": "data/calib/extrinsics_perspective_4.npz",
-    },
-}
-
-SIM_CALIB_PATHS = {
-    "front": "data/calib/calibration_front_sim.json",
-    "left": "data/calib/calibration_left_sim.json",
-    "right": "data/calib/calibration_right_sim.json",
-    "top": "data/calib/calibration_top_sim.json",
-}
+from hardware_config import CAM_IDS, REAL_CALIB_PATHS, SIM_CALIB_PATHS
 
 class CrowdInterface():
     """
     Main interface between frontend and backend for CAPTCHA-style crowd-sourced data collection for robot manipulation.
     
-    Coordinates all subsystem managers and provides API for:
+    Coordinates all subsystem managers:
     - State management (episodes, states, responses)
     - Camera/observation handling
     - Dataset operations

@@ -1,8 +1,10 @@
+'''
+Script for teleoperating a Trossen WidowX AI arm via a Flask API,
+'''
 
 from __future__ import annotations
 
 import cv2
-import time
 import trossen_arm
 import numpy as np
 
