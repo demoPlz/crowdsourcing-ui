@@ -3471,6 +3471,7 @@ loader.load(
     updateGripArrowVisibility();               // set initial visibility based on current view
 
     const initialGripDir = gripDir;
+    let homePositionClicked = false;  // Track if user explicitly clicked Home button
 
     /* ================== Grip force -> UI + 3D feedback ================== */
 
@@ -4913,6 +4914,9 @@ loader.load(
     function updateGoal() {
       cancelAnimationIfRunning('pose changed');
 
+      // Clear home position flag when user manually changes pose
+      homePositionClicked = false;
+
       // 1) Absolute position from sliders/drag
       targetPose.pos.set(params.x, params.y, params.z);
 
@@ -5452,10 +5456,13 @@ loader.load(
       const poseResetToDefault = slidersAtDefault();
       const slidersChangedAxes = getChangedAxes();
 
+      // When user explicitly clicks Home button and submits, force gripper to open
+      const gripperValue = homePositionClicked ? 1 : gripDir;
+
       try {
         const payload = {
           joint_positions: jointMap,
-          gripper: gripDir,
+          gripper: gripperValue,
           ee_pose: { position: [tgtPos.x, tgtPos.y, tgtPos.z], rpy: [eeEuler.x, eeEuler.y, eeEuler.z] },
           state_id: state.state_id,
           episode_id: state.episode_id,
@@ -5629,6 +5636,9 @@ loader.load(
       // Stop any animation
       cancelAnimationIfRunning('pose reset');
 
+      // Clear home position flag since we're resetting to initial state (not home)
+      homePositionClicked = false;
+
       // Return pose to initial AND reset gripper to initial state
       params.x = initialParams.x; params.y = initialParams.y; params.z = initialParams.z;
       params.roll = initialParams.roll; params.pitch = initialParams.pitch; params.yaw = initialParams.yaw;
@@ -5693,6 +5703,9 @@ loader.load(
     function applyHomePosition() {
       // If animation is running, stop it so we can jump to a clean configuration
       cancelAnimationIfRunning('Home Pos');
+
+      // Mark that home position was explicitly clicked
+      homePositionClicked = true;
 
       // Define your Home angles (in radians) using Math.PI
       const D2R = Math.PI / 180;
