@@ -55,6 +55,7 @@ class StateManager:
         # Managers for external dependencies
         obs_stream_manager,
         pose_estimation_manager,
+        drawer_position_manager,
         sim_manager,
         # Callbacks for external operations
         persist_views_callback,
@@ -81,6 +82,7 @@ class StateManager:
             episodes_pending_save: Shared set of episodes pending save
             obs_stream_manager: ObservationStreamManager instance
             pose_estimation_manager: PoseEstimationManager instance
+            drawer_position_manager: DrawerPositionManager instance
             sim_manager: SimManager instance
             persist_views_callback: Callback to persist views to disk
             persist_obs_callback: Callback to persist observations to disk
@@ -120,6 +122,7 @@ class StateManager:
         # Manager dependencies
         self.obs_stream = obs_stream_manager
         self.pose_estimator = pose_estimation_manager
+        self.drawer_position = drawer_position_manager
         self.sim_manager = sim_manager
 
         # Callbacks for external operations
@@ -193,6 +196,8 @@ class StateManager:
             "task_text": self.task_text,
             # Sim
             "sim_ready": False if self.use_sim else True,
+            # Drawer joint positions will be computed when we call set_last_state_to_critical (like object_poses)
+            # "drawer_joint_positions"
             # Poses of each object in self.object will be computed when we call set_last_state_to_critical
             # "object_poses"
             # No other fields; segmentation, and all others, no longer supported
@@ -235,6 +240,27 @@ class StateManager:
         poses_ready = self.pose_estimator.enqueue_pose_jobs_for_state(
             latest_episode_id, latest_state_id, info, wait=True, timeout_s=None
         )
+
+        # ---- Phase 2.5: Estimate drawer position if tracking enabled ----
+        drawer_positions_ready = False
+        if self.drawer_position and self.drawer_position.enabled:
+            try:
+                # Load the observation
+                obs_dict = torch.load(info["obs_path"], map_location="cpu")
+                drawer_joint_positions = self.drawer_position.get_joint_position_from_obs(obs_dict)
+                
+                if drawer_joint_positions:
+                    # Update the state info with drawer position
+                    with self.state_lock:
+                        ep = self.pending_states_by_episode.get(latest_episode_id)
+                        if ep and latest_state_id in ep:
+                            ep[latest_state_id]["drawer_joint_positions"] = drawer_joint_positions
+                            drawer_positions_ready = True
+                            print(f"🗄️  Drawer position captured for critical state (ep={latest_episode_id}, state={latest_state_id})")
+                else:
+                    print(f"⚠️  Drawer position estimation failed for ep={latest_episode_id}, state={latest_state_id}")
+            except Exception as e:
+                print(f"⚠️  Error estimating drawer position: {e}")
 
         # ---- Phase 3: only then consider sim ----
         with self.state_lock:

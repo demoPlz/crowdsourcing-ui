@@ -192,13 +192,15 @@ class IsaacSimWorker:
         self.objects["Cube_Red"] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Red_PATH, name="Cube_Red"))
         self.objects["tennis_ball"] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
 
+        # Store drawer reference for joint manipulation (don't load as Articulation if not properly set up)
+        self.drawer_prim_path = "/World/drawer_shell"
+
         import omni.usd
         from omni.isaac.core.prims import XFormPrim
 
         stage = omni.usd.get_context().get_stage()  # just to confirm they exist; not modifying
 
         for path, key in [
-            ("/World/drawer_shell", "drawer_shell"),
             ("/World/tray_01", "tray_01"),
             ("/World/tray_02", "tray_02"),
             ("/World/tray_03", "tray_03"),
@@ -295,6 +297,57 @@ class IsaacSimWorker:
         for step in range(3):
             self.world.step(render=True)
 
+    def set_drawer_joints(self):
+        """Set drawer joint positions from config using direct USD API"""
+        import omni.usd
+
+        # Get drawer joint positions from config
+        drawer_joint_positions = self.last_sync_config.get("drawer_joint_positions", {})
+        
+        if not drawer_joint_positions:
+            # No drawer positions specified, keep at default (closed)
+            print(f"[Worker] 🗄️  No drawer joint positions in config, keeping at closed position")
+            return
+        
+        # Get the joint position for Drawer_Joint
+        drawer_joint_pos = drawer_joint_positions.get("Drawer_Joint", 0.0)
+        
+        print(f"[Worker] 🗄️  Setting drawer joint: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})")
+        
+        if drawer_joint_pos == 0.0:
+            # Already at closed position, no need to update
+            print(f"[Worker] 🗄️  Drawer at closed position (0.0), skipping update")
+            return
+        
+        # Set the drawer joint position using USD API
+        stage = omni.usd.get_context().get_stage()
+        joint_prim = stage.GetPrimAtPath("/World/Drawer_Joint")
+        
+        if not joint_prim or not joint_prim.IsValid():
+            print(f"⚠️ Could not find Drawer_Joint at /World/Drawer_Joint")
+            return
+        
+        # Set the joint position using the physics drive target
+        # For prismatic joints, this is typically the drive:linear:physics:targetPosition attribute
+        try:
+            if joint_prim.HasAttribute("drive:linear:physics:targetPosition"):
+                joint_prim.GetAttribute("drive:linear:physics:targetPosition").Set(drawer_joint_pos)
+                print(f"[Worker] ✓ Set drawer joint target position to {drawer_joint_pos:.4f} via drive:linear:physics:targetPosition")
+            elif joint_prim.HasAttribute("physics:position"):
+                joint_prim.GetAttribute("physics:position").Set(drawer_joint_pos)
+                print(f"[Worker] ✓ Set drawer joint position to {drawer_joint_pos:.4f} via physics:position")
+            else:
+                # List available attributes for debugging
+                attrs = [attr.GetName() for attr in joint_prim.GetAttributes()]
+                print(f"[Worker] ⚠️ Could not find position attribute on joint. Available attributes: {attrs[:10]}...")
+                
+        except Exception as e:
+            print(f"[Worker] ⚠️ Failed to set drawer joint position: {e}")
+        
+        # Let physics settle after positioning
+        for step in range(10):
+            self.world.step(render=True)
+
     def update_state(self, config):
         """Update robot joints and object poses without recreating simulation."""
         import numpy as np
@@ -316,6 +369,11 @@ class IsaacSimWorker:
                 "Tennis": {"pos": [0.6, -0.2, 0.1], "rot": [0, 0, 0, 1]},
             },
         )
+        
+        print(f"[Worker] 📦 Updating object poses:")
+        for obj_name, pose in object_states.items():
+            if pose:
+                print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
 
         # Update object poses FIRST (before robot positioning)
         if self.objects["Cube_Blue"].is_valid():
@@ -342,6 +400,9 @@ class IsaacSimWorker:
         # Let physics settle after object positioning
         for step in range(20):
             self.world.step(render=True)
+
+        # Set drawer joint positions (before robot, so drawer is in correct state)
+        self.set_drawer_joints()
 
         self.set_robot_joints()
 

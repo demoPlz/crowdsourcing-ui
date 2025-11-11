@@ -17,6 +17,7 @@ from hardware_config import CAM_IDS, REAL_CALIB_PATHS, SIM_CALIB_PATHS
 from interface_managers.calibration_manager import CalibrationManager
 from interface_managers.dataset_manager import DatasetManager
 from interface_managers.demo_video_manager import DemoVideoManager
+from interface_managers.drawer_position_manager import DrawerPositionManager
 from interface_managers.observation_stream_manager import ObservationStreamManager
 from interface_managers.pose_estimation_manager import PoseEstimationManager
 from interface_managers.sim_manager import SimManager
@@ -190,6 +191,13 @@ class CrowdInterface:
             pending_states_by_episode=self.pending_states_by_episode,
         )
 
+        # Drawer position manager
+        self.drawer_position = DrawerPositionManager(
+            calibration_manager=self.calibration,
+            drawer_joint_name="Drawer_Joint",
+            repo_root=repo_root,
+        )
+
         # --- Episode save behavior: datasets are always auto-saved after finalization ---
         # Manual save is only used for demo video recording workflow
         self._episodes_pending_save: set[str] = set()
@@ -218,6 +226,7 @@ class CrowdInterface:
             episodes_pending_save=self._episodes_pending_save,
             obs_stream_manager=self.obs_stream,
             pose_estimation_manager=self.pose_estimator,
+            drawer_position_manager=self.drawer_position,
             sim_manager=self.sim_manager,
             persist_views_callback=self._persist_views_to_disk,
             persist_obs_callback=self._persist_obs_to_disk,

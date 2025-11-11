@@ -242,9 +242,13 @@ def main():
         }
 
         try:
+            print(f"[{args.object}] 📂 Loading observation from {obs_path}...", flush=True)
             obs = _load_obs(obs_path)
+            print(f"[{args.object}] 🖼️  Extracting RGB and depth...", flush=True)
             rgb_t, depth_t = _extract_rgb_depth(obs)
+            print(f"[{args.object}] ✓ Observation loaded successfully (RGB shape={rgb_t.shape}, depth shape={depth_t.shape})", flush=True)
         except Exception as e:
+            print(f"[{args.object}] ❌ Failed to load observation: {e}", flush=True)
             result["error"] = f"obs load/extract failed: {e}"
             write_json_atomic(result, outbox, f"{job_id}.json")
             try:

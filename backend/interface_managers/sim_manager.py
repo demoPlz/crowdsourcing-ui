@@ -85,6 +85,7 @@ class SimManager:
                 "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
                 "robot_joints": [0.0] * 7,
                 "object_poses": {},  # Will be populated from pose estimation
+                "drawer_joint_positions": {},  # Will be populated from drawer tracking
             }
 
             print("🎥 Starting persistent Isaac Sim worker (this may take ~2 minutes)...")
@@ -159,12 +160,20 @@ class SimManager:
             for joint_name in JOINT_NAMES:
                 joint_positions_list.append(joint_positions.get(joint_name, 0.0))
 
+            # Get drawer joint positions if available
+            drawer_joint_positions = state_info.get("drawer_joint_positions", {})
+            
+            print(f"🗄️  [SimManager] drawer_joint_positions from state_info: {drawer_joint_positions}")
+
             config = {
-                "usd_path": f"public/assets/usd/{self.task_name}.usd",
+                "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": state_info.get("object_poses", {}),
+                "drawer_joint_positions": drawer_joint_positions if drawer_joint_positions else {},
             }
+            
+            print(f"🗄️  [SimManager] Config drawer_joint_positions: {config['drawer_joint_positions']}")
 
             # Use persistent worker for fast capture with animation sync
             result = self.isaac_manager.update_state_and_sync_animations(config, f"ep_{episode_id}_state_{state_id}")

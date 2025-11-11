@@ -59,7 +59,7 @@ class CrowdInterfaceConfig:
 
         # ========== Joint Tracking ==========
         # Track prismatic joint positions of drawer for drawer task
-        self.joint_tracking: list = []
+        self.joint_tracking: list = ["Drawer_Joint"]
 
     @classmethod
     def from_cli_args(cls, argv=None):
