@@ -155,7 +155,7 @@ class IsaacSimWorker:
         from omni.isaac.core import World
         from omni.isaac.core.articulations import Articulation
         from omni.isaac.core.prims import RigidPrim, XFormPrim
-        from pxr import UsdPhysics
+        from pxr import UsdPhysics, PhysxSchema
 
         # Configuration
         USD_PATH = config["usd_path"]
@@ -182,19 +182,34 @@ class IsaacSimWorker:
 
         # Create the World object (only once)
         self.world = World(stage_units_in_meters=1.0)
-        self.world.scene.add_default_ground_plane()
         print("Stage loaded and World object created.")
+
+        # --- Enable GPU dynamics on the known physics scene (/physicsScene) ---
+        
+        stage = omni.usd.get_context().get_stage()
+        phys_scene = stage.GetPrimAtPath("/physicsScene")
+        if not phys_scene or not phys_scene.IsValid():
+            raise RuntimeError("'/physicsScene' not found (open your USD before enabling GPU dynamics).")
+
+        # Apply PhysX scene schema and turn on GPU dynamics
+        physx = PhysxSchema.PhysxSceneAPI.Apply(phys_scene)
+        attr = physx.GetEnableGPUDynamicsAttr() or physx.CreateEnableGPUDynamicsAttr()
+        attr.Set(True)
+
+        print("✓ Enabled GPU dynamics on /physicsScene")
+        # ----------------------------------------------------------------------
+
 
         # Get handles to the prims (store for reuse)
         self.robot = self.world.scene.add(Articulation(prim_path=ROBOT_PATH, name="widowx_robot"))
         self.robot_prim = get_prim_at_path(ROBOT_PATH)
         self.objects["Cube_Blue"] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Blue_PATH, name="Cube_Blue"))
         self.objects["Cube_Red"] = self.world.scene.add(RigidPrim(prim_path=OBJ_Cube_Red_PATH, name="Cube_Red"))
-        self.objects["tennis_ball"] = self.world.scene.add(RigidPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
-
+        self.objects["tennis_ball"] = self.world.scene.add(XFormPrim(prim_path=OBJ_TENNIS_PATH, name="tennis_ball"))
         # Store drawer reference for joint manipulation (don't load as Articulation if not properly set up)
         self.drawer_prim_path = "/World/drawer_shell"
-
+        self.drawer_tray_base_pos = None  # Store base position of tray_02 for drawer control
+        
         import omni.usd
         from omni.isaac.core.prims import XFormPrim
 
@@ -214,8 +229,16 @@ class IsaacSimWorker:
             # Important: XFormPrim wrapper only. We do NOT set any pose here.
             self.objects[key] = self.world.scene.add(XFormPrim(prim_path=path, name=key))
             print(f"✓ Registered as-authored: {path} → objects['{key}']")
-
-        # Get cameras (only once)
+            
+            # Store base position of tray_02 for drawer control
+            if key == "tray_02":
+                from pxr import UsdGeom
+                xformable = UsdGeom.Xformable(prim)
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and not op.IsInverseOp():
+                        self.drawer_tray_base_pos = op.Get()
+                        print(f"✓ Stored tray_02 base position: {self.drawer_tray_base_pos}")
+                        break        # Get cameras (only once)
         stage = omni.usd.get_context().get_stage()
         all_cameras = get_all_camera_objects(root_prim="/")
         self.cameras = {all_cameras[i].name: all_cameras[i] for i in range(len(all_cameras))}
@@ -298,8 +321,9 @@ class IsaacSimWorker:
             self.world.step(render=True)
 
     def set_drawer_joints(self):
-        """Set drawer joint positions from config using direct USD API"""
+        """Set drawer tray position by moving /World/tray_02 based on joint position"""
         import omni.usd
+        from pxr import Gf
 
         # Get drawer joint positions from config
         drawer_joint_positions = self.last_sync_config.get("drawer_joint_positions", {})
@@ -312,55 +336,104 @@ class IsaacSimWorker:
         # Get the joint position for Drawer_Joint
         drawer_joint_pos = drawer_joint_positions.get("Drawer_Joint", 0.0)
         
-        print(f"[Worker] 🗄️  Setting drawer joint: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})")
+        print(f"[Worker] 🗄️  Setting drawer via tray position: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})")
         
         if drawer_joint_pos == 0.0:
             # Already at closed position, no need to update
             print(f"[Worker] 🗄️  Drawer at closed position (0.0), skipping update")
             return
         
-        # Set the drawer joint position using USD API
+        # Get the tray prim and modify its Y position
         stage = omni.usd.get_context().get_stage()
-        joint_prim = stage.GetPrimAtPath("/World/Drawer_Joint")
+        tray_prim = stage.GetPrimAtPath("/World/tray_02")
         
-        if not joint_prim or not joint_prim.IsValid():
-            print(f"⚠️ Could not find Drawer_Joint at /World/Drawer_Joint")
+        if not tray_prim or not tray_prim.IsValid():
+            print(f"⚠️ Could not find tray_02 at /World/tray_02")
+            # Try to list what's available
+            world_prim = stage.GetPrimAtPath("/World")
+            if world_prim and world_prim.IsValid():
+                children = [child.GetName() for child in world_prim.GetChildren()]
+                print(f"Available children under /World: {children}")
             return
         
-        # Set the joint position using the physics drive target
-        # For prismatic joints, this is typically the drive:linear:physics:targetPosition attribute
+        print(f"[Worker] ✓ Found tray_02 prim at /World/tray_02")
+        
+        # Get current position and subtract joint position from Y
         try:
-            if joint_prim.HasAttribute("drive:linear:physics:targetPosition"):
-                joint_prim.GetAttribute("drive:linear:physics:targetPosition").Set(drawer_joint_pos)
-                print(f"[Worker] ✓ Set drawer joint target position to {drawer_joint_pos:.4f} via drive:linear:physics:targetPosition")
-            elif joint_prim.HasAttribute("physics:position"):
-                joint_prim.GetAttribute("physics:position").Set(drawer_joint_pos)
-                print(f"[Worker] ✓ Set drawer joint position to {drawer_joint_pos:.4f} via physics:position")
+            from pxr import UsdGeom
+            xformable = UsdGeom.Xformable(tray_prim)
+            
+            # Get current translation - skip inverse ops
+            current_translate_op = None
+            xform_ops = xformable.GetOrderedXformOps()
+            print(f"[Worker] tray_02 has {len(xform_ops)} xform ops")
+            
+            for op in xform_ops:
+                is_inverse = op.IsInverseOp()
+                print(f"[Worker]   XformOp: {op.GetOpType()} (inverse={is_inverse}) = {op.Get()}")
+                # Only use non-inverse translate ops
+                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and not is_inverse:
+                    current_translate_op = op
+                    break
+            
+            if current_translate_op:
+                current_pos = current_translate_op.Get()
+                print(f"[Worker] Current tray position: {current_pos}")
+                
+                # Use base position and add offset (joint position is negative when open)
+                if self.drawer_tray_base_pos is None:
+                    print(f"[Worker] ⚠️ Base position not stored, using current as base")
+                    self.drawer_tray_base_pos = current_pos
+                
+                # Set to base position + joint offset
+                new_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
+                new_pos = Gf.Vec3d(self.drawer_tray_base_pos[0], new_y, self.drawer_tray_base_pos[2])
+                current_translate_op.Set(new_pos)
+                
+                # Verify the position was actually set
+                readback_pos = current_translate_op.Get()
+                print(f"[Worker] ✓ Set tray_02 position: base Y {self.drawer_tray_base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_y:.4f}")
+                print(f"[Worker] ✓ Readback verification: Y = {readback_pos[1]:.4f} (expected: {new_y:.4f})")
             else:
-                # List available attributes for debugging
-                attrs = [attr.GetName() for attr in joint_prim.GetAttributes()]
-                print(f"[Worker] ⚠️ Could not find position attribute on joint. Available attributes: {attrs[:10]}...")
+                print(f"[Worker] ⚠️ Could not find non-inverse translate operation on tray_02")
+                print(f"[Worker] Available attributes:")
+                for attr in tray_prim.GetAttributes():
+                    if 'translate' in attr.GetName().lower() or 'position' in attr.GetName().lower():
+                        print(f"[Worker]   {attr.GetName()} = {attr.Get()}")
                 
         except Exception as e:
-            print(f"[Worker] ⚠️ Failed to set drawer joint position: {e}")
-        
-        # Let physics settle after positioning
-        for step in range(10):
-            self.world.step(render=True)
+            import traceback
+            print(f"[Worker] ⚠️ Failed to set tray position: {e}")
+            traceback.print_exc()
 
     def update_state(self, config):
-        """Update robot joints and object poses without recreating simulation."""
+        """Update robot joints and object poses without recreating simulation.
+        
+        Sequence:
+        1. Hide robot (prevent interference)
+        2. Set object poses
+        3. Set drawer position
+        4. Show robot
+        5. Set robot joints
+        """
         import numpy as np
 
         if not self.simulation_initialized:
             raise RuntimeError("Must call initialize_simulation() first")
 
-        self.robot.set_joint_positions(np.zeros(8, dtype=float))
-
         # Store the config
         self.last_sync_config = config.copy()
         self.last_sync_config["robot_joints"] = np.array(self.last_sync_config["robot_joints"])
-        # Clone last dimension for mimic join
+        
+        # STEP 1: Hide robot to prevent interference with object/drawer positioning
+        print(f"[Worker] 👻 Hiding robot during object/drawer update")
+        self.hide_robot_funcs["hide"]()
+        
+        # Let physics settle with robot hidden
+        for step in range(5):
+            self.world.step(render=True)
+        
+        # STEP 2: Update object poses (with robot out of the way)
         object_states = config.get(
             "object_poses",
             {
@@ -375,7 +448,6 @@ class IsaacSimWorker:
             if pose:
                 print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
 
-        # Update object poses FIRST (before robot positioning)
         if self.objects["Cube_Blue"].is_valid():
             state = object_states.get("Cube_Blue")
             if state:
@@ -401,9 +473,24 @@ class IsaacSimWorker:
         for step in range(20):
             self.world.step(render=True)
 
-        # Set drawer joint positions (before robot, so drawer is in correct state)
+        # STEP 3: Set drawer position (still with robot hidden)
+        print(f"[Worker] 🗄️  Setting drawer position")
         self.set_drawer_joints()
+        
+        # Let physics settle after drawer positioning
+        for step in range(10):
+            self.world.step(render=True)
 
+        # STEP 4: Show robot (respawn)
+        print(f"[Worker] 🤖 Respawning robot")
+        self.hide_robot_funcs["show"]()
+        
+        # Let physics settle after robot respawn
+        for step in range(5):
+            self.world.step(render=True)
+
+        # STEP 5: Set robot joints (now that objects and drawer are in place)
+        print(f"[Worker] 🦾 Setting robot joints")
         self.set_robot_joints()
 
     def capture_current_state_images(self, output_dir):
@@ -554,7 +641,7 @@ class IsaacSimWorker:
                         )
 
                         # Register cloned objects in scene registry for easy access
-                        from omni.isaac.core.prims import RigidPrim
+                        from omni.isaac.core.prims import RigidPrim, XFormPrim
 
                         try:
                             Cube_Blue_path = f"{target_path}/Cube_Blue"
@@ -563,7 +650,7 @@ class IsaacSimWorker:
 
                             self.world.scene.add(RigidPrim(prim_path=Cube_Blue_path, name=f"Cube_Blue_user_{user_id}"))
                             self.world.scene.add(RigidPrim(prim_path=Cube_Red_path, name=f"Cube_Red_user_{user_id}"))
-                            self.world.scene.add(RigidPrim(prim_path=tennis_path, name=f"tennis_user_{user_id}"))
+                            self.world.scene.add(XFormPrim(prim_path=tennis_path, name=f"tennis_user_{user_id}"))
                             print(f"✅ Registered cloned objects for user {user_id}")
                         except Exception as obj_e:
                             print(f"⚠️ Failed to register cloned objects for user {user_id}: {obj_e}")

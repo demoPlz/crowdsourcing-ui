@@ -146,6 +146,9 @@ class PersistentWorkerManager:
 
     def _verify_worker_simulation_ready(self, timeout: int = 10) -> bool:
         """Explicitly verify that worker's internal simulation state is ready."""
+        # Give worker a moment to fully initialize before first check
+        time.sleep(0.2)
+        
         for attempt in range(timeout):
             try:
                 # Query worker's actual internal state
@@ -160,7 +163,7 @@ class PersistentWorkerManager:
                     return True
 
                 print(f"Worker simulation not ready yet (attempt {attempt + 1}/{timeout})")
-                time.sleep(1)  # Wait 500ms before retry
+                time.sleep(1)  # Wait 1s before retry
 
             except Exception as e:
                 print(f"Status check failed (attempt {attempt + 1}): {e}")
