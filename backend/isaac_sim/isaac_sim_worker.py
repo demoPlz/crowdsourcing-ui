@@ -132,6 +132,7 @@ class IsaacSimWorker:
         self.hide_robot_funcs = None  # Store hide/show functions
         self.simulation_app = simulation_app  # Store simulation app reference
         self.last_sync_config = None  # Store last synchronized config for animation reset
+        self.drawer_tray_base_positions = {}  # Store base position per user_id: {user_id: base_pos}
 
         # === Frame cache system for efficient animation replay ===
         self.frame_caches = {}  # user_id -> AnimationFrameCache
@@ -217,7 +218,7 @@ class IsaacSimWorker:
 
         for path, key in [
             ("/World/tray_01", "tray_01"),
-            ("/World/Drawer/tray_02", "tray_02"),
+            ("/World/Drawer/tray_02/node_", "tray_02"),  # Target the actual physics body
             ("/World/tray_03", "tray_03"),
         ]:
             prim = stage.GetPrimAtPath(path)
@@ -232,13 +233,12 @@ class IsaacSimWorker:
             
             # Store base position of tray_02 for drawer control
             if key == "tray_02":
-                from pxr import UsdGeom
-                xformable = UsdGeom.Xformable(prim)
-                for op in xformable.GetOrderedXformOps():
-                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and not op.IsInverseOp():
-                        self.drawer_tray_base_pos = op.Get()
-                        print(f"✓ Stored tray_02 base position: {self.drawer_tray_base_pos}")
-                        break        # Get cameras (only once)
+                # CRITICAL: Store the WORLD position when drawer is closed (initialization state)
+                # This will be our reference point for applying joint offsets
+                world_pos, world_rot = self.objects[key].get_world_pose()
+                self.drawer_tray_base_pos = world_pos
+                print(f"✓ Stored tray_02 base WORLD position: {self.drawer_tray_base_pos}")
+                break        # Get cameras (only once)
         stage = omni.usd.get_context().get_stage()
         all_cameras = get_all_camera_objects(root_prim="/")
         self.cameras = {all_cameras[i].name: all_cameras[i] for i in range(len(all_cameras))}
@@ -256,11 +256,43 @@ class IsaacSimWorker:
 
         # Create robot hide/show functions (only once)
         def hide_robot():
-            """Alternative: Move robot far away (preserves everything)"""
+            """Disable robot physics by disabling the articulation root."""
+            from pxr import UsdPhysics, Sdf
+            
+            # CRITICAL: Disable physics at the articulation root level
+            # This disables the entire robot articulation without touching individual collision shapes
+            stage = omni.usd.get_context().get_stage()
+            robot_prim = stage.GetPrimAtPath("/World/wxai")
+            
+            if robot_prim and robot_prim.IsValid():
+                # Disable the articulation root
+                if robot_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    # Disable the entire articulation by disabling physics on the root
+                    articulation_enabled = robot_prim.GetAttribute("physics:rigidBodyEnabled")
+                    if not articulation_enabled:
+                        articulation_enabled = robot_prim.CreateAttribute("physics:rigidBodyEnabled", Sdf.ValueTypeNames.Bool)
+                    articulation_enabled.Set(False)
+                    print("[Worker] ✓ Disabled robot articulation physics")
+            
+            # Also set visibility for visual feedback
             set_prim_visibility(self.robot_prim, False)
 
         def show_robot():
-            """Restore robot to original position."""
+            """Re-enable robot physics."""
+            from pxr import UsdPhysics, Sdf
+            
+            # Re-enable physics at the articulation root level
+            stage = omni.usd.get_context().get_stage()
+            robot_prim = stage.GetPrimAtPath("/World/wxai")
+            
+            if robot_prim and robot_prim.IsValid():
+                # Re-enable the articulation root
+                articulation_enabled = robot_prim.GetAttribute("physics:rigidBodyEnabled")
+                if articulation_enabled:
+                    articulation_enabled.Set(True)
+                    print("[Worker] ✓ Re-enabled robot articulation physics")
+            
+            # Restore visibility
             set_prim_visibility(self.robot_prim, True)
 
         self.hide_robot_funcs = {"hide": hide_robot, "show": show_robot}
@@ -273,7 +305,7 @@ class IsaacSimWorker:
 
         # Detect grasp
         gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
-        grasped = gripper_external_force > 50  # GRASPED_THRESHOLD
+        grasped = abs(gripper_external_force) > 50  # GRASPED_THRESHOLD
         robot_joints = self.last_sync_config["robot_joints"]
         robot_joints_open_gripper = robot_joints.copy()
 
@@ -294,6 +326,7 @@ class IsaacSimWorker:
             self.world.step(render=True)
 
         # PHYSICS-BASED GRIPPER CLOSING: If grasp was detected, smoothly close gripper
+
         if grasped:
             # Create target position with original (closed) gripper values
             target_q = robot_joints.copy()  # This has the original closed gripper positions
@@ -320,8 +353,13 @@ class IsaacSimWorker:
         for step in range(3):
             self.world.step(render=True)
 
-    def set_drawer_joints(self):
-        """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position"""
+    def set_drawer_joints(self, user_id=0):
+        """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position
+        
+        Args:
+            user_id: User ID to determine which environment's drawer to update (default=0 for /World)
+        """
+        import numpy as np
         import omni.usd
         from pxr import Gf
 
@@ -338,68 +376,103 @@ class IsaacSimWorker:
         
         print(f"[Worker] 🗄️  Setting drawer via tray position: Drawer_Joint = {drawer_joint_pos:.4f} m ({abs(drawer_joint_pos)*100:.2f} cm {'open' if drawer_joint_pos < 0 else 'closed'})")
         
-        if drawer_joint_pos == 0.0:
-            # Already at closed position, no need to update
-            print(f"[Worker] 🗄️  Drawer at closed position (0.0), skipping update")
-            return
+        # Determine the correct world path based on user_id
+        if user_id == 0:
+            world_path = "/World"
+        else:
+            world_path = f"/Env_{user_id}"
         
         # Get the tray prim and modify its Y position
         stage = omni.usd.get_context().get_stage()
-        tray_prim = stage.GetPrimAtPath("/World/Drawer/tray_02")
+        
+        # DEBUG: Print what we're actually trying to access
+        print(f"[Worker] 🔍 DEBUG: Attempting to access prim at: {world_path}/Drawer/tray_02/node_")
+        print(f"[Worker] 🔍 DEBUG: self.objects['tray_02'] = {self.objects.get('tray_02')}")
+        if self.objects.get("tray_02") is not None:
+            print(f"[Worker] 🔍 DEBUG: tray_02 prim_path = {self.objects['tray_02'].prim_path}")
+        
+        tray_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02/node_")
         
         if not tray_prim or not tray_prim.IsValid():
-            print(f"⚠️ Could not find tray_02 at /World/Drawer/tray_02")
+            print(f"⚠️ Could not find drawer_movable at {world_path}/Drawer/tray_02/node_")
             # Try to list what's available
-            world_prim = stage.GetPrimAtPath("/World")
+            world_prim = stage.GetPrimAtPath(world_path)
             if world_prim and world_prim.IsValid():
                 children = [child.GetName() for child in world_prim.GetChildren()]
-                print(f"Available children under /World: {children}")
+                print(f"Available children under {world_path}: {children}")
+                # Also check if Drawer/tray_02 exists
+                tray_02_prim = stage.GetPrimAtPath(f"{world_path}/Drawer/tray_02")
+                if tray_02_prim and tray_02_prim.IsValid():
+                    tray_02_children = [child.GetName() for child in tray_02_prim.GetChildren()]
+                    print(f"Available children under {world_path}/Drawer/tray_02: {tray_02_children}")
             return
         
-        print(f"[Worker] ✓ Found tray_02 prim at /World/Drawer/tray_02")
+        print(f"[Worker] ✓ Found drawer_movable prim at {world_path}/Drawer/tray_02/node_")
         
-        # Get current position and subtract joint position from Y
+        # Use the registered XFormPrim object to set position (updates both USD and physics)
         try:
-            from pxr import UsdGeom
-            xformable = UsdGeom.Xformable(tray_prim)
-            
-            # Get current translation - skip inverse ops
-            current_translate_op = None
-            xform_ops = xformable.GetOrderedXformOps()
-            print(f"[Worker] tray_02 has {len(xform_ops)} xform ops")
-            
-            for op in xform_ops:
-                is_inverse = op.IsInverseOp()
-                print(f"[Worker]   XformOp: {op.GetOpType()} (inverse={is_inverse}) = {op.Get()}")
-                # Only use non-inverse translate ops
-                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and not is_inverse:
-                    current_translate_op = op
-                    break
-            
-            if current_translate_op:
-                current_pos = current_translate_op.Get()
-                print(f"[Worker] Current tray position: {current_pos}")
+            # Get the tray object from scene registry
+            if user_id == 0 and self.objects.get("tray_02") is not None:
+                tray_obj = self.objects["tray_02"]
                 
-                # Use base position and add offset (joint position is negative when open)
+                # Get current rotation (keep it unchanged)
+                _, current_rot = tray_obj.get_world_pose()
+                
+                # Verify base world position was stored during initialization
                 if self.drawer_tray_base_pos is None:
-                    print(f"[Worker] ⚠️ Base position not stored, using current as base")
-                    self.drawer_tray_base_pos = current_pos
+                    raise RuntimeError("[Worker] ❌ ERROR: drawer_tray_base_pos not initialized! Check initialization code.")
                 
-                # Set to base position + joint offset
-                new_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
-                new_pos = Gf.Vec3d(self.drawer_tray_base_pos[0], new_y, self.drawer_tray_base_pos[2])
-                current_translate_op.Set(new_pos)
+                print(f"[Worker] Base WORLD position (closed drawer): {self.drawer_tray_base_pos}")
+                
+                # Calculate new WORLD position: base world position + joint offset along Y axis
+                # The drawer slides along Y, so we only modify the Y component
+                new_world_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
+                new_world_pos = np.array([
+                    self.drawer_tray_base_pos[0],  # X stays same
+                    new_world_y,                    # Y = base + offset
+                    self.drawer_tray_base_pos[2]   # Z stays same
+                ])
+                
+                print(f"[Worker] Setting WORLD position: X={new_world_pos[0]:.4f}, Y={new_world_pos[1]:.4f}, Z={new_world_pos[2]:.4f}")
+                print(f"[Worker]   (base_Y={self.drawer_tray_base_pos[1]:.4f} + joint_offset={drawer_joint_pos:.4f} = {new_world_y:.4f})")
+                
+                # CRITICAL: Use set_world_pose to update BOTH USD and physics state
+                tray_obj.set_world_pose(position=new_world_pos, orientation=current_rot)
+                
+                # CRITICAL: Set velocities to zero to ensure drawer is completely at rest
+                # This prevents any residual physics motion from interfering with the position
+                if hasattr(tray_obj, 'set_linear_velocity'):
+                    tray_obj.set_linear_velocity(np.zeros(3))
+                if hasattr(tray_obj, 'set_angular_velocity'):
+                    tray_obj.set_angular_velocity(np.zeros(3))
+                print(f"[Worker] ✓ Set drawer velocities to zero (ensuring at rest)")
+                
+                # Force a physics step to ensure the change propagates
+                if self.world:
+                    self.world.step(render=False)
                 
                 # Verify the position was actually set
-                readback_pos = current_translate_op.Get()
+                readback_pos, _ = tray_obj.get_world_pose()
                 print(f"[Worker] ✓ Set tray_02 position: base Y {self.drawer_tray_base_pos[1]:.4f} + offset {drawer_joint_pos:.4f} = {new_y:.4f}")
                 print(f"[Worker] ✓ Readback verification: Y = {readback_pos[1]:.4f} (expected: {new_y:.4f})")
             else:
-                print(f"[Worker] ⚠️ Could not find non-inverse translate operation on tray_02")
-                print(f"[Worker] Available attributes:")
-                for attr in tray_prim.GetAttributes():
-                    if 'translate' in attr.GetName().lower() or 'position' in attr.GetName().lower():
-                        print(f"[Worker]   {attr.GetName()} = {attr.Get()}")
+                print(f"[Worker] ⚠️ tray_02 object not found in scene registry (user_id={user_id})")
+                # Fallback to USD-only method (won't update physics immediately)
+                from pxr import UsdGeom
+                xformable = UsdGeom.Xformable(tray_prim)
+                current_translate_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate and not op.IsInverseOp():
+                        current_translate_op = op
+                        break
+                if current_translate_op:
+                    current_pos = current_translate_op.Get()
+                    if self.drawer_tray_base_pos is None:
+                        self.drawer_tray_base_pos = current_pos
+                    new_y = self.drawer_tray_base_pos[1] + drawer_joint_pos
+                    new_pos = Gf.Vec3d(self.drawer_tray_base_pos[0], new_y, self.drawer_tray_base_pos[2])
+                    current_translate_op.Set(new_pos)
+                    print(f"[Worker] ⚠️ Using USD-only update (physics may not update immediately)")
                 
         except Exception as e:
             import traceback
@@ -1340,13 +1413,20 @@ class IsaacSimWorker:
         from pxr import Gf, UsdGeom
 
         try:
-            self.robot.set_joint_positions(
-                np.zeros(8, dtype=float),
-            )
+            # CRITICAL: Follow the same sequence as update_state for consistency
+            # STEP 1: Hide robot first to prevent interference with object/drawer positioning
+            print(f"[Worker] 👻 Hiding robot during reset for user {user_id}")
+            if self.hide_robot_funcs:
+                self.hide_robot_funcs["hide"]()
+            
+            # Let physics settle with robot hidden
+            for step in range(5):
+                self.world.step(render=True)
+            
             env_data = self.user_environments[user_id]
             robot = env_data["robot"]
-            # Use the correct object references for each environment type
-
+            
+            # STEP 2: Reset objects (with robot out of the way)
             object_states = self.last_sync_config.get(
                 "object_poses",
                 {
@@ -1425,17 +1505,26 @@ class IsaacSimWorker:
 
                             #TODO this might not work for tennis ball
 
-            # STEP: Reset drawer position to synced state (before showing robot)
+            # STEP 3: Reset drawer position to synced state (still with robot hidden)
             print(f"[Worker] 🗄️  Resetting drawer to synced state for user {user_id}")
-            self.set_drawer_joints()
+            self.set_drawer_joints(user_id=user_id)
 
-            # Let physics settle after object/drawer positioning
-            for step in range(50):
+            # CRITICAL: Force multiple physics steps to ensure drawer position is committed to physics state
+            print(f"[Worker] ⏱️  Forcing physics steps to commit drawer position...")
+            for step in range(30):  # More steps to ensure physics state is updated
                 self.world.step(render=True)
 
-            # robot.initialize()
+            # STEP 4: Show robot (re-enable physics)
+            print(f"[Worker] 🤖 Re-enabling robot physics")
+            if self.hide_robot_funcs:
+                self.hide_robot_funcs["show"]()
+            
+            # CRITICAL: More physics steps after re-enabling robot to ensure drawer state persists
+            print(f"[Worker] ⏱️  Letting physics settle after robot re-enable...")
+            for step in range(20):  # Extended settling to ensure drawer stays in place
+                self.world.step(render=True)
 
-            # STEP: Reset robot joints to synced state
+            # STEP 5: Reset robot joints to synced state (now that objects and drawer are in place)
             print(f"[Worker] 🦾 Resetting robot joints to synced state for user {user_id}")
             self.set_robot_joints()
 

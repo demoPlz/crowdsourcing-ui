@@ -82,7 +82,7 @@ class SimManager:
             )
 
             initial_config = {
-                "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
+                "usd_path": f"public/assets/usd/{self.task_name}_flattened_tray.usd",
                 "robot_joints": [0.0] * 7,
                 "object_poses": {},  # Will be populated from pose estimation
                 "drawer_joint_positions": {},  # Will be populated from drawer tracking
@@ -166,7 +166,7 @@ class SimManager:
             print(f"🗄️  [SimManager] drawer_joint_positions from state_info: {drawer_joint_positions}")
 
             config = {
-                "usd_path": f"public/assets/usd/{self.task_name}_flattened.usd",
+                "usd_path": f"public/assets/usd/{self.task_name}_flattened_tray.usd",
                 "robot_joints": joint_positions_list,
                 "left_carriage_external_force": left_carriage_external_force,
                 "object_poses": state_info.get("object_poses", {}),

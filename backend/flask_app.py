@@ -947,7 +947,7 @@ def create_flask_app(crowd_interface: CrowdInterface) -> Flask:
             if hasattr(crowd_interface, "isaac_manager") and crowd_interface.isaac_manager:
                 # Create a basic config to trigger simulation initialization
                 basic_config = {
-                    "usd_path": f"public/assets/usd/{crowd_interface.task_name}_flattened.usd",
+                    "usd_path": f"public/assets/usd/{crowd_interface.task_name}_flattened_tray.usd",
                     "robot_joints": [0.0] * 7,  # Default joint positions
                     "object_poses": {
                         "Cube_Blue": {"pos": [0.2, 0.0, 0.1], "rot": [0, 0, 0, 1]},
