@@ -327,62 +327,47 @@ class IsaacSimWorker:
         for step in range(3):
             self.world.step(render=True)
 
-    def _disable_gravity_globally(self):
-        """Disable gravity for the entire physics scene (doesn't touch object properties).
-        
-        This approach is SAFE because:
-        - Doesn't modify any object properties (ArticulationView stays valid)
-        - Objects won't fall while we position robot/objects
-        - Robot can still physically interact with objects (collision still works)
-        - Objects are kinematic in zero-gravity until we re-enable
-        """
+    def _disable_gravity_for_objects(self):
+        """Temporarily disable gravity for all rigid body objects to prevent falling during state updates."""
         import omni.usd
         from pxr import UsdPhysics
         
         stage = omni.usd.get_context().get_stage()
         
-        scene_path = "/physicsScene"
-        scene = UsdPhysics.Scene.Get(stage, scene_path)
-        if not scene:
-            print(f"⚠️ UsdPhysics.Scene not found at {scene_path}")
-            return
-        
-        # Set gravity magnitude to 0 → no gravity
-        mag_attr = scene.GetGravityMagnitudeAttr()
-        if not mag_attr:
-            mag_attr = scene.CreateGravityMagnitudeAttr()
-        mag_attr.Set(0.0)
-        
-        print(f"[Worker] 🌍 Disabled gravity globally (magnitude = 0)")
+        for obj_name in ["Cube_Blue", "Cube_Red", "Tennis"]:
+            if obj_name in self.objects and self.objects[obj_name] is not None:
+                obj = self.objects[obj_name]
+                prim = stage.GetPrimAtPath(obj.prim_path)
+                
+                if prim and prim.IsValid():
+                    # Apply RigidBodyAPI if not already applied
+                    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        UsdPhysics.RigidBodyAPI.Apply(prim)
+                    
+                    # Disable rigid body physics entirely (simpler than gravity-only control)
+                    rigid_body_enabled = prim.GetAttribute("physics:rigidBodyEnabled")
+                    if rigid_body_enabled:
+                        rigid_body_enabled.Set(False)
+                        print(f"[Worker] ⚙️  Disabled physics for {obj_name}")
     
-    def _enable_gravity_globally(self):
-        """Re-enable gravity for the entire physics scene.
-        
-        Restores normal gravity so objects respond to physics properly.
-        """
+    def _enable_gravity_for_objects(self):
+        """Re-enable gravity for all rigid body objects after state update complete."""
         import omni.usd
-        from pxr import UsdPhysics, Gf
+        from pxr import UsdPhysics
         
         stage = omni.usd.get_context().get_stage()
         
-        scene_path = "/physicsScene"
-        scene = UsdPhysics.Scene.Get(stage, scene_path)
-        if not scene:
-            print(f"⚠️ UsdPhysics.Scene not found at {scene_path}")
-            return
-        
-        # Set gravity direction + magnitude
-        dir_attr = scene.GetGravityDirectionAttr()
-        if not dir_attr:
-            dir_attr = scene.CreateGravityDirectionAttr()
-        dir_attr.Set(Gf.Vec3f(0.0, 0.0, -1.0))  # Z-down
-        
-        mag_attr = scene.GetGravityMagnitudeAttr()
-        if not mag_attr:
-            mag_attr = scene.CreateGravityMagnitudeAttr()
-        mag_attr.Set(9.81)  # cm/s^2 (Isaac Sim uses cm, not meters)
-        
-        print(f"[Worker] 🌍 Enabled gravity globally (direction=(0,0,-1), magnitude=981 cm/s^2)")
+        for obj_name in ["Cube_Blue", "Cube_Red", "Tennis"]:
+            if obj_name in self.objects and self.objects[obj_name] is not None:
+                obj = self.objects[obj_name]
+                prim = stage.GetPrimAtPath(obj.prim_path)
+                
+                if prim and prim.IsValid():
+                    # Re-enable rigid body physics
+                    rigid_body_enabled = prim.GetAttribute("physics:rigidBodyEnabled")
+                    if rigid_body_enabled:
+                        rigid_body_enabled.Set(True)
+                        print(f"[Worker] ⚙️  Re-enabled physics for {obj_name}")
 
     def set_drawer_joints(self, user_id=0):
         """Set drawer tray position by moving /World/Drawer/tray_02 based on joint position
@@ -513,23 +498,16 @@ class IsaacSimWorker:
     def update_state(self, config):
         """Update robot joints and object poses without recreating simulation.
         
-        CRITICAL SEQUENCE with GLOBAL GRAVITY CONTROL:
-        0. Disable gravity GLOBALLY (safe - doesn't invalidate ArticulationView)
-        1. Hide robot visually (physics stays enabled - NEVER disable robot physics!)
-        2. Position robot with gripper OPEN (if grasping) - robot ready to support object
-        3. Position objects - won't fall because gravity is OFF
-        4. Position drawer
-        5. Step physics a few times (let everything settle in zero-G)
-        6. Show robot (robot is positioned, objects are positioned)
-        7. Close gripper physically (if grasping) - secure the grasp BEFORE enabling gravity
-        8. Re-enable gravity GLOBALLY (object is now secured, won't fall)
-        9. Let physics settle (gravity ON, object is secure)
+        Sequence (with physics toggle to prevent falling objects):
+        0. Disable physics for all objects (prevents falling)
+        1a. Hide robot (visually only, physics stays enabled)
+        1b. Position robot at target (physics enabled so set_joint_positions works)
+        2. Position objects (physics disabled = won't fall)
+        3. Position drawer
+        4. Re-enable object physics
+        5. Close gripper if object was grasped
         
-        Why GLOBAL gravity control is safe:
-        - Doesn't modify ANY object properties (ArticulationView stays valid)
-        - Objects won't fall during positioning (gravity = 0)
-        - Robot can still grasp objects (collision detection still works)
-        - Clean state transitions without touching USD physics properties
+        Note: Robot physics is NEVER disabled to avoid invalidating simulation view.
         """
         import numpy as np
 
@@ -540,33 +518,39 @@ class IsaacSimWorker:
         self.last_sync_config = config.copy()
         self.last_sync_config["robot_joints"] = np.array(self.last_sync_config["robot_joints"])
         
-        # Detect grasp to determine gripper state
+        # STEP 0: Disable physics for all objects to prevent falling during state update
+        print(f"[Worker] 🌍 Disabling physics for objects during state update")
+        self._disable_gravity_for_objects()
+        
+        # STEP 1a: Hide robot visually (physics stays enabled!)
+        print(f"[Worker] 👻 Hiding robot (visually only)")
+        self.hide_robot_funcs["hide"]()
+        
+        # STEP 1b: Set robot to target position (physics enabled, so set_joint_positions works)
+        print(f"[Worker] 🦾 Setting robot to target position")
         robot_joints = self.last_sync_config["robot_joints"]
+        
+        # Detect grasp to determine gripper state
         gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
         grasped = abs(gripper_external_force) > 30  # GRASPED_THRESHOLD
         
-        # STEP 0: Disable gravity globally (objects won't fall during positioning)
-        print(f"[Worker] 🌍 Disabling gravity globally (objects won't fall)")
-        self._disable_gravity_globally()
-        
-        # STEP 1: Hide robot visually (physics stays enabled!)
-        print(f"[Worker] 👻 Hiding robot (visually only, physics active)")
-        self.hide_robot_funcs["hide"]()
-        
-        # STEP 2: Position robot with gripper OPEN (if grasping) - ready to support object
-        print(f"[Worker] 🦾 Positioning robot (gripper {'OPEN' if grasped else 'as-is'})")
+        # Set initial position with gripper open if grasped (will close with physics later)
         if grasped:
             robot_joints_temp = robot_joints.copy()
-            robot_joints_temp[-1] = 0.044  # Open gripper - ready to receive object
+            robot_joints_temp[-1] = 0.044  # Open gripper first
             robot_joints_8dof = np.append(robot_joints_temp, robot_joints_temp[-1])
         else:
             robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
         
         # Position robot (physics enabled, just hidden visually)
         self.robot.set_joint_positions(robot_joints_8dof)
-        print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
+        print(f"[Worker] ✓ Robot positioned at target (hidden but physics active)")
         
-        # STEP 3: Update object poses (no gravity = won't fall)
+        # Let physics settle with robot hidden
+        for step in range(5):
+            self.world.step(render=True)
+        
+        # STEP 2: Update object poses (robot is hidden, won't interfere visually)
         object_states = config.get(
             "object_poses",
             {
@@ -576,7 +560,7 @@ class IsaacSimWorker:
             },
         )
         
-        print(f"[Worker] 📦 Positioning objects (gravity OFF, won't fall):")
+        print(f"[Worker] 📦 Updating object poses:")
         for obj_name, pose in object_states.items():
             if pose:
                 print(f"[Worker]    {obj_name}: pos={pose.get('pos', 'N/A')}")
@@ -602,28 +586,44 @@ class IsaacSimWorker:
                 rot = np.array([state["rot"][3], state["rot"][0], state["rot"][1], state["rot"][2]])
                 self.objects["Tennis"].set_world_pose(position=pos, orientation=rot)
 
-        # STEP 4: Set drawer position
-        print(f"[Worker] 🗄️  Positioning drawer")
+        # Let physics settle after object positioning
+        for step in range(20):
+            self.world.step(render=True)
+
+        # STEP 3: Set drawer position (robot still hidden)
+        print(f"[Worker] 🗄️  Setting drawer position")
         self.set_drawer_joints()
         
-        # STEP 5: Let physics settle in zero-G
-        print(f"[Worker] ⏱️  Settling physics (zero-G)...")
+        # Let physics settle after drawer positioning
         for step in range(10):
             self.world.step(render=True)
 
-        # STEP 6: Show robot
+        # STEP 4: Show robot again
         print(f"[Worker] 👁️  Showing robot")
         self.hide_robot_funcs["show"]()
         
-        # STEP 7: Close gripper with physics if object was grasped (BEFORE re-enabling gravity!)
+        # Let physics settle with robot visible
+        for step in range(20):
+            self.world.step(render=True)
+
+        # STEP 5: Re-enable physics for objects (robot is positioned and visible)
+        print(f"[Worker] 🌍 Re-enabling physics for objects (robot positioned correctly)")
+        self._enable_gravity_for_objects()
+        
+        # Let physics settle with object physics re-enabled
+        for step in range(10):
+            self.world.step(render=True)
+
+        # STEP 6: Close gripper with physics if object was grasped
         if grasped:
-            print(f"[Worker] 🤏 Closing gripper to secure grasp (gravity still OFF)...")
+            print(f"[Worker] 🤏 Closing gripper with physics (object was grasped)")
             from omni.isaac.core.utils.types import ArticulationAction
             
+            # Create target position with original (closed) gripper values
             target_q = robot_joints.copy()
             target_q[6] = -0.044  # Close gripper
             
-            # Apply smooth closing action for stable grasp
+            # Apply smooth closing action over several steps for stable grasp
             for close_step in range(15):  # ~0.5 seconds at 30Hz
                 current_q = self.robot.get_joint_positions()
                 alpha = (close_step + 1) / 15.0
@@ -641,22 +641,11 @@ class IsaacSimWorker:
                 # Step physics
                 self.world.step(render=True)
             
-            print(f"[Worker] ✓ Gripper closed securely (gravity still OFF)")
-        
-        # STEP 8: Re-enable gravity (object is now secured in gripper)
-        print(f"[Worker] 🌍 Re-enabling gravity (object secured in gripper)")
-        self._enable_gravity_globally()
-        
-        # STEP 9: Let physics settle with gravity ON (object is secure)
-        print(f"[Worker] ⏱️  Settling physics (gravity ON, object secured)...")
-        for step in range(20):
-            self.world.step(render=True)
+            print(f"[Worker] ✓ Gripper closed")
         
         # Final physics settling
-        for step in range(10):
+        for step in range(3):
             self.world.step(render=True)
-        
-        print(f"[Worker] ✅ State update complete")
 
     def capture_current_state_images(self, output_dir):
         """Capture images with current state (robot temporarily hidden for capture only)"""
@@ -1505,28 +1494,35 @@ class IsaacSimWorker:
         from pxr import Gf, UsdGeom
 
         try:
-            # CRITICAL: Follow the same sequence as update_state with GLOBAL gravity control
+            # CRITICAL: Follow the same sequence as update_state for consistency
             
-            env_data = self.user_environments[user_id]
-            robot = env_data["robot"]
-            
-            # Detect grasp to determine gripper state
-            initial_joints = self.last_sync_config["robot_joints"]
-            gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
-            grasped = abs(gripper_external_force) > 30
-            robot_joints = initial_joints.copy()
-            
-            # STEP 0: Disable gravity globally
-            print(f"[Worker] 🌍 Disabling gravity globally for reset (user {user_id})")
-            self._disable_gravity_globally()
+            # STEP 0: Disable gravity for all objects to prevent falling during reset
+            print(f"[Worker] 🌍 Disabling physics for objects during reset for user {user_id}")
+            if user_id == 0:
+                # For user 0, use the helper method
+                self._disable_gravity_for_objects()
             
             # STEP 1: Hide robot visually (physics stays enabled!)
             print(f"[Worker] 👻 Hiding robot during reset for user {user_id} (visually only)")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["hide"]()
             
-            # STEP 2: Position robot with gripper OPEN (if grasping)
-            print(f"[Worker] 🦾 Positioning robot (gripper {'OPEN' if grasped else 'as-is'})")
+            # Let physics settle with robot hidden
+            for step in range(5):
+                self.world.step(render=True)
+            
+            env_data = self.user_environments[user_id]
+            robot = env_data["robot"]
+            
+            # STEP 2: Set robot to target position (physics enabled, so set_joint_positions works)
+            print(f"[Worker] 🦾 Setting robot joint positions (physics enabled)")
+            initial_joints = self.last_sync_config["robot_joints"]
+            
+            # Detect grasp to determine gripper state
+            gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
+            grasped = abs(gripper_external_force) > 30
+            robot_joints = initial_joints.copy()
+            
             if grasped:
                 robot_joints[-1] = 0.044  # Open gripper
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
@@ -1534,7 +1530,7 @@ class IsaacSimWorker:
                 robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
             
             robot.set_joint_positions(robot_joints_8dof)
-            print(f"[Worker] ✓ Robot positioned (hidden, physics active)")
+            print(f"[Worker] ✓ Set robot to initial joint positions (hidden but physics active)")
             
             # STEP 3: Reset objects
             object_states = self.last_sync_config.get(
@@ -1615,23 +1611,60 @@ class IsaacSimWorker:
 
                             #TODO this might not work for tennis ball
 
-            # STEP 4: Reset drawer position
+            # STEP 3: Reset drawer position to synced state (still with robot hidden)
             print(f"[Worker] 🗄️  Resetting drawer to synced state for user {user_id}")
             self.set_drawer_joints(user_id=user_id)
 
-            # STEP 5: Let physics settle in zero-G
-            print(f"[Worker] ⏱️  Settling physics (zero-G)...")
-            for step in range(10):
+            # CRITICAL: Force multiple physics steps to ensure drawer position is committed to physics state
+            print(f"[Worker] ⏱️  Forcing physics steps to commit drawer position...")
+            for step in range(30):  # More steps to ensure physics state is updated
                 self.world.step(render=True)
 
-            # STEP 6: Show robot
-            print(f"[Worker] 👁️  Showing robot")
+            # STEP 4: Set robot joints to synced state (BEFORE re-enabling physics!)
+            # CRITICAL: Set joint positions while robot physics is still disabled
+            # This prevents the robot from colliding with objects/drawer during positioning
+            print(f"[Worker] � Setting robot joint positions (while physics disabled)")
+            initial_joints = self.last_sync_config["robot_joints"]
+            
+            # Set the joint positions directly (robot physics is disabled so no collisions)
+            # We'll use the same logic as set_robot_joints but without physics steps
+            gripper_external_force = self.last_sync_config.get("left_carriage_external_force", 0)
+            grasped = abs(gripper_external_force) > 30
+            robot_joints = initial_joints.copy()
+            
+            if grasped:
+                robot_joints_temp = robot_joints.copy()
+                robot_joints_temp[-1] = 0.044  # Open gripper first
+                robot_joints_8dof = np.append(robot_joints_temp, robot_joints_temp[-1])
+            else:
+                robot_joints_8dof = np.append(robot_joints, robot_joints[-1])
+            
+            robot.set_joint_positions(robot_joints_8dof)
+            print(f"[Worker] ✓ Set robot to initial joint positions (physics still disabled)")
+
+            # STEP 5: Now re-enable robot physics (robot is already at correct position)
+            print(f"[Worker] 🤖 Re-enabling robot physics (robot already positioned correctly)")
             if self.hide_robot_funcs:
                 self.hide_robot_funcs["show"]()
             
-            # STEP 7: Close gripper with physics if object was grasped (BEFORE re-enabling gravity!)
+            # Let physics settle - robot should stay in place since it's already at target
+            print(f"[Worker] ⏱️  Letting physics settle...")
+            for step in range(10):
+                self.world.step(render=True)
+            
+            # STEP 5b: Re-enable gravity for objects (robot physics is now active to support grasped objects)
+            print(f"[Worker] 🌍 Re-enabling gravity for objects (robot can now support them)")
+            if user_id == 0:
+                # For user 0, use the helper method
+                self._enable_gravity_for_objects()
+            
+            # Let physics settle with gravity re-enabled
+            for step in range(10):
+                self.world.step(render=True)
+            
+            # STEP 6: If grasped, close gripper with physics enabled
             if grasped:
-                print(f"[Worker] 🤏 Closing gripper to secure grasp (gravity still OFF)...")
+                print(f"[Worker] 🤏 Closing gripper with physics (object was grasped)")
                 from omni.isaac.core.utils.types import ArticulationAction
                 
                 target_q = robot_joints.copy()
@@ -1650,22 +1683,11 @@ class IsaacSimWorker:
                     )
                     self.world.step(render=True)
                 
-                print(f"[Worker] ✓ Gripper closed securely (gravity still OFF)")
-            
-            # STEP 8: Re-enable gravity (object is now secured in gripper)
-            print(f"[Worker] 🌍 Re-enabling gravity (object secured in gripper)")
-            self._enable_gravity_globally()
-            
-            # STEP 9: Let physics settle with gravity ON (object is secure)
-            print(f"[Worker] ⏱️  Settling physics (gravity ON, object secured)...")
-            for step in range(20):
-                self.world.step(render=True)
+                print(f"[Worker] ✓ Gripper closed")
 
-            # Final physics settling
-            for step in range(10):
-                self.world.step(render=True)
-            
-            print(f"[Worker] ✅ Reset complete for user {user_id}")
+            # Let physics settle after all resets are complete (extended for gripper operations)
+            # for step in range(12):  # Increased from 8 to account for gripper operations
+            #     self.world.step(render=True)
 
         except Exception as e:
             print(f"❌ Failed to reset user {user_id} environment: {e}")
