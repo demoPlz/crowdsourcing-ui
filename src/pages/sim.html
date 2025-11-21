@@ -3280,6 +3280,9 @@ loader.load(
 
     // --- Visibility policy: use the dragging pattern all the time ---
     let userHasAdjustedPose = true; // always use the dragging appearance pattern
+    
+    // Track which views should show the robot (for webcam views, hide until first interaction)
+    const viewRobotVisibility = new Map(); // viewName -> boolean
 
     function revealMinimalRobotFromPose() {
       // Idempotent - call when the user actually adjusts the pose (drag/slider)
@@ -5322,6 +5325,10 @@ loader.load(
           updateGoal(); // your function that copies params → marker/goal
           // Update sliders display and UI state
           revealMinimalRobotFromPose();
+          // Reveal robot in webcam view on first interaction
+          if (viewName.startsWith('webcam_')) {
+            viewRobotVisibility.set(viewName, true);
+          }
           updateGripHUDInteractivity();
           dragState.axes.forEach(axis => {
             if (sliderCtrls[axis]) sliderCtrls[axis].updateDisplay();
@@ -5337,6 +5344,10 @@ loader.load(
           updateGoal();
           // Update slider display and UI state
           revealMinimalRobotFromPose();
+          // Reveal robot in webcam view on first interaction
+          if (viewName.startsWith('webcam_')) {
+            viewRobotVisibility.set(viewName, true);
+          }
           updateGripHUDInteractivity();
           if (sliderCtrls[dragState.axis]) sliderCtrls[dragState.axis].updateDisplay();
         }
@@ -5466,6 +5477,17 @@ loader.load(
         };
         
         webcamViews.set(viewName, view);
+        
+        // Hide robot initially for webcam views
+        viewRobotVisibility.set(viewName, false);
+        
+        // Attach pose gizmo handlers for gripper control
+        attachPoseGizmoHandlers(view.renderer, view.camera, view.name);
+        
+        // Create HUDs for this view
+        createGripHUDForView(view);
+        createPoseResetHUDForView(view);
+        createHomeHUDForView(view);
         
         // Set up camera pose and projection
         updateViewCamera(view, view.pose);
@@ -6382,16 +6404,38 @@ loader.load(
 
       // ----- render all views -----
       views.forEach(view => {
-        // Render this view
-        scene.background = null; // canvas stays transparent; camera is the CSS bg
-        view.renderer.render(scene, view.camera);
+        // For top view, make entire robot semi-transparent (including grippers)
+        if (view.name === 'top') {
+          robot.traverse(o => {
+            if (!o.isMesh) return;
+            applyGhostToMesh(o);
+          });
+          
+          scene.background = null;
+          view.renderer.render(scene, view.camera);
+          
+          // Restore normal ghosting for other views (grippers opaque, body transparent)
+          setGhostMode(true);
+        } else {
+          // Normal rendering for other sim views (grippers opaque, body semi-transparent)
+          scene.background = null;
+          view.renderer.render(scene, view.camera);
+        }
       });
 
       // ----- render webcam views (MR mode) -----
       if (MR_MODE_ENABLED) {
         webcamViews.forEach(view => {
+          // Control robot visibility per webcam view
+          const shouldShowRobot = viewRobotVisibility.get(view.name);
+          const robotWasVisible = robot.visible;
+          robot.visible = shouldShowRobot !== false; // default to true if not set
+          
           scene.background = null;
           view.renderer.render(scene, view.camera);
+          
+          // Restore robot visibility
+          robot.visible = robotWasVisible;
         });
       }
     }
